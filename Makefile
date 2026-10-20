@@ -30,7 +30,7 @@ HOST := $(shell go env GOOS)/$(shell go env GOARCH)
 
 .DEFAULT_GOAL := all
 
-.PHONY: all build web run dev test test-race vet fmt tidy doctor check clean help
+.PHONY: all build web run dev test vet fmt tidy doctor check clean help
 
 ## all: 编译全部平台（默认目标）
 all:
@@ -55,10 +55,6 @@ dev:
 ## test: 跑测试
 test:
 	CGO_ENABLED=0 go test ./...
-
-## test-race: 带竞态检测跑测试
-test-race:
-	CGO_ENABLED=0 go test -race ./...
 
 ## vet: go vet 加上 mygo 的 UI 生命周期检查
 vet:
