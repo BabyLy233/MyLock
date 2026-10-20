@@ -55,6 +55,17 @@ func Detect() (*Install, error) {
 	return detectIn(steamRoot)
 }
 
+// Resolve returns the installation to use: the one at the directory the user
+// pinned, or the one detection finds when they pinned none. A pinned directory
+// is used as it is, so one that has gone stale is reported rather than quietly
+// replaced by whatever detection would have found.
+func Resolve(pinned string) (*Install, error) {
+	if pinned != "" {
+		return Validate(pinned)
+	}
+	return Detect()
+}
+
 // detectIn finds the game in the libraries of one Steam installation.
 func detectIn(steamRoot string) (*Install, error) {
 	libraries, err := Libraries(steamRoot)
