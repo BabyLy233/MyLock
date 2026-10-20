@@ -17,8 +17,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"math/rand/v2"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -98,8 +100,14 @@ var ErrRefused = errors.New("gamebanana: refused")
 
 // statusError is a reply that was not the data: the API's way of saying no.
 type statusError struct {
-	path       string
-	code       int
+	path string
+	// status is the HTTP status, and is zero for a failure the API sent with a
+	// 200: it names those in the body instead, and there is no number to give.
+	status int
+	// code is the API's own _sErrorCode, when the body carried one. It says what
+	// kind of failure this is more precisely than the status does -- a record
+	// that is gone is NO_SUCH_RECORD whether it arrives as a 404 or a 200.
+	code       string
 	retryAfter time.Duration
 	detail     string
 }
@@ -107,14 +115,23 @@ type statusError struct {
 func (e *statusError) Error() string {
 	// The API explains itself in the body, and that sentence is more use to
 	// the user than the status code is.
-	if e.detail != "" {
-		return fmt.Sprintf("gamebanana %s: %s (%d %s)", e.path, e.detail, e.code, http.StatusText(e.code))
+	reason := e.code
+	if e.status != 0 {
+		reason = fmt.Sprintf("%d %s", e.status, http.StatusText(e.status))
 	}
-	return fmt.Sprintf("gamebanana %s: %d %s", e.path, e.code, http.StatusText(e.code))
+	if e.detail != "" {
+		return fmt.Sprintf("gamebanana %s: %s (%s)", e.path, e.detail, reason)
+	}
+	return fmt.Sprintf("gamebanana %s: %s", e.path, reason)
 }
 
 func (e *statusError) Unwrap() error {
-	switch e.code {
+	// The API names a missing record in the body as well as in the status, and
+	// does not always use the status to say it.
+	if e.code == "NO_SUCH_RECORD" {
+		return ErrNotFound
+	}
+	switch e.status {
 	case http.StatusNotFound, http.StatusGone:
 		return ErrNotFound
 	case http.StatusForbidden:
@@ -125,9 +142,10 @@ func (e *statusError) Unwrap() error {
 
 // retryable reports whether asking again could give a different answer. A 4xx
 // is the request's own fault and fails the same way every time; a 429 or a 5xx
-// is the service's, and passes.
+// is the service's, and passes. A failure the API sent with a 200 is one it has
+// already decided about, so it is not asked about again either.
 func (e *statusError) retryable() bool {
-	return e.code == http.StatusTooManyRequests || e.code >= 500
+	return e.status == http.StatusTooManyRequests || e.status >= 500
 }
 
 // get reads one endpoint as JSON into v. path is relative to the API root and
@@ -137,7 +155,15 @@ func (c *Client) get(ctx context.Context, path string, v any) error {
 	if err != nil {
 		return err
 	}
-	if err := json.Unmarshal(jsonBody(body), v); err != nil {
+	body = jsonBody(body)
+	// A refusal is not always a status. The API answers a request it does not
+	// like with 400 and an error object, and sometimes sends that same object
+	// with a 200, where reading it as the data would leave an empty result and
+	// no error at all -- the one failure the caller cannot see.
+	if failure := apiFailure(path, body); failure != nil {
+		return failure
+	}
+	if err := json.Unmarshal(body, v); err != nil {
 		return fmt.Errorf("gamebanana %s: reading the reply: %w", path, err)
 	}
 	return nil
@@ -203,7 +229,7 @@ func (c *Client) once(ctx context.Context, path string) ([]byte, error) {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBytes))
 		return nil, &statusError{
 			path:       path,
-			code:       resp.StatusCode,
+			status:     resp.StatusCode,
 			retryAfter: retryAfter(resp),
 			detail:     detail(body),
 		}
@@ -274,7 +300,41 @@ func retryAfter(resp *http.Response) time.Duration {
 
 // apiError is how the API says no: a code and a sentence, in JSON.
 type apiError struct {
+	Code    string `json:"_sErrorCode"`
 	Message string `json:"_sErrorMessage"`
+	// Data is where the API puts the detail of a complaint about a parameter:
+	// the name of the field it objected to, mapped to the same shape again.
+	Data map[string]apiError `json:"_aErrorData"`
+}
+
+// message is the sentence to show. The API writes it beside the code when the
+// complaint is about the request as a whole, and one level in, under the name of
+// the field it objected to, when it is about a parameter -- which is the case
+// worth reading, since it is what a misspelled filter comes back as.
+func (e apiError) message() string {
+	if e.Message != "" {
+		return e.Message
+	}
+	// Sorted, so that a body objecting to several fields reads the same way
+	// every time.
+	for _, field := range slices.Sorted(maps.Keys(e.Data)) {
+		if message := e.Data[field].Message; message != "" {
+			return message
+		}
+	}
+	return ""
+}
+
+// apiFailure reads the API's own failure out of a reply that arrived with a 200.
+// body is the reply with jsonBody already applied. A reply that is not the
+// API's error object -- a page, or an array, which does not fit one at all --
+// is not a failure and reads as nothing here.
+func apiFailure(path string, body []byte) *statusError {
+	var e apiError
+	if err := json.Unmarshal(body, &e); err != nil || e.Code == "" {
+		return nil
+	}
+	return &statusError{path: path, code: e.Code, detail: summarize(e.message())}
 }
 
 // detail reads the explanation out of a failed reply. The API answers its own
@@ -286,9 +346,13 @@ func detail(body []byte) string {
 	if err := json.Unmarshal(jsonBody(body), &e); err != nil {
 		return ""
 	}
-	// The sentence is one line, but a body that is not the API's could be
-	// anything, so it is cut down before it becomes an error message.
-	message := strings.Join(strings.Fields(e.Message), " ")
+	return summarize(e.message())
+}
+
+// summarize cuts a sentence down to something that can go in an error message.
+// The API's is one line, but a body that is not the API's could be anything.
+func summarize(message string) string {
+	message = strings.Join(strings.Fields(message), " ")
 	if len(message) > maxDetail {
 		message = message[:maxDetail] + "…"
 	}

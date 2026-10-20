@@ -324,6 +324,99 @@ func TestAMissingSubmissionReadsAsNotFound(t *testing.T) {
 	}
 }
 
+// The API sometimes sends its failure with a 200 instead of a 400. Read as the
+// data it would be an empty page and no error at all, which is the one failure
+// the caller cannot see.
+func TestAFailureSentWithA200IsAnError(t *testing.T) {
+	c, s := newServer(t, func(int, http.ResponseWriter) (int, string) {
+		return http.StatusOK, `{
+			"_sErrorCode": "INPUT_ERRORS",
+			"_aErrorData": {
+				"_aFilters": {
+					"_sErrorCode": "UNKNOWN_FILTER",
+					"_sErrorMessage": "Filter 'Generic_Bogus' not recognized"
+				}
+			}
+		}`
+	})
+
+	page, err := c.Browse(t.Context(), Mod, 1, Updated)
+	if err == nil {
+		t.Fatalf("a failure sent with a 200 was read as a page: %+v", page)
+	}
+	// The sentence is one level in, under the field the API objected to, and it
+	// is the part that says what to fix.
+	if !strings.Contains(err.Error(), "Filter 'Generic_Bogus' not recognized") {
+		t.Errorf("the error does not carry what the API said: %v", err)
+	}
+	if !strings.Contains(err.Error(), "INPUT_ERRORS") {
+		t.Errorf("the error does not carry the API's own code: %v", err)
+	}
+	// It is the request's own fault, so it fails the same way however often it
+	// is asked.
+	if len(s.requests) != 1 {
+		t.Errorf("the client made %d requests, want 1", len(s.requests))
+	}
+}
+
+// A record that is gone is named in the body, and the API does not always say
+// it with a 404.
+func TestAMissingRecordSentWithA200ReadsAsNotFound(t *testing.T) {
+	c, _ := newServer(t, func(int, http.ResponseWriter) (int, string) {
+		return http.StatusOK, `{"_sErrorCode": "NO_SUCH_RECORD", "_sErrorMessage": "This Mod doesn't exist"}`
+	})
+
+	_, err := c.Files(t.Context(), Mod, 999999999)
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("err = %v, want ErrNotFound", err)
+	}
+	if !strings.Contains(err.Error(), "This Mod doesn't exist") {
+		t.Errorf("the error does not carry what the API said: %v", err)
+	}
+}
+
+// Which bodies are the API saying no, and which sentence comes out of them.
+func TestWhatCountsAsAFailure(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		body string
+		want string
+		// failed is whether the body is the API refusing rather than answering.
+		failed bool
+	}{
+		{"a page is not one", listingReply("Yamato redesign"), "", false},
+		{"an array is not one", `[{"_sPluralTitle": "Blogs"}]`, "", false},
+		{"a sentence with no code to go on", `{"_sErrorMessage": "no code"}`, "", false},
+		{
+			"the sentence beside the code",
+			`{"_sErrorCode": "NO_SUCH_ROUTE", "_sErrorMessage": "Invalid request path or request method"}`,
+			"Invalid request path or request method", true,
+		},
+		{
+			"the sentence under the field it objected to",
+			`{"_sErrorCode": "INPUT_ERRORS", "_aErrorData": {"_sSort": {"_sErrorCode": "VALUE_NOT_ALLOWED", "_sErrorMessage": "Value 'Generic_Bogus' not recognized"}}}`,
+			"Value 'Generic_Bogus' not recognized", true,
+		},
+		{"a code with nothing to say", `{"_sErrorCode": "INPUT_ERRORS"}`, "", true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			failure := apiFailure("/Mod/Index", []byte(tt.body))
+			if !tt.failed {
+				if failure != nil {
+					t.Errorf("the body reads as the failure %q, want no failure", failure)
+				}
+				return
+			}
+			if failure == nil {
+				t.Fatalf("the body reads as no failure, want %q", tt.want)
+			}
+			if failure.detail != tt.want {
+				t.Errorf("detail = %q, want %q", failure.detail, tt.want)
+			}
+		})
+	}
+}
+
 // A 5xx is the service's own trouble, and is tried again before being reported.
 func TestAServerErrorIsTriedAgainAndThenReported(t *testing.T) {
 	c, s := newServer(t, func(int, http.ResponseWriter) (int, string) {
