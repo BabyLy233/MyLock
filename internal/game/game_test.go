@@ -71,8 +71,12 @@ func TestLibraries(t *testing.T) {
 	if libraries[1].Path != second {
 		t.Errorf("the second library is %q, want %q", libraries[1].Path, second)
 	}
-	if apps := libraries[1].Apps; len(apps) != 1 || apps[0] != DeadlockAppID {
-		t.Errorf("the second library holds %v, want the game", apps)
+	// Steam lists the root as library 0, and that entry carries the apps it
+	// holds. The root must keep them, not come back as a bare path.
+	for i, library := range libraries {
+		if apps := library.Apps; len(apps) != 1 || apps[0] != DeadlockAppID {
+			t.Errorf("library %d (%s) holds %v, want the game", i, library.Path, apps)
+		}
 	}
 }
 

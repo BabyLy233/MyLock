@@ -95,28 +95,58 @@ type Library struct {
 
 // Libraries reads the library folders a Steam root knows, the root itself
 // first. A library listed in libraryfolders.vdf that is gone from disk is
-// left out.
+// left out, so a detection does not stall on an unmounted drive.
 func Libraries(steamRoot string) ([]Library, error) {
+	root := filepath.Clean(steamRoot)
+	listed, err := listedLibraries(root)
+	if err != nil {
+		return nil, err
+	}
+
 	var libraries []Library
 	seen := map[string]bool{}
-
-	add := func(path string, apps []string) {
-		path = filepath.Clean(path)
-		if seen[path] || !isDir(filepath.Join(path, steamAppsDir)) {
+	keep := func(library Library) {
+		path := filepath.Clean(library.Path)
+		if path == "" || path == "." || seen[path] {
+			return
+		}
+		if !isDir(filepath.Join(path, steamAppsDir)) {
 			return
 		}
 		seen[path] = true
-		libraries = append(libraries, Library{Path: path, Apps: apps})
+		libraries = append(libraries, Library{Path: path, Apps: library.Apps})
 	}
 
-	add(steamRoot, nil)
-
-	doc, err := vdf.ParseFile(filepath.Join(steamRoot, steamAppsDir, libraryFoldersVDF))
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return libraries, nil
+	// The Steam root is a library of its own, and is tried first. Steam
+	// normally lists it as library 0, and that entry is the one carrying the
+	// apps it holds, so it is kept rather than the bare path.
+	rootListed := false
+	for _, library := range listed {
+		if filepath.Clean(library.Path) == root {
+			keep(library)
+			rootListed = true
 		}
-		return libraries, err
+	}
+	if !rootListed {
+		keep(Library{Path: root})
+	}
+	for _, library := range listed {
+		if filepath.Clean(library.Path) != root {
+			keep(library)
+		}
+	}
+	return libraries, nil
+}
+
+// listedLibraries reads libraryfolders.vdf, in the order Steam wrote it. A
+// missing file is not an error: it leaves the Steam root as the only library.
+func listedLibraries(steamRoot string) ([]Library, error) {
+	doc, err := vdf.ParseFile(filepath.Join(steamRoot, steamAppsDir, libraryFoldersVDF))
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		return nil, nil
+	case err != nil:
+		return nil, err
 	}
 
 	// The file holds one key naming itself, spelled either way across the
@@ -126,23 +156,24 @@ func Libraries(steamRoot string) ([]Library, error) {
 		folders = doc.Get("LibraryFolders")
 	}
 	if folders == nil {
-		return libraries, nil
+		return nil, nil
 	}
 
+	var libraries []Library
 	for _, entry := range folders.Children {
-		if entry.IsObject() {
-			// The current format: a numbered object with a path key.
-			var apps []string
-			if appsNode := entry.Get("apps"); appsNode != nil {
-				for _, app := range appsNode.Children {
-					apps = append(apps, app.Key)
-				}
-			}
-			add(entry.GetString("path"), apps)
+		if !entry.IsObject() {
+			// The older format: the number is the key, the path its value.
+			libraries = append(libraries, Library{Path: entry.Value})
 			continue
 		}
-		// The older format: the number is the key and the path its value.
-		add(entry.Value, nil)
+		// The current format: a numbered object with a path key.
+		var apps []string
+		if node := entry.Get("apps"); node != nil {
+			for _, app := range node.Children {
+				apps = append(apps, app.Key)
+			}
+		}
+		libraries = append(libraries, Library{Path: entry.GetString("path"), Apps: apps})
 	}
 	return libraries, nil
 }
