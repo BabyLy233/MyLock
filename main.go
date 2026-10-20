@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"runtime"
+	"slices"
 	"strings"
 	"sync"
 
@@ -50,8 +52,10 @@ type app struct {
 	// store is the mod store page's state.
 	store *store
 
-	// mu guards what the lookups publish for the view to read.
+	// mu guards what the lookups publish for the view to read, and the
+	// appearance, which a save reads from a goroutine.
 	mu          sync.Mutex
+	theme       mygo.ThemeSource
 	looking     bool
 	browsing    bool
 	reading     bool
@@ -85,6 +89,26 @@ type state struct {
 	gameInfoErr string
 	// patching is set while the game's configuration is being written.
 	patching bool
+	// theme is the appearance in effect, which the settings page shows as the
+	// chosen segment.
+	theme mygo.ThemeSource
+}
+
+// themeSources are the appearances the settings page offers, in the order it
+// offers them, and themeLabels names them.
+var (
+	themeSources = []mygo.ThemeSource{mygo.ThemeSystem, mygo.ThemeLight, mygo.ThemeDark}
+	themeLabels  = []string{"跟随系统", "浅色", "深色"}
+)
+
+// themeSource reads the appearance to run in out of what was saved. A value
+// that is not one of them -- a file edited by hand, or one left by a version
+// that spelled it differently -- follows the system rather than failing.
+func themeSource(saved string) mygo.ThemeSource {
+	if source := mygo.ThemeSource(saved); slices.Contains(themeSources, source) {
+		return source
+	}
+	return mygo.ThemeSystem
 }
 
 // modsState is what the view reads about the mods of the profile, taken in one
@@ -110,6 +134,7 @@ func newApp() *app {
 }
 
 func (a *app) view(c *ui.Context) {
+	a.paint(c)
 	ui.Row(c).Fill().AlignItems(ui.Stretch).Children(func() {
 		a.sidebar(c)
 		a.router.View(c, func(r *ui.Route) {
@@ -351,6 +376,7 @@ func (a *app) settingsPage(c *ui.Context) {
 		a.installSection(c, s)
 		a.gameInfoSection(c, s)
 		a.pathSection(c, s)
+		a.themeSection(c, s)
 	})
 }
 
@@ -442,6 +468,23 @@ func (a *app) pathSection(c *ui.Context, s state) {
 	})
 }
 
+// themeSection lets the user pick the appearance, or leave it to the desktop,
+// which is what a first run does.
+func (a *app) themeSection(c *ui.Context, s state) {
+	ui.Field(c, "外观", func() {
+		// In a row so the control takes its own width rather than the field's.
+		ui.Row(c).Children(func() {
+			// A local copy, which the control writes the chosen index into
+			// before its notice runs: what was chosen is what the control left
+			// here, not what the app held when the frame was built.
+			chosen := max(slices.Index(themeSources, s.theme), 0)
+			ui.Segmented(c, &chosen, themeLabels...).OnChange(func() {
+				a.setTheme(themeSources[chosen])
+			})
+		})
+	}).Description("「跟随系统」随桌面的浅色 / 深色切换。")
+}
+
 // field shows a label above a value the user can select and copy.
 func field(c *ui.Context, label, value string) {
 	if value == "" {
@@ -467,16 +510,18 @@ func (a *app) state() state {
 		gameInfo:    a.gameInfo,
 		gameInfoErr: a.gameInfoErr,
 		patching:    a.patching,
+		theme:       a.theme,
 	}
 }
 
-// start loads the settings and looks for the game the way they say to.
-func (a *app) start() {
-	cfg, err := config.Load(a.configPath)
-	if err != nil {
+// start looks for the game the way the settings say to. They are read before
+// the app runs rather than here, because the appearance has to be known before
+// the first frame is drawn.
+func (a *app) start(cfg config.Config, cfgErr error) {
+	if cfgErr != nil {
 		// The directory the user chose last time is not in effect, so the app
 		// detects the game instead, and says why.
-		a.look("", false, err)
+		a.look("", false, cfgErr)
 		return
 	}
 	if cfg.GamePath != "" {
@@ -613,12 +658,88 @@ func (a *app) look(pinned string, remember bool, warn error) {
 }
 
 // saveSettings remembers the directory to use from now on, "" to detect the
-// game through Steam. It writes a file, so it runs off the main thread.
+// game through Steam, and the appearance. It writes a file, so it runs off the
+// main thread; the appearance is read here, in one lock, because the settings
+// page can change it while this runs.
 func (a *app) saveSettings(pinned string) error {
 	if a.configPath == "" {
 		return nil
 	}
-	return config.Config{GamePath: pinned}.Save(a.configPath)
+	a.mu.Lock()
+	theme := a.theme
+	a.mu.Unlock()
+	return config.Config{GamePath: pinned, Theme: string(theme)}.Save(a.configPath)
+}
+
+// appearance is the appearance in effect.
+func (a *app) appearance() mygo.ThemeSource {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.theme
+}
+
+// paint decides the appearance of the frame.
+//
+// 「跟随系统」is left to the theme the frame was built with, which comes from the
+// desktop and follows it. The two explicit ones are put on the frame here
+// instead: on Linux the theme the frame is built with comes from the desktop
+// whatever the module was told, so a request for light on a desktop set to dark
+// would draw dark.
+func (a *app) paint(c *ui.Context) {
+	switch a.appearance() {
+	case mygo.ThemeLight:
+		c.SetTheme(ui.LightTheme())
+	case mygo.ThemeDark:
+		c.SetTheme(ui.DarkTheme())
+	}
+}
+
+// applyTheme makes a running app use source, and records it for the settings
+// page to show. It is the main thread's, and writes nothing.
+//
+// Telling Mygo is left until there is a window, because the call it makes needs
+// a running event loop to take it, and there is none before the app is up or in
+// a test. The appearance the app opens in is set in main, before it runs.
+func (a *app) applyTheme(source mygo.ThemeSource) {
+	a.mu.Lock()
+	a.theme = source
+	a.mu.Unlock()
+
+	if a.win == nil {
+		return
+	}
+	if tellsModule() {
+		mygo.Theme.SetSource(source)
+	}
+	a.invalidate()
+}
+
+// tellsModule says whether Mygo is told the appearance as well as the frame
+// being drawn in it. On macOS and Windows that is what draws the window the
+// desktop puts around the content in the chosen appearance, so the frame and
+// its title bar agree.
+//
+// Linux is left out. Its backend answers with the source it was last told
+// rather than reading the desktop each time, so being told 「跟随系统」pins the
+// desktop's answer to what it was at that moment and the app stops following
+// it; left alone, the backend reads the desktop, which is what 「跟随系统」
+// wants. Handing a source over is also how the desktop's notice about the
+// appearance comes back, and the desktop sends it whether or not the value
+// differs, so an app that answered one with a source would answer its own
+// answer for as long as it ran.
+func tellsModule() bool { return runtime.GOOS != "linux" }
+
+// setTheme is applyTheme for an appearance the user chose, which is also
+// remembered. It is the main thread's, called by the control that chose it.
+func (a *app) setTheme(source mygo.ThemeSource) {
+	a.applyTheme(source)
+
+	a.mu.Lock()
+	pinned := a.pinned
+	a.mu.Unlock()
+	if err := a.saveSettings(pinned); err != nil {
+		a.fail(err.Error())
+	}
 }
 
 // fail shows a message in place of the game directory.
@@ -649,10 +770,20 @@ func (a *app) invalidate() {
 
 func main() {
 	a := newApp()
+	var cfg config.Config
+	var cfgErr error
 	if path, err := config.Path(); err != nil {
 		log.Printf("settings will not be kept: %v", err)
 	} else {
 		a.configPath = path
+		cfg, cfgErr = config.Load(path)
+	}
+	// The appearance has to be known before the app runs, so the first frame is
+	// drawn in it rather than in the system's and then changing: paint reads what
+	// was chosen, and Run applies what the module was told beforehand.
+	a.theme = themeSource(cfg.Theme)
+	if tellsModule() {
+		mygo.Theme.SetSource(a.theme)
 	}
 
 	mygo.App.WhenReady(func() {
@@ -667,7 +798,7 @@ func main() {
 			// The window shows the interface Mygo draws, not a web page.
 			Content: ui.View(a.view),
 		})
-		a.start()
+		a.start(cfg, cfgErr)
 	})
 	if err := mygo.App.Run(); err != nil {
 		log.Fatal(err)

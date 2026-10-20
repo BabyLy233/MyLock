@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 
 	"github.com/BabyLy233/deadlock-mod-manager-mygo/internal/addons"
@@ -59,6 +60,17 @@ func settingsPath(t *testing.T, a *app) string {
 	t.Helper()
 	a.configPath = filepath.Join(t.TempDir(), "config.json")
 	return a.configPath
+}
+
+// startApp starts the app the way main does: the settings are read, the
+// appearance they name is recorded, and the game is looked for. Telling Mygo
+// about the appearance is left out, as it is a call that needs the app to be
+// running.
+func startApp(t *testing.T, a *app) {
+	t.Helper()
+	cfg, err := config.Load(a.configPath)
+	a.theme = themeSource(cfg.Theme)
+	a.start(cfg, err)
 }
 
 func TestShellShowsTheSidebar(t *testing.T) {
@@ -595,7 +607,7 @@ func TestStartUsesTheSavedDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	a.start()
+	startApp(t, a)
 	s := waitForLook(t, a)
 	if s.lookErr != "" {
 		t.Fatalf("starting with a saved directory failed: %s", s.lookErr)
@@ -617,9 +629,93 @@ func TestStartReportsSettingsItCannotRead(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	a.start()
+	startApp(t, a)
 	s := waitForLook(t, a)
 	if s.lookErr == "" {
 		t.Error("starting with an unreadable settings file said nothing")
+	}
+}
+
+// The settings page offers the appearances, so that the choice is the user's
+// rather than the desktop's.
+func TestTheSettingsPageOffersTheAppearances(t *testing.T) {
+	a := newApp()
+	a.router.Push("/settings")
+	tt := ui.NewTester(a.view, 1280, 800)
+
+	for _, label := range themeLabels {
+		if !tt.HasText(label) {
+			t.Errorf("the settings page does not offer %q: %q", label, tt.Texts())
+		}
+	}
+}
+
+// Choosing an appearance puts the app in it and remembers it, and the rest of
+// the settings file is left as it was: they are fields of one file, and writing
+// the appearance must not drop the directory.
+func TestChoosingAnAppearanceRemembersIt(t *testing.T) {
+	a := newApp()
+	path := settingsPath(t, a)
+	a.pinned = "/games/Deadlock"
+	a.router.Push("/settings")
+	tt := ui.NewTester(a.view, 1280, 800)
+
+	if err := tt.Click("深色"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+
+	if got := a.state().theme; got != mygo.ThemeDark {
+		t.Errorf("the app is in %q, want %q", got, mygo.ThemeDark)
+	}
+	saved, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.Theme != string(mygo.ThemeDark) {
+		t.Errorf("the settings file holds theme %q, want %q", saved.Theme, mygo.ThemeDark)
+	}
+	if saved.GamePath != "/games/Deadlock" {
+		t.Errorf("choosing an appearance left the game directory as %q", saved.GamePath)
+	}
+}
+
+// The appearance the settings name is the one the app opens in.
+func TestStartUsesTheSavedAppearance(t *testing.T) {
+	a := newApp()
+	path := settingsPath(t, a)
+	if err := (config.Config{Theme: string(mygo.ThemeDark)}).Save(path); err != nil {
+		t.Fatal(err)
+	}
+
+	startApp(t, a)
+	waitForLook(t, a)
+
+	if got := a.state().theme; got != mygo.ThemeDark {
+		t.Errorf("the app opened in %q, want %q", got, mygo.ThemeDark)
+	}
+}
+
+// What a saved appearance means. A value that is not one of the three follows
+// the system rather than failing: the file can be edited by hand, and a version
+// that spelled one differently should not leave the app unable to start.
+func TestThemeSource(t *testing.T) {
+	for _, tt := range []struct {
+		saved string
+		want  mygo.ThemeSource
+	}{
+		{"", mygo.ThemeSystem},
+		{"system", mygo.ThemeSystem},
+		{"light", mygo.ThemeLight},
+		{"dark", mygo.ThemeDark},
+		{"Dark", mygo.ThemeSystem},
+		{"auto", mygo.ThemeSystem},
+		{"深色", mygo.ThemeSystem},
+	} {
+		t.Run(tt.saved, func(t *testing.T) {
+			if got := themeSource(tt.saved); got != tt.want {
+				t.Errorf("themeSource(%q) = %q, want %q", tt.saved, got, tt.want)
+			}
+		})
 	}
 }

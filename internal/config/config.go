@@ -23,6 +23,9 @@ type Config struct {
 	// GamePath is the Deadlock directory the user picked, empty when the app
 	// detects the game through Steam instead.
 	GamePath string `json:"gamePath,omitempty"`
+	// Theme is the appearance to run in: "system", "light" or "dark". Empty is
+	// the system's, which is what a first run gets.
+	Theme string `json:"theme,omitempty"`
 }
 
 // Path returns the file the app keeps its settings in: ~/.config on Linux,
