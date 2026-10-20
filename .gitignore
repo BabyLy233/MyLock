@@ -1,0 +1,13 @@
+# Mygo build output and development app
+/build/
+/.mygo/
+mygo_windows_*.syso
+
+# Go
+*.test
+*.out
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/
