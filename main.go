@@ -15,7 +15,9 @@ import (
 
 	"github.com/BabyLy233/deadlock-mod-manager-mygo/internal/addons"
 	"github.com/BabyLy233/deadlock-mod-manager-mygo/internal/config"
+	"github.com/BabyLy233/deadlock-mod-manager-mygo/internal/download"
 	"github.com/BabyLy233/deadlock-mod-manager-mygo/internal/game"
+	"github.com/BabyLy233/deadlock-mod-manager-mygo/internal/gb"
 )
 
 // app is the state the window shows. The view builds the interface from it on
@@ -36,6 +38,17 @@ type app struct {
 	// list keeps the mod list's place and its keyboard focus across the
 	// rebuilds that a switch being flipped causes.
 	list ui.ListState
+
+	// catalogue reads GameBanana, which is where the store's mods come from.
+	catalogue *gb.Client
+	// downloads fetches a mod's archive, checking it against what the API says
+	// it should be.
+	downloads *download.Client
+	// thumbnails holds the store's pictures, which are fetched and decoded off
+	// the main thread.
+	thumbnails *images
+	// store is the mod store page's state.
+	store *store
 
 	// mu guards what the lookups publish for the view to read.
 	mu          sync.Mutex
@@ -86,7 +99,14 @@ type modsState struct {
 }
 
 func newApp() *app {
-	return &app{router: ui.NewRouter("/mods")}
+	a := &app{
+		router:     ui.NewRouter("/mods"),
+		catalogue:  gb.New(),
+		downloads:  download.New(),
+		thumbnails: newImages(),
+	}
+	a.store = newStore(a)
+	return a
 }
 
 func (a *app) view(c *ui.Context) {
@@ -97,6 +117,9 @@ func (a *app) view(c *ui.Context) {
 			case r.Match("/mods"):
 				r.Title("已安装模组")
 				a.modsPage(c)
+			case r.Match("/store"):
+				r.Title("模组商店")
+				a.store.view(c)
 			case r.Match("/settings"):
 				r.Title("设置")
 				a.settingsPage(c)
@@ -113,6 +136,7 @@ func (a *app) sidebar(c *ui.Context) {
 	page := a.router.Path()
 	ui.Sidebar(c, &page, func() {
 		ui.SidebarItem(c, "/mods", nil, "已安装模组")
+		ui.SidebarItem(c, "/store", nil, "模组商店")
 		ui.SidebarItem(c, "/settings", nil, "设置")
 	}).Width(220).OnChange(func() {
 		a.router.Push(page)
