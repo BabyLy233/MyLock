@@ -8,6 +8,7 @@ import (
 
 	"github.com/egoist/mygo/ui"
 
+	"github.com/BabyLy233/deadlock-mod-manager-mygo/internal/addons"
 	"github.com/BabyLy233/deadlock-mod-manager-mygo/internal/config"
 	"github.com/BabyLy233/deadlock-mod-manager-mygo/internal/game"
 )
@@ -90,15 +91,207 @@ func TestSidebarNavigates(t *testing.T) {
 	}
 }
 
-// The mods page points at the directory the game loads mods from, so the
-// user can check it before any mod is read.
-func TestModsPageShowsTheAddonsDirectory(t *testing.T) {
+// fakeGame makes a Deadlock installation with an empty profile, and returns
+// both, so a test can put mods in it.
+func fakeGame(t *testing.T) (*game.Install, addons.Profile) {
+	t.Helper()
+	gamePath := filepath.Join(t.TempDir(), "Deadlock")
+	addonsDir := filepath.Join(gamePath, "game", "citadel", "addons")
+	if err := os.MkdirAll(addonsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(gamePath, "game", "citadel", "gameinfo.gi"), []byte("// gameinfo\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return &game.Install{GamePath: gamePath}, addons.Open(addonsDir)
+}
+
+// addMod writes a disabled mod of one file into a profile, as an install would
+// have left it.
+func addMod(t *testing.T, p addons.Profile, id, original string) {
+	t.Helper()
+	m, err := addons.Load(p.ManifestPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.Mods[id] = addons.Entry{
+		Shard:            addons.FirstShard,
+		DisabledVpks:     []string{id + "_" + original},
+		OriginalVpkNames: []string{original},
+	}
+	if err := m.Save(p.ManifestPath()); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(p.Dir, id+"_"+original), []byte("vpk"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// show points the app at an installation and has it read the profile, which is
+// what finding the game does before the window shows anything.
+func show(t *testing.T, a *app, install *game.Install, p addons.Profile) ui.Tester {
+	t.Helper()
+	mods, err := p.Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.install, a.mods = install, mods
+	return *ui.NewTester(a.view, 1280, 800)
+}
+
+func TestModsPageWithoutAGameDirectory(t *testing.T) {
 	a := newApp()
-	a.install = &game.Install{GamePath: "/games/Deadlock"}
 	tt := ui.NewTester(a.view, 1280, 800)
 
-	if !tt.HasText(a.install.AddonsDir()) {
-		t.Errorf("the mods page does not show %q: %q", a.install.AddonsDir(), tt.Texts())
+	if !tt.HasText("还没有找到游戏目录") {
+		t.Errorf("the mods page does not say there is no game directory: %q", tt.Texts())
+	}
+}
+
+func TestModsPageWithNothingInstalled(t *testing.T) {
+	a := newApp()
+	install, profile := fakeGame(t)
+	tt := show(t, a, install, profile)
+
+	if !tt.HasText("这个目录里还没有模组。") {
+		t.Errorf("the mods page does not show its empty state: %q", tt.Texts())
+	}
+}
+
+// The page names the directory the game loads mods from, so the user can check
+// it against what they see on disk.
+func TestModsPageListsTheModsAndTheirDirectory(t *testing.T) {
+	a := newApp()
+	install, profile := fakeGame(t)
+	addMod(t, profile, "snd-42", "voice.vpk")
+	addMod(t, profile, "skin-pack", "skin.vpk")
+	tt := show(t, a, install, profile)
+
+	for _, want := range []string{"snd-42", "skin-pack", install.AddonsDir(), "1 个文件 · 已停用"} {
+		if !tt.HasText(want) {
+			t.Errorf("the mods page does not show %q: %q", want, tt.Texts())
+		}
+	}
+}
+
+// An enabled mod is shown with the number the game loads it at, which is what
+// the user needs to reason about two mods touching one file.
+func TestModsPageShowsTheLoadOrderOfEnabledMods(t *testing.T) {
+	a := newApp()
+	install, profile := fakeGame(t)
+	addMod(t, profile, "snd-42", "voice.vpk")
+	if err := profile.SetEnabled("snd-42", true); err != nil {
+		t.Fatal(err)
+	}
+	tt := show(t, a, install, profile)
+
+	if !tt.HasText("pak01") {
+		t.Errorf("the mods page does not show where the mod loads: %q", tt.Texts())
+	}
+}
+
+// A mod the manifest claims but the disk does not have is called out, because
+// nothing else would tell the user why the game ignores it.
+func TestModsPageReportsAModMissingItsFiles(t *testing.T) {
+	a := newApp()
+	install, profile := fakeGame(t)
+	addMod(t, profile, "snd-42", "voice.vpk")
+	if err := os.Remove(filepath.Join(profile.Dir, "snd-42_voice.vpk")); err != nil {
+		t.Fatal(err)
+	}
+	tt := show(t, a, install, profile)
+
+	if !tt.HasText("缺少 1 个文件") {
+		t.Errorf("the mods page does not report the missing file: %q", tt.Texts())
+	}
+}
+
+func TestModsPageShowsWhyTheProfileCouldNotBeRead(t *testing.T) {
+	a := newApp()
+	install, _ := fakeGame(t)
+	a.install = install
+	a.modsErr = "reading the manifest: permission denied"
+	tt := ui.NewTester(a.view, 1280, 800)
+
+	if !tt.HasText("permission denied") {
+		t.Errorf("the mods page does not show the error: %q", tt.Texts())
+	}
+}
+
+// Flipping a switch moves the mod's files, and the list then shows what is on
+// disk rather than what was asked for.
+func TestTheSwitchEnablesAMod(t *testing.T) {
+	a := newApp()
+	install, profile := fakeGame(t)
+	addMod(t, profile, "snd-42", "voice.vpk")
+	a.install = install
+	mods, err := profile.Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.mods = mods
+
+	a.setEnabled("snd-42", true)
+	waitFor(t, "the switch to finish", func() bool { return !a.installed().reading })
+
+	if _, err := os.Stat(filepath.Join(profile.Dir, "pak01_dir.vpk")); err != nil {
+		t.Errorf("the file was not enabled: %v", err)
+	}
+	got := a.installed().list
+	if len(got) != 1 || !got[0].Enabled {
+		t.Fatalf("the list shows %+v, want the mod enabled", got)
+	}
+	if got[0].Pak != 1 {
+		t.Errorf("the mod loads at pak%02d, want pak01", got[0].Pak)
+	}
+}
+
+// Clicking a switch is what the user does, so the whole path is exercised:
+// the widget, the rename, and the list coming back.
+func TestClickingASwitchEnablesAMod(t *testing.T) {
+	a := newApp()
+	install, profile := fakeGame(t)
+	addMod(t, profile, "snd-42", "voice.vpk")
+	tt := show(t, a, install, profile)
+
+	if err := tt.Click("启用 snd-42"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the switch to finish", func() bool { return !a.installed().reading })
+
+	if _, err := os.Stat(filepath.Join(profile.Dir, "pak01_dir.vpk")); err != nil {
+		t.Errorf("clicking the switch did not enable the mod: %v", err)
+	}
+	if got := a.installed().list; len(got) != 1 || !got[0].Enabled {
+		t.Errorf("the list shows %+v, want the mod enabled", got)
+	}
+}
+
+// A switch that cannot move the files reports why, and leaves the list showing
+// the disk rather than the state the user asked for.
+func TestTheSwitchReportsWhyItCouldNotMoveTheFiles(t *testing.T) {
+	a := newApp()
+	install, profile := fakeGame(t)
+	addMod(t, profile, "snd-42", "voice.vpk")
+	// Take the file away, so the rename has nothing to move.
+	if err := os.Remove(filepath.Join(profile.Dir, "snd-42_voice.vpk")); err != nil {
+		t.Fatal(err)
+	}
+	a.install = install
+	mods, err := profile.Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.mods = mods
+
+	a.setEnabled("snd-42", true)
+	waitFor(t, "the switch to finish", func() bool { return !a.installed().reading })
+
+	if a.installed().err == "" {
+		t.Error("a switch that moved nothing reported no error")
+	}
+	if got := a.installed().list; len(got) != 1 || got[0].Enabled {
+		t.Errorf("the list shows %+v, want the mod still disabled", got)
 	}
 }
 

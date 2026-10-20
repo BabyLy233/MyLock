@@ -5,6 +5,7 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"log"
 	"strings"
 	"sync"
@@ -12,6 +13,7 @@ import (
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 
+	"github.com/BabyLy233/deadlock-mod-manager-mygo/internal/addons"
 	"github.com/BabyLy233/deadlock-mod-manager-mygo/internal/config"
 	"github.com/BabyLy233/deadlock-mod-manager-mygo/internal/game"
 )
@@ -31,13 +33,20 @@ type app struct {
 	// the main thread touches it; a goroutine is handed its value instead.
 	pathInput string
 
+	// list keeps the mod list's place and its keyboard focus across the
+	// rebuilds that a switch being flipped causes.
+	list ui.ListState
+
 	// mu guards what the lookups publish for the view to read.
 	mu       sync.Mutex
 	looking  bool
 	browsing bool
+	reading  bool
 	pinned   string
 	install  *game.Install
 	lookErr  string
+	mods     []addons.Mod
+	modsErr  string
 }
 
 // state is what the view reads about the game directory, taken in one lock.
@@ -53,6 +62,17 @@ type state struct {
 	install *game.Install
 	// lookErr is why the last lookup did not produce one, empty when it did.
 	lookErr string
+}
+
+// modsState is what the view reads about the mods of the profile, taken in one
+// lock.
+type modsState struct {
+	// list holds the mods, the enabled ones in the order the game loads them.
+	list []addons.Mod
+	// err is why the profile could not be read, empty when it could.
+	err string
+	// reading is set while a read or a switch being flipped is in flight.
+	reading bool
 }
 
 func newApp() *app {
@@ -89,21 +109,128 @@ func (a *app) sidebar(c *ui.Context) {
 	})
 }
 
-// modsPage lists the mods installed in the game. Reading them is the next
-// step; for now it says where they will come from.
+// modsPage lists the mods installed in the game, in the order the game loads
+// them, with a switch on each to turn it on or off.
 func (a *app) modsPage(c *ui.Context) {
 	t := c.Theme()
 	s := a.state()
+	mods := a.installed()
 
 	ui.Column(c).Fill().Padding(24).Gap(12).Children(func() {
 		ui.Text(c, "已安装模组").FontSize(22).Bold()
-		if s.install == nil {
+		switch {
+		case s.install == nil:
 			ui.Text(c, "还没有找到游戏目录，先到设置里指定。").TextColor(t.TextMuted)
 			return
+		case s.looking:
+			ui.Text(c, "正在读取…").TextColor(t.TextMuted)
+			return
+		case mods.err != "":
+			ui.Text(c, mods.err).TextColor(t.Danger)
+			return
+		case len(mods.list) == 0:
+			ui.Text(c, "这个目录里还没有模组。").TextColor(t.TextMuted)
+			return
 		}
-		ui.Text(c, s.install.AddonsDir()).Selectable().TextColor(t.TextMuted)
-		ui.Text(c, "读取模组列表是下一步。").TextColor(t.TextMuted)
+
+		ui.Text(c, s.install.AddonsDir()).FontSize(12).Selectable().TextColor(t.TextMuted)
+		// The list is keyed by mod id rather than by row number, so that a mod
+		// changing place as it is enabled takes its focus and its place in the
+		// scroll with it instead of handing them to whatever moved up.
+		ui.List(c, &a.list, len(mods.list)).
+			ItemKey(func(i int) any { return mods.list[i].ID }).
+			Fill().
+			Rows(func(r ui.ListRow) {
+				a.modRow(c, r, mods.list[r.Index], mods.reading)
+			})
 	})
+}
+
+// modRow is one mod: a switch, its id, and what it is made of.
+func (a *app) modRow(c *ui.Context, r ui.ListRow, mod addons.Mod, reading bool) {
+	t := c.Theme()
+	// A local copy, because the switch binds to a value the view rebuilds every
+	// pass. OnChange runs once the bound switch has written the new state into
+	// it, which is why the value is read there and not here.
+	enabled := mod.Enabled
+
+	ui.Row(c).Fill().Padding(12).Gap(12).AlignItems(ui.Center).Children(func() {
+		ui.Switch(c, &enabled).
+			// The switch shows no text of its own, so it is named for assistive
+			// technology rather than left as an unnamed control.
+			Label("启用 " + mod.ID).
+			Disabled(reading).
+			OnChange(func() {
+				a.setEnabled(mod.ID, enabled)
+			})
+		ui.Column(c).Fill().Gap(2).Children(func() {
+			ui.Text(c, mod.ID).Bold()
+			ui.Text(c, modSummary(mod)).FontSize(12).TextColor(t.TextMuted)
+			if len(mod.Missing) > 0 {
+				ui.Text(c, fmt.Sprintf("缺少 %d 个文件，游戏可能读不到它", len(mod.Missing))).
+					FontSize(12).TextColor(t.Danger)
+			}
+		})
+	})
+}
+
+// modSummary says what a mod is made of, in the terms the game loads it in.
+func modSummary(mod addons.Mod) string {
+	files := fmt.Sprintf("%d 个文件", len(mod.Vpks))
+	switch {
+	case !mod.Enabled:
+		return files + " · 已停用"
+	case mod.Pak > 0:
+		return fmt.Sprintf("%s · pak%02d · 分片 %d", files, mod.Pak, mod.Shard)
+	default:
+		return fmt.Sprintf("%s · 分片 %d", files, mod.Shard)
+	}
+}
+
+// installed reads what the last read of the profile found.
+func (a *app) installed() modsState {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return modsState{list: a.mods, err: a.modsErr, reading: a.reading}
+}
+
+// setEnabled turns a mod on or off. It moves files, so it runs off the main
+// thread, and it reads the profile back afterwards rather than assuming the
+// change took: the list then shows what is on disk.
+func (a *app) setEnabled(id string, on bool) {
+	a.mu.Lock()
+	// One switch at a time: two of them moving files at once would race over
+	// the same manifest. Nothing to switch without a game directory either.
+	install := a.install
+	busy := install == nil || a.reading
+	if !busy {
+		a.reading = true
+	}
+	a.mu.Unlock()
+	if busy {
+		return
+	}
+	a.invalidate()
+
+	go func() {
+		profile := addons.Open(install.AddonsDir())
+		switchErr := profile.SetEnabled(id, on)
+		// Read back whatever the profile holds now, whether the switch worked
+		// or not: after a failure the list should show the disk, not the state
+		// the user asked for.
+		mods, readErr := profile.Read()
+
+		var message string
+		if err := errors.Join(switchErr, readErr); err != nil {
+			message = err.Error()
+		}
+		a.publish(func() {
+			a.mu.Lock()
+			defer a.mu.Unlock()
+			a.reading = false
+			a.mods, a.modsErr = mods, message
+		})
+	}()
 }
 
 func (a *app) settingsPage(c *ui.Context) {
@@ -295,6 +422,19 @@ func (a *app) look(pinned string, remember bool, warn error) {
 			saveErr = a.saveSettings(pinned)
 		}
 
+		// The mods are read in the same pass as the game directory is found,
+		// so that a change of directory shows its mods in one step rather than
+		// leaving the list of the old one up.
+		var mods []addons.Mod
+		var modsErr string
+		if lookErr == nil {
+			var readErr error
+			mods, readErr = addons.Open(install.AddonsDir()).Read()
+			if readErr != nil {
+				modsErr = readErr.Error()
+			}
+		}
+
 		// errors.Join keeps the ones that are not nil, and returns nil when
 		// they all are.
 		var message string
@@ -307,6 +447,7 @@ func (a *app) look(pinned string, remember bool, warn error) {
 			defer a.mu.Unlock()
 			a.looking = false
 			a.lookErr = message
+			a.mods, a.modsErr = mods, modsErr
 			if lookErr != nil {
 				return
 			}
