@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -91,6 +92,23 @@ func TestSidebarNavigates(t *testing.T) {
 	}
 }
 
+// gameInfoFile is gameinfo.gi as the game ships it: the section the app has to
+// write the mod directories into, among the rest of the file.
+const gameInfoFile = `"GameInfo"
+{
+	game		"Citadel"
+	FileSystem
+	{
+		SearchPaths
+		{
+			Game		citadel
+			Mod		core
+			Write		core
+		}
+	}
+}
+`
+
 // fakeGame makes a Deadlock installation with an empty profile, and returns
 // both, so a test can put mods in it.
 func fakeGame(t *testing.T) (*game.Install, addons.Profile) {
@@ -100,7 +118,7 @@ func fakeGame(t *testing.T) (*game.Install, addons.Profile) {
 	if err := os.MkdirAll(addonsDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(gamePath, "game", "citadel", "gameinfo.gi"), []byte("// gameinfo\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(gamePath, "game", "citadel", "gameinfo.gi"), []byte(gameInfoFile), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	return &game.Install{GamePath: gamePath}, addons.Open(addonsDir)
@@ -264,6 +282,123 @@ func TestClickingASwitchEnablesAMod(t *testing.T) {
 	}
 	if got := a.installed().list; len(got) != 1 || !got[0].Enabled {
 		t.Errorf("the list shows %+v, want the mod enabled", got)
+	}
+}
+
+// Enabled mods the game is not set up to load are the one thing the list cannot
+// show by itself, and the one thing a game update causes without any other
+// sign.
+func TestModsPageWarnsWhenTheGameIsNotSetUp(t *testing.T) {
+	a := newApp()
+	install, profile := fakeGame(t)
+	addMod(t, profile, "snd-42", "voice.vpk")
+	if err := profile.SetEnabled("snd-42", true); err != nil {
+		t.Fatal(err)
+	}
+	tt := show(t, a, install, profile)
+
+	if !tt.HasText("不会生效") {
+		t.Errorf("the mods page does not warn that the game will not load them: %q", tt.Texts())
+	}
+}
+
+func TestModsPageSaysNothingWhenTheGameIsSetUp(t *testing.T) {
+	a := newApp()
+	install, profile := fakeGame(t)
+	addMod(t, profile, "snd-42", "voice.vpk")
+	if err := profile.SetEnabled("snd-42", true); err != nil {
+		t.Fatal(err)
+	}
+	a.install = install
+	a.gameInfo = game.GameInfo{ModPaths: true}
+	mods, err := profile.Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.mods = mods
+	tt := ui.NewTester(a.view, 1280, 800)
+
+	if tt.HasText("不会生效") {
+		t.Errorf("the mods page warns about a game that is set up: %q", tt.Texts())
+	}
+}
+
+func TestSettingsShowsTheGameConfiguration(t *testing.T) {
+	a := newApp()
+	install, profile := fakeGame(t)
+	a.install = install
+	a.router.Push("/settings")
+	tt := ui.NewTester(a.view, 1280, 800)
+
+	if !tt.HasText("还没应用") {
+		t.Errorf("the settings page does not say the game is not set up: %q", tt.Texts())
+	}
+
+	_ = profile
+	a.gameInfo = game.GameInfo{ModPaths: true, Markers: true, Path: install.GameInfoPath()}
+	tt.Frame()
+	if !tt.HasText("已应用") {
+		t.Errorf("the settings page does not say the game is set up: %q", tt.Texts())
+	}
+	if !tt.HasText(install.GameInfoPath()) {
+		t.Errorf("the settings page does not name the file: %q", tt.Texts())
+	}
+}
+
+// Applying is what the user does after a game update has taken the mod
+// directories back out of the game's configuration.
+func TestApplyingWritesTheSearchPaths(t *testing.T) {
+	a := newApp()
+	install, _ := fakeGame(t)
+	a.install = install
+	a.router.Push("/settings")
+	tt := ui.NewTester(a.view, 1280, 800)
+
+	if err := tt.Click("应用模组路径"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the patch to finish", func() bool { return !a.state().patching })
+
+	data, err := os.ReadFile(install.GameInfoPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"// Deadlock Mod Manager - Start",
+		"// Deadlock Mod Manager - End",
+		"Game                citadel/addons",
+	} {
+		if !strings.Contains(string(data), want) {
+			t.Errorf("gameinfo.gi does not hold %q:\n%s", want, data)
+		}
+	}
+	if !a.state().gameInfo.ModPaths {
+		t.Error("the app does not report the game as set up")
+	}
+}
+
+// A mod enabled into a shard the game was not searching would sit there doing
+// nothing, so the game's configuration follows every change.
+func TestEnablingAModUpdatesTheGameConfiguration(t *testing.T) {
+	a := newApp()
+	install, profile := fakeGame(t)
+	addMod(t, profile, "snd-42", "voice.vpk")
+	tt := show(t, a, install, profile)
+
+	if err := tt.Click("启用 snd-42"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the switch to finish", func() bool { return !a.installed().reading })
+
+	data, err := os.ReadFile(install.GameInfoPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "Game                citadel/addons") {
+		t.Errorf("enabling a mod left the game not searching its directory:\n%s", data)
+	}
+	if !a.state().gameInfo.ModPaths {
+		t.Error("the app does not report the game as set up")
 	}
 }
 

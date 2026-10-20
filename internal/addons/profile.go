@@ -55,6 +55,67 @@ func (p Profile) ShardDir(shard uint32) string {
 	return filepath.Join(root, p.Folder)
 }
 
+// SearchPaths returns the directories under citadel the game has to search to
+// load this profile's mods: one per shard in use, the first always among them,
+// in the order the game searches them.
+//
+// This is what goes into gameinfo.gi. A shard nothing is in is left out rather
+// than searched for nothing on every load, and a shard is kept in when the
+// directory holds files the manifest does not name, so that enabled files are
+// never left somewhere the game does not look.
+func (p Profile) SearchPaths() ([]string, error) {
+	m, err := Load(p.ManifestPath())
+	if err != nil {
+		return nil, err
+	}
+
+	highest := uint32(FirstShard)
+	for _, entry := range m.Mods {
+		if entry.Enabled && len(entry.CurrentVpks) > 0 && entry.Shard <= MaxShards {
+			highest = max(highest, entry.Shard)
+		}
+	}
+	for shard := uint32(FirstShard + 1); shard <= MaxShards; shard++ {
+		if p.hasEnabledVpks(shard) {
+			highest = max(highest, shard)
+		}
+	}
+
+	paths := make([]string, 0, highest)
+	for shard := uint32(FirstShard); shard <= highest; shard++ {
+		paths = append(paths, p.searchPath(shard))
+	}
+	return paths, nil
+}
+
+// searchPath is the directory one shard is loaded from, as the game names it in
+// gameinfo.gi.
+func (p Profile) searchPath(shard uint32) string {
+	root := "citadel/addons"
+	if shard > FirstShard {
+		root = fmt.Sprintf("citadel/addons%d", shard)
+	}
+	if p.Folder == "" {
+		return root
+	}
+	return root + "/" + p.Folder
+}
+
+// hasEnabledVpks reports whether a shard directory holds files the game would
+// load.
+func (p Profile) hasEnabledVpks(shard uint32) bool {
+	entries, err := os.ReadDir(p.ShardDir(shard))
+	if err != nil {
+		return false
+	}
+	for _, entry := range entries {
+		if pakNumber(entry.Name()) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
 // Mod is one mod of a profile.
 type Mod struct {
 	// ID is the mod's key in the manifest.
