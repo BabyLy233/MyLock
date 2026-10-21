@@ -3,6 +3,7 @@ package main
 import (
 	"time"
 
+	"github.com/BabyLy233/mylock/internal/addons"
 	"github.com/BabyLy233/mylock/internal/game"
 )
 
@@ -48,7 +49,7 @@ func (a *app) observeGame(running bool) {
 	// been seen, the game being gone is the session ending -- including one
 	// that ended while the app was closed.
 	restore := a.vanillaPending && a.vanillaSeen && !running
-	install := a.install
+	install, folder := a.install, a.profileFolder
 	if restore {
 		// Forgotten before the write rather than after it, so that a look
 		// landing while that write is in flight cannot start a second one.
@@ -68,7 +69,7 @@ func (a *app) observeGame(running bool) {
 		// and no longer worth remembering.
 		a.rememberSession()
 	case restore:
-		a.restoreMods(install)
+		a.restoreMods(install, profileFor(install, folder))
 		a.rememberSession()
 	}
 
@@ -80,8 +81,8 @@ func (a *app) observeGame(running bool) {
 // restoreMods puts the current profile's search paths back into the game's
 // configuration after a session without mods has ended, so that the next
 // launch, from the app or from Steam, loads them again.
-func (a *app) restoreMods(install *game.Install) {
-	info, err := a.patchGameInfo(install)
+func (a *app) restoreMods(install *game.Install, profile addons.Profile) {
+	info, err := a.patchGameInfo(install, profile)
 
 	a.publish(func() {
 		a.mu.Lock()

@@ -27,6 +27,9 @@ type Config struct {
 	// GamePath is the Deadlock directory the user picked, empty when the app
 	// detects the game through Steam instead.
 	GamePath string `json:"gamePath,omitempty"`
+	// ProfileFolder is the folder of the profile in use under citadel/addons,
+	// empty for the default profile, which is that directory itself.
+	ProfileFolder string `json:"profileFolder,omitempty"`
 	// Theme is the appearance to run in: "system", "light" or "dark". Empty is
 	// the system's, which is what a first run gets.
 	Theme string `json:"theme,omitempty"`
@@ -111,7 +114,7 @@ func writeFile(path string, data []byte) error {
 		return fmt.Errorf("creating %s: %w", dir, err)
 	}
 
-	tmp, err := os.CreateTemp(dir, fileName+".*")
+	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".*")
 	if err != nil {
 		return fmt.Errorf("writing %s: %w", path, err)
 	}

@@ -43,6 +43,14 @@ type app struct {
 	// deleteAsk is the mod the confirmation dialog is open for, empty when it
 	// is closed. Only the main thread touches it.
 	deleteAsk string
+	// profilesOpen is whether the profile manager is open, newProfileOpen the
+	// dialog for a new one, and profileDeleteAsk the folder whose deletion is
+	// being confirmed. Only the main thread touches them.
+	profilesOpen     bool
+	newProfileOpen   bool
+	profileDeleteAsk string
+	newProfileName   string
+	newProfileDesc   string
 
 	// catalogue reads GameBanana, which is where the store's mods come from.
 	catalogue *gb.Client
@@ -64,23 +72,34 @@ type app struct {
 	// settingsMu keeps one write of the settings file at a time: a launch and
 	// a path change can both save, and the file is replaced whole.
 	settingsMu sync.Mutex
+	// profilesMu does the same for the profiles file, which a scan, a switch
+	// and a deletion can all write.
+	profilesMu sync.Mutex
 	// gameinfoMu keeps one read of the profile and write of the game's
 	// configuration together: a switch and a session's mods being put back can
 	// both do it, and the paths the later write puts down must be the profile
 	// as it is then.
-	gameinfoMu  sync.Mutex
-	theme       mygo.ThemeSource
-	looking     bool
-	browsing    bool
-	reading     bool
-	patching    bool
-	pinned      string
-	install     *game.Install
-	lookErr     string
-	mods        []addons.Mod
-	modsErr     string
-	gameInfo    game.GameInfo
-	gameInfoErr string
+	gameinfoMu sync.Mutex
+	theme      mygo.ThemeSource
+	looking    bool
+	browsing   bool
+	reading    bool
+	patching   bool
+	pinned     string
+	install    *game.Install
+	lookErr    string
+	mods       []addons.Mod
+	modsErr    string
+	// profiles are the named profiles beside the default one, and
+	// profileFolder is the one in use, empty for the default profile.
+	// profilePresent is which folders the last scan found on disk, so a
+	// profile whose folder has gone is shown as missing rather than dropped.
+	profiles       []config.Profile
+	profileFolder  string
+	profilePresent map[string]bool
+	profilesErr    string
+	gameInfo       game.GameInfo
+	gameInfoErr    string
 	// The launch in flight, if there is one: why it could not be started, and
 	// what came of the last one that was.
 	launching bool
@@ -238,11 +257,23 @@ func (a *app) modsPage(c *ui.Context) {
 	t := c.Theme()
 	s := a.state()
 	mods := a.installed()
+	profiles := a.profileStateNow()
 
 	a.deleteDialog(c)
+	a.profilesDialog(c)
+	a.newProfileDialog(c)
+	a.profileDeleteDialog(c)
 
 	ui.Column(c).Fill().Padding(24).Gap(12).Children(func() {
-		ui.Text(c, "已安装模组").FontSize(22).Bold()
+		ui.Row(c).Fill().Gap(12).AlignItems(ui.Center).Children(func() {
+			ui.Text(c, "已安装模组").FontSize(22).Bold()
+			ui.Spacer(c)
+			ui.Text(c, "配置档："+profileDisplayName(profiles.folder, profiles.profiles)).
+				FontSize(12).TextColor(t.TextMuted)
+			ui.Button(c, "切换 / 管理…").
+				Disabled(s.install == nil || s.looking).
+				OnClick(a.openProfiles)
+		})
 		// Above the list rather than below it: starting the game is what the
 		// page is for, and it is the one thing here that is about the game
 		// rather than about one of the mods.
@@ -270,6 +301,9 @@ func (a *app) modsPage(c *ui.Context) {
 		}
 		if s.blocked != "" {
 			ui.Text(c, s.blocked).FontSize(12).TextColor(t.Danger)
+		}
+		if profiles.err != "" {
+			ui.Text(c, profiles.err).FontSize(12).TextColor(t.Danger)
 		}
 		// Enabled mods that the game is not set up to load are the one thing
 		// the list cannot show by itself, and the one thing a game update
@@ -381,7 +415,7 @@ func (a *app) setEnabled(id string, on bool) {
 	a.mu.Lock()
 	// One switch at a time: two of them moving files at once would race over
 	// the same manifest. Nothing to switch without a game directory either.
-	install := a.install
+	install, folder := a.install, a.profileFolder
 	busy := install == nil || a.reading
 	if !busy {
 		a.reading = true
@@ -406,7 +440,7 @@ func (a *app) setEnabled(id string, on bool) {
 			return
 		}
 
-		profile := addons.Open(install.AddonsDir())
+		profile := profileFor(install, folder)
 		switchErr := profile.SetEnabled(id, on)
 		// Read back whatever the profile holds now, whether the switch worked
 		// or not: after a failure the list should show the disk, not the state
@@ -417,7 +451,7 @@ func (a *app) setEnabled(id string, on bool) {
 		// doing nothing, so the game's configuration follows every change.
 		info, infoErr := game.GameInfo{}, error(nil)
 		if switchErr == nil {
-			info, infoErr = a.patchGameInfo(install)
+			info, infoErr = a.patchGameInfo(install, profile)
 		}
 
 		var message string
@@ -456,7 +490,7 @@ func (a *app) removeMod(id string) {
 	a.mu.Lock()
 	// The same one-operation-at-a-time rule as a switch: both write the
 	// manifest and move files.
-	install := a.install
+	install, folder := a.install, a.profileFolder
 	busy := install == nil || a.reading
 	if !busy {
 		a.reading = true
@@ -480,7 +514,7 @@ func (a *app) removeMod(id string) {
 			return
 		}
 
-		profile := addons.Open(install.AddonsDir())
+		profile := profileFor(install, folder)
 		removeErr := profile.Remove(id)
 		// The list shows the disk after this either way: a deletion that
 		// failed partway still leaves the manifest and the files to report.
@@ -491,7 +525,7 @@ func (a *app) removeMod(id string) {
 		// follows every change, as it does a switch.
 		info, infoErr := game.GameInfo{}, error(nil)
 		if removeErr == nil {
-			info, infoErr = a.patchGameInfo(install)
+			info, infoErr = a.patchGameInfo(install, profile)
 		}
 
 		var message string
@@ -526,8 +560,8 @@ func (a *app) removeMod(id string) {
 // is what the user does after a game update has taken them out again.
 func (a *app) applyGameInfo() {
 	a.mu.Lock()
-	install := a.install
-	busy := install == nil || a.patching
+	install, folder := a.install, a.profileFolder
+	busy := install == nil || a.patching || a.reading
 	if !busy {
 		a.patching = true
 	}
@@ -548,7 +582,7 @@ func (a *app) applyGameInfo() {
 			return
 		}
 
-		info, err := a.patchGameInfo(install)
+		info, err := a.patchGameInfo(install, profileFor(install, folder))
 		var message string
 		if err != nil {
 			message = err.Error()
@@ -572,21 +606,21 @@ func (a *app) applyGameInfo() {
 	}()
 }
 
-// patchGameInfo tells the game to search the directories this profile's mods
+// patchGameInfo tells the game to search the directories the profile's mods
 // are in, and reports what state that left the configuration in. It reads and
 // writes the game's own files, so it runs off the main thread, and the read of
 // the profile and the write of the file are kept together: two of them at once
 // could leave the file naming a set of paths that misses a mod switched on in
 // between.
-func (a *app) patchGameInfo(install *game.Install) (game.GameInfo, error) {
+func (a *app) patchGameInfo(install *game.Install, profile addons.Profile) (game.GameInfo, error) {
 	a.gameinfoMu.Lock()
 	defer a.gameinfoMu.Unlock()
-	return patchGameInfo(install)
+	return patchGameInfo(install, profile)
 }
 
 // patchGameInfo is the write itself, without the lock this app's callers take.
-func patchGameInfo(install *game.Install) (game.GameInfo, error) {
-	paths, err := addons.Open(install.AddonsDir()).SearchPaths()
+func patchGameInfo(install *game.Install, profile addons.Profile) (game.GameInfo, error) {
+	paths, err := profile.SearchPaths()
 	if err != nil {
 		return game.GameInfo{}, err
 	}
@@ -846,6 +880,16 @@ func (a *app) start(cfg config.Config, cfgErr error) {
 	// A session the app was following when it last ended is picked up again,
 	// whether its game is still running or has closed in the meantime.
 	a.vanillaPending, a.vanillaSeen = cfg.VanillaPending, cfg.VanillaSeen
+	a.profileFolder = cfg.ProfileFolder
+	// The named profiles are read before the lookup starts, so that the first
+	// frame already names the profile in use.
+	if path := config.ProfilesPath(a.configPath); path != "" {
+		book, err := config.LoadProfiles(path)
+		a.profiles = book.Profiles
+		if err != nil {
+			a.profilesErr = err.Error()
+		}
+	}
 	if cfgErr != nil {
 		// The directory the user chose last time is not in effect, so the app
 		// detects the game instead, and says why.
@@ -934,6 +978,10 @@ func (a *app) browse(from string) {
 func (a *app) look(pinned string, remember bool, warn error) {
 	a.mu.Lock()
 	a.looking, a.lookErr = true, ""
+	// The profile is fixed here rather than read again after the lookup: a
+	// switch that lands in between must not make this read the mods of one
+	// profile and publish them as the other's.
+	folder := a.profileFolder
 	a.mu.Unlock()
 	a.invalidate()
 
@@ -952,14 +1000,28 @@ func (a *app) look(pinned string, remember bool, warn error) {
 		var modsErr string
 		var info game.GameInfo
 		var infoErr string
+		var profiles []config.Profile
+		var present map[string]bool
+		var profilesErr string
+		scanned := false
 		if lookErr == nil {
 			var readErr error
-			mods, readErr = addons.Open(install.AddonsDir()).Read()
+			mods, readErr = profileFor(install, folder).Read()
 			if readErr != nil {
 				modsErr = readErr.Error()
 			}
 			if info, readErr = install.ReadGameInfo(); readErr != nil {
 				infoErr = readErr.Error()
+			}
+			if list, found, changed, err := a.scanProfiles(install); err != nil {
+				profilesErr = err.Error()
+			} else {
+				profiles, present, scanned = list, found, true
+				if changed {
+					if err := a.saveProfiles(profiles); err != nil {
+						profilesErr = err.Error()
+					}
+				}
 			}
 		}
 
@@ -975,10 +1037,20 @@ func (a *app) look(pinned string, remember bool, warn error) {
 			defer a.mu.Unlock()
 			a.looking = false
 			a.lookErr = message
-			a.mods, a.modsErr = mods, modsErr
+			// A switch that landed while the lookup ran has already put its
+			// own mods and profile in place, and is newer than this read.
+			if a.profileFolder == folder {
+				a.mods, a.modsErr = mods, modsErr
+			}
 			a.gameInfo, a.gameInfoErr = info, infoErr
 			if lookErr != nil {
 				return
+			}
+			if scanned {
+				a.profiles, a.profilePresent = profiles, present
+				a.profilesErr = profilesErr
+			} else if profilesErr != "" {
+				a.profilesErr = profilesErr
 			}
 			a.pinned, a.install = pinned, install
 		})
@@ -986,10 +1058,21 @@ func (a *app) look(pinned string, remember bool, warn error) {
 }
 
 // saveSettings remembers the directory to use from now on, "" to detect the
-// game through Steam, and the appearance. It writes a file, so it runs off the
-// main thread; the appearance is read here, in one lock, because the settings
-// page can change it while this runs.
+// game through Steam, the profile in use and the appearance. It writes a file,
+// so it runs off the main thread; the values are read here, in one lock,
+// because the settings page and a switch can change them while this runs.
 func (a *app) saveSettings(pinned string) error {
+	a.mu.Lock()
+	folder := a.profileFolder
+	a.mu.Unlock()
+	return a.saveSettingsFor(pinned, folder)
+}
+
+// saveSettingsFor is saveSettings for a profile that may not be the one in
+// a.profileFolder yet, which is what a switch writes: the file has to name the
+// new profile before the window does, or a frame in between would save the old
+// one over it.
+func (a *app) saveSettingsFor(pinned, folder string) error {
 	if a.configPath == "" {
 		return nil
 	}
@@ -999,6 +1082,7 @@ func (a *app) saveSettings(pinned string) error {
 	a.mu.Lock()
 	cfg := config.Config{
 		GamePath:       pinned,
+		ProfileFolder:  folder,
 		Theme:          string(a.theme),
 		VanillaPending: a.vanillaPending,
 		VanillaSeen:    a.vanillaSeen,

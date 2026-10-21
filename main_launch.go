@@ -6,6 +6,7 @@ import (
 
 	"github.com/egoist/mygo/ui"
 
+	"github.com/BabyLy233/mylock/internal/addons"
 	"github.com/BabyLy233/mylock/internal/game"
 )
 
@@ -69,7 +70,7 @@ func (a *app) launchRow(c *ui.Context, s state) {
 // another process's, so it runs off the main thread.
 func (a *app) launch(vanilla bool) {
 	a.mu.Lock()
-	install := a.install
+	install, folder := a.install, a.profileFolder
 	// One launch at a time, and none while the mods are being switched: two
 	// writers of the game's configuration would leave whichever finished last
 	// to say what the game loads.
@@ -94,7 +95,7 @@ func (a *app) launch(vanilla bool) {
 		if a.isGameRunning() {
 			err = errors.New("游戏正在运行，先退出游戏再启动。")
 		} else {
-			info, err = a.prepareLaunch(install, vanilla)
+			info, err = a.prepareLaunch(install, profileFor(install, folder), vanilla)
 			if err == nil {
 				err = install.Launch()
 			}
@@ -142,14 +143,14 @@ func (a *app) launch(vanilla bool) {
 // prepareLaunch writes the game's configuration for a launch, and reports what
 // state that left it in. The write is one at a time with the switches and the
 // settings page's button, which write the same file.
-func (a *app) prepareLaunch(install *game.Install, vanilla bool) (game.GameInfo, error) {
+func (a *app) prepareLaunch(install *game.Install, profile addons.Profile, vanilla bool) (game.GameInfo, error) {
 	a.gameinfoMu.Lock()
 	defer a.gameinfoMu.Unlock()
 
 	// A launch with mods writes what the settings page's button writes, and
 	// reports the state it left behind in the same way.
 	if !vanilla {
-		return patchGameInfo(install)
+		return patchGameInfo(install, profile)
 	}
 	if _, err := install.PatchGameInfoVanilla(); err != nil {
 		return game.GameInfo{}, err

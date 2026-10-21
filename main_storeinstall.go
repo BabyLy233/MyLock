@@ -282,7 +282,7 @@ func humanSize(n int64) string {
 func (s *store) install(mod gb.Submission, file gb.File) {
 	a := s.app
 	a.mu.Lock()
-	install, running := a.install, a.gameRunning
+	install, folder, running := a.install, a.profileFolder, a.gameRunning
 	a.mu.Unlock()
 	if install == nil {
 		s.failed("先到设置里指定游戏目录，再安装模组。")
@@ -305,7 +305,7 @@ func (s *store) install(mod gb.Submission, file gb.File) {
 	a.invalidate()
 
 	go func() {
-		err := s.fetch(a, install, mod, file)
+		err := s.fetch(a, install, profileFor(install, folder), mod, file)
 		s.mu.Lock()
 		s.installing = ""
 		if err != nil {
@@ -320,7 +320,7 @@ func (s *store) install(mod gb.Submission, file gb.File) {
 
 // fetch is the install itself, from the download to the game being told where
 // the mods are.
-func (s *store) fetch(a *app, install *game.Install, mod gb.Submission, file gb.File) error {
+func (s *store) fetch(a *app, install *game.Install, profile addons.Profile, mod gb.Submission, file gb.File) error {
 	// Everything the download and the unpacking write goes in a directory of
 	// its own, which is thrown away whatever happens: an archive is a stranger's
 	// and nothing it holds outlives the install.
@@ -373,7 +373,6 @@ func (s *store) fetch(a *app, install *game.Install, mod gb.Submission, file gb.
 		return fmt.Errorf("游戏正在运行，先退出游戏再安装模组。")
 	}
 
-	profile := addons.Open(install.AddonsDir())
 	if err := profile.Install(mod.Slug(), files); err != nil {
 		return err
 	}
@@ -385,9 +384,17 @@ func (s *store) fetch(a *app, install *game.Install, mod gb.Submission, file gb.
 	}
 
 	// The game is told where the mods are, and the list is read back rather
-	// than assumed: what the mods page shows is then what is on disk.
-	info, infoErr := a.patchGameInfo(install)
-	mods, readErr := profile.Read()
+	// than assumed: what the mods page shows is then what is on disk. A switch
+	// can land while the download runs, which moves neither the files just
+	// written nor the game's configuration: the game and the list belong to
+	// the profile in use now, and the install is found when the user switches
+	// back.
+	a.mu.Lock()
+	active := a.profileFolder
+	a.mu.Unlock()
+	inUse := profileFor(install, active)
+	info, infoErr := a.patchGameInfo(install, inUse)
+	mods, readErr := inUse.Read()
 
 	var forgot bool
 	a.publish(func() {

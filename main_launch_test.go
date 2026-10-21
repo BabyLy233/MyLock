@@ -54,7 +54,7 @@ func launchable(t *testing.T) (*app, *game.Install, ui.Tester) {
 	}
 	// The game as the app finds it: set up to load the mods, which is what the
 	// page reads before either launch is tried.
-	info, err := patchGameInfo(install)
+	info, err := patchGameInfo(install, profile)
 	if err != nil {
 		t.Fatal(err)
 	}
