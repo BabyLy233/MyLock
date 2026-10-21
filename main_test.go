@@ -443,6 +443,124 @@ func TestTheSwitchReportsWhyItCouldNotMoveTheFiles(t *testing.T) {
 	}
 }
 
+// Deleting is irreversible, so the row's button asks first; canceling leaves
+// the mod and its files exactly where they were.
+func TestDeletingAModAsksFirstAndRemovesIt(t *testing.T) {
+	a := newApp()
+	install, profile := fakeGame(t)
+	addMod(t, profile, "snd-42", "voice.vpk")
+	tt := show(t, a, install, profile)
+
+	if err := tt.Click("删除 snd-42"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if !tt.HasText("删除“snd-42”？") {
+		t.Errorf("clicking 删除 did not ask first: %q", tt.Texts())
+	}
+
+	if err := tt.Click("取消"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if got := a.installed().list; len(got) != 1 {
+		t.Errorf("canceling took the mod away: %+v", got)
+	}
+	if _, err := os.Stat(filepath.Join(profile.Dir, "snd-42_voice.vpk")); err != nil {
+		t.Errorf("canceling took the mod's files away: %v", err)
+	}
+
+	if err := tt.Click("删除 snd-42"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if err := tt.Click("确认删除"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the mod to be deleted", func() bool { return !a.installed().reading })
+
+	if got := a.installed().list; len(got) != 0 {
+		t.Errorf("the deleted mod is still listed: %+v", got)
+	}
+	if _, err := os.Stat(filepath.Join(profile.Dir, "snd-42_voice.vpk")); err == nil {
+		t.Error("the deleted mod's files are still on disk")
+	}
+	tt.Frame()
+	if !tt.HasText("这个目录里还没有模组。") {
+		t.Errorf("the page does not show the empty state after the deletion: %q", tt.Texts())
+	}
+}
+
+// A deletion is a change to the profile like any other, so the game's
+// configuration follows it: a shard that is left empty need not be searched.
+func TestDeletingAnEnabledModUpdatesTheGameConfiguration(t *testing.T) {
+	a := newApp()
+	install, profile := fakeGame(t)
+	addMod(t, profile, "snd-42", "voice.vpk")
+	if err := profile.SetEnabled("snd-42", true); err != nil {
+		t.Fatal(err)
+	}
+	tt := show(t, a, install, profile)
+
+	if err := tt.Click("删除 snd-42"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if err := tt.Click("确认删除"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the mod to be deleted", func() bool { return !a.installed().reading })
+
+	data, err := os.ReadFile(install.GameInfoPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "Game                citadel/addons") {
+		t.Errorf("deleting a mod left the game not searching its directory:\n%s", data)
+	}
+	if !a.state().gameInfo.ModPaths {
+		t.Error("the app does not report the game as set up")
+	}
+}
+
+// The game holds a mod's files while it runs, so a deletion that was already
+// asked for is refused where it would happen.
+func TestDeletingAModIsRefusedWhileTheGameRuns(t *testing.T) {
+	a := newApp()
+	install, profile := fakeGame(t)
+	addMod(t, profile, "snd-42", "voice.vpk")
+	a.install = install
+	mods, err := profile.Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.mods = mods
+	a.running = func() bool { return true }
+	a.observeGame(true)
+	tt := show(t, a, install, profile)
+
+	// The page does not offer it either: a disabled button takes no click.
+	if err := tt.Click("删除 snd-42"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if tt.HasText("删除“snd-42”？") {
+		t.Errorf("the page offered to delete a mod while the game was running: %q", tt.Texts())
+	}
+
+	a.removeMod("snd-42")
+	waitFor(t, "the refused deletion", func() bool {
+		return !a.installed().reading && a.state().blocked != ""
+	})
+
+	if got := a.installed().list; len(got) != 1 {
+		t.Errorf("the mod was deleted while the game was running: %+v", got)
+	}
+	if _, err := os.Stat(filepath.Join(profile.Dir, "snd-42_voice.vpk")); err != nil {
+		t.Errorf("the mod's files were taken while the game was running: %v", err)
+	}
+}
+
 func TestSettingsShowsTheInstall(t *testing.T) {
 	a := newApp()
 	a.install = &game.Install{

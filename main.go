@@ -40,6 +40,9 @@ type app struct {
 	// list keeps the mod list's place and its keyboard focus across the
 	// rebuilds that a switch being flipped causes.
 	list ui.ListState
+	// deleteAsk is the mod the confirmation dialog is open for, empty when it
+	// is closed. Only the main thread touches it.
+	deleteAsk string
 
 	// catalogue reads GameBanana, which is where the store's mods come from.
 	catalogue *gb.Client
@@ -236,6 +239,8 @@ func (a *app) modsPage(c *ui.Context) {
 	s := a.state()
 	mods := a.installed()
 
+	a.deleteDialog(c)
+
 	ui.Column(c).Fill().Padding(24).Gap(12).Children(func() {
 		ui.Text(c, "已安装模组").FontSize(22).Bold()
 		// Above the list rather than below it: starting the game is what the
@@ -311,7 +316,31 @@ func (a *app) modRow(c *ui.Context, r ui.ListRow, mod addons.Mod, reading bool) 
 					FontSize(12).TextColor(t.Danger)
 			}
 		})
+		// The id is in the label as well as the name, because a row's button
+		// reads just 删除 and the dialog has to say which mod it will take.
+		ui.Button(c, "删除").
+			Label("删除 " + mod.ID).
+			Disabled(reading).
+			OnClick(func() { a.deleteAsk = mod.ID })
 	})
+}
+
+// deleteDialog asks before a mod is deleted, which takes its files with it and
+// cannot be undone. It is drawn only while a row has asked for it.
+func (a *app) deleteDialog(c *ui.Context) {
+	if a.deleteAsk == "" {
+		return
+	}
+	id := a.deleteAsk
+	open := true
+	switch ui.AlertDialog(c, &open, "删除“"+id+"”？",
+		"这个模组的文件会从模组目录里删掉，不能撤销。", "取消", "确认删除") {
+	case 0, ui.AlertDismissed:
+		a.deleteAsk = ""
+	case 1:
+		a.deleteAsk = ""
+		a.removeMod(id)
+	}
 }
 
 // enabledCount is how many of the mods the game is meant to be loading.
@@ -406,6 +435,80 @@ func (a *app) setEnabled(id string, on bool) {
 			a.blocked = ""
 			a.mods, a.modsErr = mods, message
 			if switchErr == nil {
+				a.gameInfo, a.gameInfoErr = info, infoMessage
+				// This wrote the mod paths, so it is no longer a launch
+				// without mods the app is waiting on.
+				forgot = a.clearVanillaSession()
+			}
+			a.mu.Unlock()
+			if forgot {
+				a.rememberSession()
+			}
+		})
+	}()
+}
+
+// removeMod deletes a mod's files and its manifest entry, which is the way
+// back from installing one by mistake. It cannot be undone, so the view asks
+// before it gets here. Like a switch, it runs off the main thread and reads the
+// profile back afterwards.
+func (a *app) removeMod(id string) {
+	a.mu.Lock()
+	// The same one-operation-at-a-time rule as a switch: both write the
+	// manifest and move files.
+	install := a.install
+	busy := install == nil || a.reading
+	if !busy {
+		a.reading = true
+	}
+	a.mu.Unlock()
+	if busy {
+		return
+	}
+	a.invalidate()
+
+	go func() {
+		// The game can start between the last look at the process list and
+		// this, and it holds the files that are about to go.
+		if a.isGameRunning() {
+			a.publish(func() {
+				a.mu.Lock()
+				a.reading = false
+				a.blocked = "游戏正在运行，先退出游戏再装卸模组。"
+				a.mu.Unlock()
+			})
+			return
+		}
+
+		profile := addons.Open(install.AddonsDir())
+		removeErr := profile.Remove(id)
+		// The list shows the disk after this either way: a deletion that
+		// failed partway still leaves the manifest and the files to report.
+		mods, readErr := profile.Read()
+
+		// Deleting a mod can leave a shard with nothing in it, and a shard the
+		// game is still searching is harmless but untidy. The configuration
+		// follows every change, as it does a switch.
+		info, infoErr := game.GameInfo{}, error(nil)
+		if removeErr == nil {
+			info, infoErr = a.patchGameInfo(install)
+		}
+
+		var message string
+		if err := errors.Join(removeErr, readErr); err != nil {
+			message = err.Error()
+		}
+		var infoMessage string
+		if infoErr != nil {
+			infoMessage = infoErr.Error()
+		}
+		var forgot bool
+		a.publish(func() {
+			a.mu.Lock()
+			a.reading = false
+			a.blocked = ""
+			a.mods, a.modsErr = mods, message
+			if removeErr == nil {
 				a.gameInfo, a.gameInfoErr = info, infoMessage
 				// This wrote the mod paths, so it is no longer a launch
 				// without mods the app is waiting on.
