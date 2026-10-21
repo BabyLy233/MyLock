@@ -114,7 +114,8 @@ func (s *store) viewerPanel(c *ui.Context, images []gb.Image) {
 		Width(w - viewerMargin).Height(h - viewerMargin).
 		Gap(viewerGap).
 		Children(func() {
-			ui.Row(c).FillWidth().Justify(ui.SpaceBetween).AlignItems(ui.Center).Children(func() {
+			ui.Row(c).FillWidth().Height(viewerHeader).
+				Justify(ui.SpaceBetween).AlignItems(ui.Center).Children(func() {
 				ui.Text(c, fmt.Sprintf("第 %d / 共 %d 张", s.viewer.index+1, len(images))).
 					TextColor(t.TextMuted)
 				ui.Row(c).Gap(8).Children(func() {
@@ -135,8 +136,21 @@ func (s *store) viewerPanel(c *ui.Context, images []gb.Image) {
 
 // viewerPicture is the picture itself, with the zooming and the moving that the
 // row of small pictures has no room for.
+//
+// The picture is drawn in a room of its own, zoom times the one it is shown in,
+// so that a zoomed one is read along by scrolling it: the room it is drawn in
+// is what a picture is contained in, and the container it is scrolled by keeps
+// it within its own edges without any arithmetic here.
 func (s *store) viewerPicture(c *ui.Context, image gb.Image) {
 	t := c.Theme()
+	// What the dialog leaves of the window once the viewer's own controls have
+	// taken theirs, which is the room the picture is shown whole in.
+	w, h := c.Size()
+	s.viewer.room = box{
+		W: int(w - viewerMargin),
+		H: int(h - viewerMargin - viewerHeader - viewerGap),
+	}
+	room := s.viewer.room
 	// The picture as it was published rather than the small one the row shows:
 	// what the viewer is for is seeing what the small one cannot.
 	bitmap := s.app.thumbnails.get(image.URL, box{}, s.app.invalidate)
@@ -159,20 +173,21 @@ func (s *store) viewerPicture(c *ui.Context, image gb.Image) {
 
 	frame.Children(func() {
 		if bitmap == nil {
-			ui.Row(c).Fill().Justify(ui.Center).AlignItems(ui.Center).Children(func() {
-				ui.Spinner(c)
-			})
+			// A screenshot of a game is megabytes and does not arrive at once,
+			// so the room is held and the wait is shown in it.
+			ui.Row(c).Fill().Justify(ui.Center).AlignItems(ui.Center).
+				Label("正在读取大图").
+				Children(func() {
+					ui.Spinner(c)
+				})
 			return
 		}
-		// The picture is drawn in a room of its own, zoom times the one it is
-		// shown in, so that a zoomed one is read along by scrolling it, which
-		// keeps it within its own edges without any arithmetic here.
 		ui.ScrollBoth(c).Fill().TrackScroll(&s.viewer.scroll).Children(func() {
 			ui.Row(c).
-				WidthPercent(100 * s.viewer.zoom).
-				HeightPercent(100 * s.viewer.zoom).
+				Width(float32(room.W) * s.viewer.zoom).
+				Height(float32(room.H) * s.viewer.zoom).
 				Children(func() {
-					ui.Image(c, bitmap).Fit(ui.Contain).Fill()
+					ui.Image(c, bitmap).Fit(ui.Contain).Fill().Label("整张截图")
 				})
 		})
 	})
@@ -181,9 +196,5 @@ func (s *store) viewerPicture(c *ui.Context, image gb.Image) {
 	if dx, dy, held := frame.Dragged(); held {
 		s.viewer.scroll.X -= dx
 		s.viewer.scroll.Y -= dy
-	}
-	// The room the picture is drawn in, which zooming keeps the middle of.
-	if bounds := frame.LayoutBounds(); bounds.W > 0 {
-		s.viewer.room = box{W: int(bounds.W), H: int(bounds.H)}
 	}
 }

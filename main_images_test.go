@@ -23,9 +23,8 @@ func (s pictureStub) RoundTrip(*http.Request) (*http.Response, error) {
 	}, nil
 }
 
-// stubImages is a cache whose pictures are all of one size, which is what the
-// site publishes a submission's screenshots at.
-func stubImages(t *testing.T, w, h int) *images {
+// jpegOf is one picture of a size, to be answered with instead of fetching one.
+func jpegOf(t *testing.T, w, h int) []byte {
 	t.Helper()
 	img := image.NewRGBA(image.Rect(0, 0, w, h))
 	for i := range img.Pix {
@@ -35,8 +34,15 @@ func stubImages(t *testing.T, w, h int) *images {
 	if err := jpeg.Encode(&buf, img, nil); err != nil {
 		t.Fatal(err)
 	}
+	return buf.Bytes()
+}
+
+// stubImages is a cache whose pictures are all of one size, which is what the
+// site publishes a submission's screenshots at.
+func stubImages(t *testing.T, w, h int) *images {
+	t.Helper()
 	im := newImages()
-	im.client = &http.Client{Transport: pictureStub{body: buf.Bytes()}}
+	im.client = &http.Client{Transport: pictureStub{body: jpegOf(t, w, h)}}
 	return im
 }
 

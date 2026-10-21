@@ -484,6 +484,44 @@ func openPicture(t *testing.T, tt *ui.Tester, label string) {
 	tt.Frame()
 }
 
+// The viewer draws the picture it fetched, and draws it larger when it is
+// zoomed, which is the whole of what zooming is.
+func TestTheViewerDrawsThePictureItFetched(t *testing.T) {
+	a, tt := modPage(t, shot(1))
+	a.thumbnails.client = &http.Client{Transport: pictureStub{body: jpegOf(t, 1920, 1080)}}
+	openPicture(t, tt, "第 1 张截图")
+
+	// A screenshot is megabytes, so until it arrives there is nothing to draw
+	// but that it is on its way.
+	if !tt.HasText("正在读取大图") {
+		t.Errorf("the viewer does not say the picture is on its way: %q", tt.Texts())
+	}
+	settled(t, a.thumbnails)
+	tt.Frame()
+
+	if tt.HasText("正在读取大图") {
+		t.Errorf("the viewer still waits for a picture that arrived: %q", tt.Texts())
+	}
+	if !tt.HasText("整张截图") {
+		t.Fatalf("the viewer does not draw the picture: %q", tt.Texts())
+	}
+	// A picture drawn in a room the size of the one it is given is the whole of
+	// it: there is nothing beyond its edges to scroll to.
+	if got := a.store.viewer.scroll; got.MaxX != 0 || got.MaxY != 0 {
+		t.Errorf("the picture is drawn %v×%v past its room, want it whole", got.MaxX, got.MaxY)
+	}
+
+	if err := tt.Click("放大"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	// Zoomed in, there is more of it than the room holds, which is what there
+	// is to read along.
+	if got := a.store.viewer.scroll.MaxX; got <= 0 {
+		t.Error("zooming in left the picture whole, with nothing to scroll to")
+	}
+}
+
 // The wheel over the picture zooms it, which is how one is looked at closely
 // without going to the buttons for every step.
 func TestTheWheelZoomsThePicture(t *testing.T) {
