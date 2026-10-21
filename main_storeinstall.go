@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/egoist/mygo/ui"
 
@@ -150,29 +151,84 @@ func (s *store) files(c *ui.Context, mod gb.Submission, state shown) {
 	case len(state.profile.Files) == 0:
 		ui.Text(c, "这个模组还没有可以下载的文件。").TextColor(t.TextMuted)
 	default:
-		// Most mods carry several files -- the variants an author published --
-		// and each is a separate archive, so each is offered on its own rather
-		// than one being picked for the user.
+		// Most mods carry several files -- the variants an author published, or
+		// a base file and its extras -- and each is a separate archive. They are
+		// offered together and installed as one mod, so a mod made of several
+		// downloads does not have to be installed one file at a time.
+		offered := offeredFiles(state.profile.Files)
 		ui.Text(c, "选择要安装的文件").Bold()
+		if len(offered) > 1 {
+			ui.Text(c, "作者提供了多个文件，可以选中其中几个一起安装。").
+				FontSize(12).TextColor(t.TextMuted)
+		}
 		if state.gameRunning {
 			ui.Text(c, "游戏正在运行，先退出游戏再安装模组。").FontSize(12).TextColor(t.Danger)
 		}
-		for _, file := range state.profile.Files {
-			s.fileRow(c, mod, file, state.installing != "" || state.gameRunning)
+		busy := state.installing != "" || state.gameRunning
+		for _, file := range offered {
+			s.fileRow(c, file, state.picked[file.ID], busy)
 		}
+		picked := pickedFiles(offered, state.picked)
+		ui.Row(c).FillWidth().Children(func() {
+			ui.Button(c, installLabel(len(picked))).
+				Disabled(busy || len(picked) == 0).
+				OnClick(func() { s.install(mod, picked) })
+		})
 	}
 }
 
-// fileRow is one downloadable file, with what installing it does.
-func (s *store) fileRow(c *ui.Context, mod gb.Submission, file gb.File, busy bool) {
+// fileRow is one downloadable file, with whether it is one of those to install.
+func (s *store) fileRow(c *ui.Context, file gb.File, picked, busy bool) {
 	t := c.Theme()
 	ui.Row(c).FillWidth().Padding(12).Gap(12).AlignItems(ui.Center).Children(func() {
 		ui.Column(c).FillWidth().Gap(2).Children(func() {
-			ui.Text(c, file.Name).Bold().MaxLines(1).Ellipsis("…")
+			// The box is read back on the next frame rather than written here,
+			// which is how the rest of the store's controls work.
+			chosen := picked
+			ui.Checkbox(c, &chosen, file.Name).Disabled(busy).OnChange(func() {
+				s.pick(file.ID, chosen)
+			})
 			ui.Text(c, describeFile(file)).FontSize(12).TextColor(t.TextMuted).MaxLines(1).Ellipsis("…")
 		})
-		ui.Button(c, "安装").Disabled(busy).OnClick(func() { s.install(mod, file) })
 	})
+}
+
+// pickedFiles returns the downloads that are picked, in the order the page
+// offers them rather than in the order they were clicked, so that the files of
+// one install are named the same way every time.
+func pickedFiles(files []gb.File, picked map[int]bool) []gb.File {
+	var chosen []gb.File
+	for _, file := range files {
+		if picked[file.ID] {
+			chosen = append(chosen, file)
+		}
+	}
+	return chosen
+}
+
+// installLabel is what the button under the files says. One file is installed
+// by the plain word; several say how many, so that a selection of more than one
+// variant is not a surprise.
+func installLabel(n int) string {
+	if n > 1 {
+		return fmt.Sprintf("安装选中的 %d 个文件", n)
+	}
+	return "安装"
+}
+
+// pick records whether one of the mod's downloads is to be installed.
+func (s *store) pick(id int, picked bool) {
+	s.mu.Lock()
+	if s.picked == nil {
+		s.picked = make(map[int]bool)
+	}
+	if picked {
+		s.picked[id] = true
+	} else {
+		delete(s.picked, id)
+	}
+	s.mu.Unlock()
+	s.app.invalidate()
 }
 
 // installingPanel is what the download is doing, while it is doing it.
@@ -245,6 +301,9 @@ func thousands(n int) string {
 // it, and whether the API's own virus scan had anything to say.
 func describeFile(file gb.File) string {
 	var parts []string
+	if file.Archived {
+		parts = append(parts, "旧版本")
+	}
 	if file.Size > 0 {
 		parts = append(parts, humanSize(file.Size))
 	}
@@ -271,15 +330,18 @@ func humanSize(n int64) string {
 	return fmt.Sprintf("%.1f %cB", value, "KMGT"[exp-1])
 }
 
-// install downloads one of a mod's files and puts the mod into the game.
+// install downloads a mod's chosen files and puts the mod into the game.
 //
-// The steps are the ones a mod goes through to be playable: fetch the archive,
-// unpack it, find the VPKs in it, put them in the profile, turn the mod on, and
-// tell the game to search where they landed. Each can fail, and each failure is
-// reported rather than left as a mod that is installed and does nothing.
+// The steps are the ones a mod goes through to be playable: fetch each archive,
+// unpack it, find the VPKs in it, put them in the profile as one mod, turn it
+// on, and tell the game to search where they landed. Several downloads are one
+// mod on disk: their VPKs are named together, so two variants that both ship a
+// pak01_dir.vpk do not overwrite each other.
 //
-// It reads and writes the disk and the network, so it runs off the main thread.
-func (s *store) install(mod gb.Submission, file gb.File) {
+// Each step can fail, and each failure is reported rather than left as a mod
+// that is installed and does nothing. It reads and writes the disk and the
+// network, so it runs off the main thread.
+func (s *store) install(mod gb.Submission, files []gb.File) {
 	a := s.app
 	a.mu.Lock()
 	install, folder, running := a.install, a.profileFolder, a.gameRunning
@@ -293,19 +355,27 @@ func (s *store) install(mod gb.Submission, file gb.File) {
 		return
 	}
 
+	if len(files) == 0 {
+		return
+	}
+
 	s.mu.Lock()
 	if s.installing != "" {
 		// One install at a time: two of them would race over the same manifest.
 		s.mu.Unlock()
 		return
 	}
-	s.installing, s.installErr, s.installed = file.Name, "", ""
+	s.installing = files[0].Name
+	if len(files) > 1 {
+		s.installing = fmt.Sprintf("%s 的 %d 个文件", mod.Name, len(files))
+	}
+	s.installErr, s.installed = "", ""
 	s.progress = download.Progress{}
 	s.mu.Unlock()
 	a.invalidate()
 
 	go func() {
-		err := s.fetch(a, install, profileFor(install, folder), mod, file)
+		err := s.fetch(a, install, profileFor(install, folder), mod, files)
 		s.mu.Lock()
 		s.installing = ""
 		if err != nil {
@@ -320,7 +390,7 @@ func (s *store) install(mod gb.Submission, file gb.File) {
 
 // fetch is the install itself, from the download to the game being told where
 // the mods are.
-func (s *store) fetch(a *app, install *game.Install, profile addons.Profile, mod gb.Submission, file gb.File) error {
+func (s *store) fetch(a *app, install *game.Install, profile addons.Profile, mod gb.Submission, downloads []gb.File) error {
 	// Everything the download and the unpacking write goes in a directory of
 	// its own, which is thrown away whatever happens: an archive is a stranger's
 	// and nothing it holds outlives the install.
@@ -330,40 +400,67 @@ func (s *store) fetch(a *app, install *game.Install, profile addons.Profile, mod
 	}
 	defer os.RemoveAll(work)
 
-	// The name the archive is written under is the one the API gave it, which
-	// is what says which format it is in.
-	archivePath := filepath.Join(work, "archive", filepath.Base(file.Name))
-	if err := os.MkdirAll(filepath.Dir(archivePath), 0o755); err != nil {
-		return err
+	// The bar counts the whole install rather than starting over on each file,
+	// and only when every size is known: a total short of what is left to fetch
+	// would fill the bar before the download did.
+	var total int64
+	known := true
+	for _, file := range downloads {
+		if file.Size <= 0 {
+			known = false
+			continue
+		}
+		total += file.Size
+	}
+	if !known {
+		total = 0
 	}
 
-	progress := func(p download.Progress) {
-		s.mu.Lock()
-		s.progress = p
-		s.mu.Unlock()
-		a.invalidate()
-	}
-	err = a.downloads.Get(context.Background(), download.Request{
-		URL:  file.URL,
-		Dest: archivePath,
-		Size: file.Size,
-		MD5:  file.MD5,
-	}, progress)
-	if err != nil {
-		return fmt.Errorf("下载失败：%w", err)
+	var done int64
+	archives := make([]addons.Archive, 0, len(downloads))
+	for i, file := range downloads {
+		// Each download is written and unpacked in a directory of its own: two
+		// of them can carry the same archive name.
+		dir := filepath.Join(work, "archive", fmt.Sprint(i))
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return err
+		}
+		// The name the archive is written under is the one the API gave it,
+		// which is what says which format it is in.
+		archivePath := filepath.Join(dir, filepath.Base(file.Name))
+		base := done
+		progress := func(p download.Progress) {
+			s.mu.Lock()
+			s.progress = download.Progress{Done: base + p.Done, Total: total}
+			s.mu.Unlock()
+			a.invalidate()
+		}
+		err = a.downloads.Get(context.Background(), download.Request{
+			URL:  file.URL,
+			Dest: archivePath,
+			Size: file.Size,
+			MD5:  file.MD5,
+		}, progress)
+		if err != nil {
+			return fmt.Errorf("下载 %s 失败：%w", file.Name, err)
+		}
+		if written, statErr := os.Stat(archivePath); statErr == nil {
+			done = base + written.Size()
+		}
+
+		unpacked := filepath.Join(work, "unpacked", fmt.Sprint(i))
+		if err := archive.Extract(archivePath, unpacked); err != nil {
+			return fmt.Errorf("解压 %s 失败：%w", file.Name, err)
+		}
+		archives = append(archives, addons.Archive{Name: file.Name, Dir: unpacked})
 	}
 
-	unpacked := filepath.Join(work, "unpacked")
-	if err := archive.Extract(archivePath, unpacked); err != nil {
-		return fmt.Errorf("解压失败：%w", err)
-	}
-
-	files, err := addons.FindVpks(unpacked, file.Name)
+	files, err := addons.FindArchives(archives)
 	if err != nil {
 		return err
 	}
 	if len(files) == 0 {
-		return fmt.Errorf("%s 里没有 VPK 文件，可能不是 Deadlock 的模组。", file.Name)
+		return fmt.Errorf("下载的文件里没有 VPK 文件，可能不是 Deadlock 的模组。")
 	}
 
 	// Checked again here, after the download: the game can have been started
@@ -379,8 +476,13 @@ func (s *store) fetch(a *app, install *game.Install, profile addons.Profile, mod
 	// The manifest keeps only the id; the name and picture the store showed
 	// are remembered here so the mods page can show them too. Written after
 	// the files are in place, so a failure to enable it still leaves a mod
-	// that can be named.
-	a.rememberMod(mod)
+	// that can be named. Every file it was installed from is recorded, so the
+	// update check knows the whole mod rather than one part of it.
+	fileIDs := make([]int, len(downloads))
+	for i, file := range downloads {
+		fileIDs[i] = file.ID
+	}
+	a.rememberMod(mod, fileIDs...)
 	// A mod that is installed and not turned on does nothing, which reads as
 	// the app having failed. Installing one from the store is asking for it to
 	// be used.
@@ -408,6 +510,10 @@ func (s *store) fetch(a *app, install *game.Install, profile addons.Profile, mod
 		if readErr != nil {
 			a.modsErr = readErr.Error()
 		}
+		// A mod that was just installed has nothing to compare against yet,
+		// and the next check should ask about it.
+		delete(a.updates, mod.Slug())
+		a.checkedAt = time.Time{}
 		if infoErr == nil {
 			a.gameInfo, a.gameInfoErr = info, ""
 			// The install wrote the mod paths, so it is no longer a launch

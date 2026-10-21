@@ -10,6 +10,7 @@ import (
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 
+	"github.com/BabyLy233/mylock/internal/about"
 	"github.com/BabyLy233/mylock/internal/addons"
 	"github.com/BabyLy233/mylock/internal/config"
 	"github.com/BabyLy233/mylock/internal/game"
@@ -789,6 +790,23 @@ func TestSettingsShowsThePictureCache(t *testing.T) {
 	}
 	if !tt.HasText("共 1 张") {
 		t.Errorf("the settings page does not say what the cache holds: %q", tt.Texts())
+	}
+}
+
+// The settings page says which build is running, which is what a bug report
+// needs to name it.
+func TestSettingsShowsTheBuild(t *testing.T) {
+	a := newApp()
+	old := about.Version
+	t.Cleanup(func() { about.Version = old })
+	about.Version = "9.9.9"
+	a.router.Push("/settings")
+	tt := ui.NewTester(a.view, 1280, 800)
+
+	for _, want := range []string{"关于", "版本", "9.9.9", "提交", about.Commit()} {
+		if !tt.HasText(want) {
+			t.Errorf("the settings page does not show %q: %q", want, tt.Texts())
+		}
 	}
 }
 

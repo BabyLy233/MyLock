@@ -191,7 +191,7 @@ func (im *images) fetch(want picture) *ui.Bitmap {
 	if err != nil {
 		return nil
 	}
-	req.Header.Set("User-Agent", about.UserAgent)
+	req.Header.Set("User-Agent", about.UserAgent())
 	resp, err := im.client.Do(req)
 	if err != nil {
 		return nil

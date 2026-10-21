@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // citadel builds a citadel directory holding an empty addons directory, and
@@ -204,6 +205,39 @@ func TestReadLooksForDisabledFilesInTheProfileDirectory(t *testing.T) {
 	}
 	if len(mods[0].Missing) != 0 {
 		t.Errorf("the file in the profile directory was reported missing: %v", mods[0].Missing)
+	}
+}
+
+// The newest file says when a mod was installed, which is what an update check
+// has to compare a catalogue change against.
+func TestReadReportsWhenTheNewestFileWasWritten(t *testing.T) {
+	_, addonsDir := citadel(t)
+	p := Open(addonsDir)
+
+	m := New()
+	m.Mods["parked"] = Entry{Shard: 4, DisabledVpks: []string{"parked_a.vpk", "parked_b.vpk"}}
+	if err := m.Save(p.ManifestPath()); err != nil {
+		t.Fatal(err)
+	}
+	older := time.Date(2026, 3, 4, 5, 6, 7, 0, time.Local)
+	newer := older.Add(48 * time.Hour)
+	touch(t, p.Dir, "parked_a.vpk")
+	touch(t, p.Dir, "parked_b.vpk")
+	for name, when := range map[string]time.Time{"parked_a.vpk": older, "parked_b.vpk": newer} {
+		if err := os.Chtimes(filepath.Join(p.Dir, name), when, when); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	mods, err := p.Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(mods) != 1 {
+		t.Fatalf("Read = %+v, want one mod", mods)
+	}
+	if !mods[0].Modified.Equal(newer) {
+		t.Errorf("Modified = %v, want the newest file's %v", mods[0].Modified, newer)
 	}
 }
 

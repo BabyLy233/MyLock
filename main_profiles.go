@@ -461,6 +461,8 @@ func (a *app) switchProfile(folder string) {
 		if readErr != nil {
 			a.modsErr = readErr.Error()
 		}
+		// The last check was about the mods of the profile being left.
+		a.checkedAt = time.Time{}
 		for i := range a.profiles {
 			if a.profiles[i].Folder == folder {
 				a.profiles[i].LastUsed = now

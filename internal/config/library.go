@@ -37,6 +37,12 @@ type ModInfo struct {
 	// Installed is when the app installed it. It is zero for one that was
 	// found already installed and only looked up.
 	Installed time.Time `json:"installed,omitzero"`
+	// FileIDs are the catalogue's download files this mod was installed from.
+	// They are what an update check asks about: a change to any other file of
+	// the submission is not a change to what the user has. Empty for a mod
+	// installed by another app or by hand, whose files on disk are all the
+	// check has to go by.
+	FileIDs []int `json:"fileIDs,omitempty"`
 }
 
 // Library is the whole library file: what the app knows, by mod id.

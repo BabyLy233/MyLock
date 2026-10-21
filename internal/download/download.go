@@ -239,7 +239,7 @@ func (c *Client) connect(ctx context.Context, address string, from int64) (*http
 		if err != nil {
 			return nil, err
 		}
-		req.Header.Set("User-Agent", about.UserAgent)
+		req.Header.Set("User-Agent", about.UserAgent())
 		if from > 0 {
 			req.Header.Set("Range", fmt.Sprintf("bytes=%d-", from))
 		}

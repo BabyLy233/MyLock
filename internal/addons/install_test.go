@@ -454,3 +454,238 @@ func TestPlainVpkName(t *testing.T) {
 		}
 	}
 }
+
+// An update replaces the files a mod is made of in place, and says whether the
+// game was loading it so that the caller can turn the new version on.
+func TestReplaceSwapsAnEnabledModsFiles(t *testing.T) {
+	p := Open(filepath.Join(t.TempDir(), "addons"))
+	before, err := FindVpks(unpacked(t, map[string]string{"pak01_dir.vpk": "old"}), "old.zip")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Install("599927", before); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.SetEnabled("599927", true); err != nil {
+		t.Fatal(err)
+	}
+
+	// The next version very often has the same file names as the one it
+	// replaces, which is what makes the swap a move rather than an overwrite.
+	after, err := FindVpks(unpacked(t, map[string]string{"pak01_dir.vpk": "new"}), "new.zip")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wasEnabled, err := p.Replace("599927", after)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !wasEnabled {
+		t.Error("Replace says the mod was off, but the game was loading it")
+	}
+	if err := p.SetEnabled("599927", true); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(p.Dir, "pak01_dir.vpk"))
+	if err != nil {
+		t.Fatalf("the new file is not where the game loads it from: %v", err)
+	}
+	if string(data) != "new" {
+		t.Errorf("the enabled file holds %q, want the new version", data)
+	}
+	mods, err := p.Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(mods) != 1 || !mods[0].Enabled || len(mods[0].Vpks) != 1 {
+		t.Errorf("the mod reads as %+v, want the new version enabled", mods)
+	}
+}
+
+// A mod that was off before the update stays off, and its new files sit where
+// the profile keeps the files of a mod that is off.
+func TestReplaceKeepsADisabledModOff(t *testing.T) {
+	p := Open(filepath.Join(t.TempDir(), "addons"))
+	before, err := FindVpks(unpacked(t, map[string]string{"pak01_dir.vpk": "old"}), "old.zip")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Install("599927", before); err != nil {
+		t.Fatal(err)
+	}
+
+	after, err := FindVpks(unpacked(t, map[string]string{"pak01_dir.vpk": "new"}), "new.zip")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wasEnabled, err := p.Replace("599927", after)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wasEnabled {
+		t.Error("Replace says the mod was on, but it was off")
+	}
+
+	data, err := os.ReadFile(filepath.Join(p.Dir, "599927_pak01_dir.vpk"))
+	if err != nil {
+		t.Fatalf("the new file is not in the profile directory: %v", err)
+	}
+	if string(data) != "new" {
+		t.Errorf("the disabled file holds %q, want the new version", data)
+	}
+	m, err := Load(p.ManifestPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entry := m.Mods["599927"]; entry.Enabled {
+		t.Errorf("the entry reads as %+v, want it off", entry)
+	}
+}
+
+// An update that cannot put the new files in place leaves the old version, and
+// the game still loads it.
+func TestReplacePutsTheOldModBackWhenTheNewFilesFail(t *testing.T) {
+	p := Open(filepath.Join(t.TempDir(), "addons"))
+	before, err := FindVpks(unpacked(t, map[string]string{"pak01_dir.vpk": "old"}), "old.zip")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Install("599927", before); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.SetEnabled("599927", true); err != nil {
+		t.Fatal(err)
+	}
+
+	after, err := FindVpks(unpacked(t, map[string]string{
+		"a/pak01_dir.vpk": "one",
+		"b/pak01_dir.vpk": "two",
+	}), "new.zip")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Take one of the new files away, so the copy fails after the other has
+	// been made and the old version has already been moved aside.
+	if err := os.Remove(after[1].Path); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := p.Replace("599927", after); err == nil {
+		t.Fatal("replacing with a file that is not there reported no error")
+	}
+
+	data, err := os.ReadFile(filepath.Join(p.Dir, "pak01_dir.vpk"))
+	if err != nil {
+		t.Fatalf("the old file is not where it was: %v", err)
+	}
+	if string(data) != "old" {
+		t.Errorf("the file holds %q after a failed update, want the old version", data)
+	}
+	mods, err := p.Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(mods) != 1 || !mods[0].Enabled || len(mods[0].Missing) != 0 {
+		t.Errorf("the mod reads as %+v after a failed update, want it unchanged", mods)
+	}
+	// The update's own working directory does not outlive it.
+	entries, err := os.ReadDir(p.Dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".replace-") {
+			t.Errorf("a failed update left %s behind", entry.Name())
+		}
+	}
+}
+
+// A mod that is not installed has nothing to replace.
+func TestReplaceRefusesAModThatIsNotThere(t *testing.T) {
+	p := Open(filepath.Join(t.TempDir(), "addons"))
+	files, err := FindVpks(unpacked(t, map[string]string{"pak01_dir.vpk": "new"}), "new.zip")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.Replace("599927", files); err == nil {
+		t.Fatal("replacing a mod that is not installed reported no error")
+	}
+}
+
+// Several downloads of one submission are installed as one mod, and the files
+// they share a name with are told apart by their archive, as the Tauri app does.
+func TestFindArchivesNamesFilesAcrossArchives(t *testing.T) {
+	red := unpacked(t, map[string]string{"pak01_dir.vpk": "red"})
+	blue := unpacked(t, map[string]string{
+		"pak01_dir.vpk":         "blue",
+		"extras/pak02_dir.vpk":  "blue extra",
+		"extras/readme-not.vpk": "not a vpk name but it is one",
+	})
+
+	files, err := FindArchives([]Archive{
+		{Name: "Red Skin.zip", Dir: red},
+		{Name: "Blue Skin.zip", Dir: blue},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got := make(map[string]string, len(files))
+	for _, f := range files {
+		data, err := os.ReadFile(f.Path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got[f.Name] = string(data)
+	}
+	want := map[string]string{
+		"pak01-blue-skin_dir.vpk": "blue",
+		"pak02_dir.vpk":           "blue extra",
+		"readme-not.vpk":          "not a vpk name but it is one",
+		"pak01-red-skin_dir.vpk":  "red",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("FindArchives = %v, want %v", got, want)
+	}
+	for name, contents := range want {
+		if got[name] != contents {
+			t.Errorf("%s holds %q, want %q (all names: %v)", name, got[name], contents, got)
+		}
+	}
+}
+
+// Archives whose names reduce to the same qualifier still get distinct files.
+func TestFindArchivesNumbersNamesThatStillCollide(t *testing.T) {
+	first := unpacked(t, map[string]string{"pak01_dir.vpk": "one"})
+	second := unpacked(t, map[string]string{"pak01_dir.vpk": "two"})
+
+	files, err := FindArchives([]Archive{
+		{Name: "Red Skin.zip", Dir: first},
+		{Name: "red-skin.rar", Dir: second},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	names := make(map[string]string, len(files))
+	for _, f := range files {
+		data, err := os.ReadFile(f.Path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		names[f.Name] = string(data)
+	}
+	want := map[string]string{
+		"pak01-red-skin_dir.vpk":   "one",
+		"pak01-red-skin-2_dir.vpk": "two",
+	}
+	if len(names) != len(want) {
+		t.Fatalf("FindArchives = %v, want %v", names, want)
+	}
+	for name, contents := range want {
+		if names[name] != contents {
+			t.Errorf("%s holds %q, want %q (all names: %v)", name, names[name], contents, names)
+		}
+	}
+}

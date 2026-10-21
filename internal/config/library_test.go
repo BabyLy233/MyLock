@@ -20,6 +20,7 @@ func TestLibrarySaveAndLoad(t *testing.T) {
 			Thumb:       "https://images.gamebanana.com/img/ss/mods/x.jpg",
 			Page:        "https://gamebanana.com/mods/554012",
 			Installed:   installed,
+			FileIDs:     []int{912345},
 		},
 	}}
 
@@ -42,6 +43,9 @@ func TestLibrarySaveAndLoad(t *testing.T) {
 	}
 	if !info.Installed.Equal(installed) {
 		t.Errorf("Installed = %v, want %v", info.Installed, installed)
+	}
+	if len(info.FileIDs) != 1 || info.FileIDs[0] != 912345 {
+		t.Errorf("FileIDs = %v, want [912345]", info.FileIDs)
 	}
 }
 

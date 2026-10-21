@@ -30,53 +30,89 @@ type File struct {
 }
 
 // found is a VPK as the walk finds it, before it has a name of its own. The
-// path is kept relative to the directory the archive was unpacked into, because
+// path is kept relative to the directory its archive was unpacked into, because
 // the name is worked out from the folders under it rather than from wherever
 // that directory happens to be.
 type found struct {
-	rel  string
-	name string
-	size int64
+	// archive is the name of the download the file came in.
+	archive string
+	rel     string
+	path    string
+	name    string
+	size    int64
+}
+
+// Archive is one unpacked download of a mod: what the file is called, and the
+// directory it was unpacked into.
+//
+// A submission on the catalogue often offers several downloads -- variants of a
+// skin, a base file and its extras -- and the user can install more than one as
+// a single mod. Each is unpacked into a directory of its own, and the files are
+// named together so that two archives' pak01_dir.vpk do not become one file.
+type Archive struct {
+	Name string
+	Dir  string
 }
 
 // FindVpks returns the VPKs under dir, named as a mod's files.
+func FindVpks(dir, archiveName string) ([]File, error) {
+	return FindArchives([]Archive{{Name: archiveName, Dir: dir}})
+}
+
+// FindArchives returns the VPKs of several unpacked downloads, named as one
+// mod's files.
 //
 // A mod is often several VPKs, and the variants an author publishes very often
 // all ship a file called pak01_dir.vpk. Each is named after the archive and the
 // folders it was in, so that those stay apart, and the names are worked out
-// from the files alone, so that the same archive always gives the same ones.
+// from the files alone, so that the same set of archives always gives the same
+// ones.
 //
-// The Tauri app this is a port of names them the same way, and the manifest the
-// two share records the names, so the two agree about which file is which.
-func FindVpks(dir, archiveName string) ([]File, error) {
+// The Tauri app this is a port of names them the same way, including the files
+// of several archives taken together, and the manifest the two share records
+// the names, so the two agree about which file is which.
+func FindArchives(archives []Archive) ([]File, error) {
 	var founds []found
-	err := filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.IsDir() || !strings.EqualFold(filepath.Ext(p), ".vpk") {
+	for _, archive := range archives {
+		err := filepath.WalkDir(archive.Dir, func(p string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if d.IsDir() || !strings.EqualFold(filepath.Ext(p), ".vpk") {
+				return nil
+			}
+			info, err := d.Info()
+			if err != nil {
+				return err
+			}
+			rel, err := filepath.Rel(archive.Dir, p)
+			if err != nil {
+				return err
+			}
+			founds = append(founds, found{
+				archive: archive.Name,
+				rel:     filepath.ToSlash(rel),
+				path:    p,
+				name:    d.Name(),
+				size:    info.Size(),
+			})
 			return nil
-		}
-		info, err := d.Info()
+		})
 		if err != nil {
-			return err
+			return nil, fmt.Errorf("looking for the mod's files: %w", err)
 		}
-		rel, err := filepath.Rel(dir, p)
-		if err != nil {
-			return err
-		}
-		founds = append(founds, found{rel: filepath.ToSlash(rel), name: d.Name(), size: info.Size()})
-		return nil
-	})
-	if err != nil {
-		return nil, fmt.Errorf("looking for the mod's files: %w", err)
 	}
 
-	// Names are claimed in a fixed order, by path, so that the same set of
-	// files comes out with the same names whatever order the walk found them
-	// in. The order is also the order they are enabled in, which is what decides
-	// which of them the game loads first.
-	slices.SortFunc(founds, func(a, b found) int { return cmp.Compare(a.rel, b.rel) })
+	// Names are claimed in a fixed order, by archive and then by path, so that
+	// the same set of files comes out with the same names whatever order the
+	// walks found them in. The order is also the order they are enabled in,
+	// which is what decides which of them the game loads first.
+	slices.SortStableFunc(founds, func(a, b found) int {
+		if c := cmp.Compare(a.archive, b.archive); c != 0 {
+			return c
+		}
+		return cmp.Compare(a.rel, b.rel)
+	})
 
 	counts := make(map[string]int, len(founds))
 	for _, f := range founds {
@@ -86,15 +122,15 @@ func FindVpks(dir, archiveName string) ([]File, error) {
 	taken := make(map[string]bool, len(founds))
 	files := make([]File, len(founds))
 	for i, f := range founds {
-		// A file whose name is shared with another is named after the archive
+		// A file whose name is shared with another is named after its archive
 		// and the folders it was in; one that is already on its own keeps the
 		// name its author gave it.
 		name := f.name
 		if counts[strings.ToLower(f.name)] > 1 {
-			name = variantName(f.rel, f.name, archiveName)
+			name = variantName(f.rel, f.name, f.archive)
 		}
 		files[i] = File{
-			Path: filepath.Join(dir, filepath.FromSlash(f.rel)),
+			Path: f.path,
 			Name: claimName(taken, name),
 			Size: f.size,
 		}

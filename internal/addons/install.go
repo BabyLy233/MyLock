@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 )
 
 // Install adds a mod's files to the profile, turned off.
@@ -81,6 +82,118 @@ func (p Profile) Install(id string, files []File) error {
 		return err
 	}
 	return nil
+}
+
+// Replace puts another set of files in a mod's place, and reports whether the
+// game was loading the mod before it did.
+//
+// An update is a replacement rather than a second install: the manifest is
+// keyed by mod id, so a newer version takes the older one's place. The old
+// files are moved aside before the new ones are copied in, because the next
+// version of a mod very often has the same file names, and both sets cannot be
+// there at once. The manifest is written last, and a failure before that puts
+// the old files back, so an update that fails leaves the profile as it was.
+//
+// The mod is left disabled, as it is after Install; the caller turns on one
+// that was on before, because whether the game is running is the caller's to
+// know.
+func (p Profile) Replace(id string, files []File) (enabled bool, err error) {
+	if err := checkModID(id); err != nil {
+		return false, err
+	}
+	if len(files) == 0 {
+		return false, fmt.Errorf("%q has no files to install", id)
+	}
+	if len(files) > ShardCapacity {
+		return false, fmt.Errorf("%q has %d files, and one shard holds %d", id, len(files), ShardCapacity)
+	}
+	for _, f := range files {
+		// The name is part of a path, and it came out of an archive a stranger
+		// wrote, so it is checked rather than trusted.
+		if !plainVpkName(f.Name) {
+			return false, fmt.Errorf("%q is not a name a mod's file can be installed as", f.Name)
+		}
+	}
+
+	m, err := Load(p.ManifestPath())
+	if err != nil {
+		return false, err
+	}
+	entry, ok := m.Mods[id]
+	if !ok {
+		return false, fmt.Errorf("there is no mod %q in %s", id, p.ManifestPath())
+	}
+	wasEnabled := entry.Enabled
+
+	// Where the old files are depends on whether the mod is on, as it does for
+	// removing one.
+	dir, oldNames := p.Dir, entry.DisabledVpks
+	if entry.Enabled {
+		dir = p.ShardDir(entry.Shard)
+		oldNames = entry.CurrentVpks
+	}
+
+	// The old files are kept together out of the way until the manifest names
+	// the new ones, rather than deleted: an author who replaced a file with a
+	// broken one must not cost the user the version that worked.
+	backup, err := os.MkdirTemp(p.Dir, ".replace-")
+	if err != nil {
+		return false, err
+	}
+	defer os.RemoveAll(backup)
+
+	moved := make([]move, 0, len(oldNames))
+	restore := func() { renameBack(moved) }
+	for i, name := range oldNames {
+		from := filepath.Join(dir, name)
+		if _, statErr := os.Stat(from); errors.Is(statErr, os.ErrNotExist) {
+			// A file the manifest names but the disk does not have is already
+			// as good as gone.
+			continue
+		}
+		to := filepath.Join(backup, strconv.Itoa(i))
+		if err := os.Rename(from, to); err != nil {
+			restore()
+			return false, fmt.Errorf("moving %s aside: %w", name, err)
+		}
+		moved = append(moved, move{from: from, to: to})
+	}
+
+	names := make([]string, len(files))
+	written := make([]string, 0, len(files))
+	undo := func() {
+		for _, name := range written {
+			os.Remove(filepath.Join(p.Dir, name))
+		}
+		restore()
+	}
+	for i, f := range files {
+		names[i] = id + "_" + f.Name
+		dest := filepath.Join(p.Dir, names[i])
+		if err := copyFile(f.Path, dest); err != nil {
+			undo()
+			return false, err
+		}
+		written = append(written, names[i])
+	}
+
+	originals := make([]string, len(files))
+	for i, f := range files {
+		originals[i] = f.Name
+	}
+	entry.Enabled = false
+	entry.CurrentVpks = nil
+	entry.DisabledVpks = names
+	entry.OriginalVpkNames = originals
+	if entry.Shard < FirstShard {
+		entry.Shard = FirstShard
+	}
+	m.Mods[id] = entry
+	if err := m.Save(p.ManifestPath()); err != nil {
+		undo()
+		return false, err
+	}
+	return wasEnabled, nil
 }
 
 // Remove takes a mod out of the profile, files and all. It is what putting back

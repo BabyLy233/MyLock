@@ -87,14 +87,20 @@ type Category struct {
 // The three kinds are filed in different sections, and the number alone does
 // not say which: mod 42 and sound 42 are two submissions.
 func (s Submission) Page() string {
-	section := "mods"
-	switch s.Kind {
+	return "https://gamebanana.com/" + submissionSection(s.Kind) + "/" + strconv.Itoa(s.ID)
+}
+
+// submissionSection is the part of the site a kind is filed under, which is
+// what its page's address and the update check's reply both name.
+func submissionSection(kind Kind) string {
+	switch kind {
 	case Sound:
-		section = "sounds"
+		return "sounds"
 	case Wip:
-		section = "wips"
+		return "wips"
+	default:
+		return "mods"
 	}
-	return "https://gamebanana.com/" + section + "/" + strconv.Itoa(s.ID)
 }
 
 // Slug is the name an installed mod is known by: its number for a mod, and the
@@ -179,6 +185,10 @@ type File struct {
 	// Scan is what the API's own virus scan made of the file: "clean" is the
 	// only answer worth showing, and anything else is worth saying.
 	Scan string
+	// Archived marks a file the author has replaced. The site keeps it out of
+	// the download list, but the update check is handed it along with the
+	// current ones, so that a file the user did install can still be found.
+	Archived bool
 }
 
 // submissionJSON is one record of a listing.
@@ -347,6 +357,7 @@ type fileJSON struct {
 	Downloads   int    `json:"_nDownloadCount"`
 	Added       int64  `json:"_tsDateAdded"`
 	Scan        string `json:"_sAvResult"`
+	Archived    bool   `json:"_bIsArchived"`
 }
 
 func (f fileJSON) file() File {
@@ -360,6 +371,7 @@ func (f fileJSON) file() File {
 		Downloads:   f.Downloads,
 		Added:       unix(f.Added),
 		Scan:        f.Scan,
+		Archived:    f.Archived,
 	}
 }
 

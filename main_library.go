@@ -75,15 +75,18 @@ func (a *app) saveLibrary(mods map[string]config.ModInfo) error {
 }
 
 // rememberMod records what the store knew about a mod it installed, so that the
-// mods page can call it by its name and show its picture. A failure to write it
-// is logged rather than shown: the mod is installed either way, and only the
-// next run would have to look the details up again.
-func (a *app) rememberMod(mod gb.Submission) {
+// mods page can call it by its name and show its picture. The download files it
+// was installed from are kept as well, because that is what an update check
+// compares the catalogue against. A failure to write it is logged rather than
+// shown: the mod is installed either way, and only the next run would have to
+// look the details up again.
+func (a *app) rememberMod(mod gb.Submission, fileIDs ...int) {
 	if mod.ID <= 0 {
 		return
 	}
 	id := mod.Slug()
 	info := modInfoFromSubmission(mod, time.Now())
+	info.FileIDs = fileIDs
 
 	a.mu.Lock()
 	if a.library == nil {

@@ -35,9 +35,13 @@ import (
 // with theirs.
 const Game = 20948
 
-// api is the root of API v11. The older api.gamebanana.com carries only the
-// multi-call endpoint, which nothing here needs.
+// api is the root of API v11.
 const api = "https://gamebanana.com/apiv11/"
+
+// legacyAPI is the root of the older API. It is the only host carrying
+// Core/Item/Data, which is the one request that asks about several submissions
+// at once.
+const legacyAPI = "https://api.gamebanana.com/"
 
 const (
 	// maxBodyBytes caps a reply. Catalogue pages run to a few hundred
@@ -71,9 +75,13 @@ type Client struct {
 	// Base is the root of the API. It is GameBanana's own unless it is pointed
 	// somewhere else, which is what a test does to read from a server of its
 	// own.
-	Base  string
-	http  *http.Client
-	limit *rate.Limiter
+	Base string
+	// LegacyBase is the root of the older API, where the request that asks
+	// about several submissions at once lives. It is set beside Base, and a
+	// test points both at the same server.
+	LegacyBase string
+	http       *http.Client
+	limit      *rate.Limiter
 
 	// sleep pauses before a retry. Tests replace it so that a backoff does not
 	// make them slow.
@@ -83,9 +91,10 @@ type Client struct {
 // New returns a client reading the live catalogue.
 func New() *Client {
 	return &Client{
-		Base:  api,
-		http:  &http.Client{Timeout: 30 * time.Second},
-		limit: rate.NewLimiter(perSecond, burst),
+		Base:       api,
+		LegacyBase: legacyAPI,
+		http:       &http.Client{Timeout: 30 * time.Second},
+		limit:      rate.NewLimiter(perSecond, burst),
 	}
 }
 
@@ -151,7 +160,13 @@ func (e *statusError) retryable() bool {
 // get reads one endpoint as JSON into v. path is relative to the API root and
 // carries its own query.
 func (c *Client) get(ctx context.Context, path string, v any) error {
-	body, err := c.fetch(ctx, path)
+	return c.getFrom(ctx, c.Base, path, v)
+}
+
+// getFrom reads one endpoint from the API rooted at base, which is how the
+// older host is asked without a second client.
+func (c *Client) getFrom(ctx context.Context, base, path string, v any) error {
+	body, err := c.fetchFrom(ctx, base, path)
 	if err != nil {
 		return err
 	}
@@ -172,7 +187,7 @@ func (c *Client) get(ctx context.Context, path string, v any) error {
 // fetch reads one endpoint, trying again while the failure looks like one that
 // passes. The API is a shared service run on donations: a 429 or a 5xx is it
 // asking for room, not an answer.
-func (c *Client) fetch(ctx context.Context, path string) ([]byte, error) {
+func (c *Client) fetchFrom(ctx context.Context, base, path string) ([]byte, error) {
 	var last error
 	for attempt := 0; ; attempt++ {
 		if attempt > 0 {
@@ -184,7 +199,7 @@ func (c *Client) fetch(ctx context.Context, path string) ([]byte, error) {
 			return nil, err
 		}
 
-		body, err := c.once(ctx, path)
+		body, err := c.onceFrom(ctx, base, path)
 		if err == nil {
 			return body, nil
 		}
@@ -205,13 +220,13 @@ func retryable(err error) bool {
 	return true
 }
 
-// once makes one request.
-func (c *Client) once(ctx context.Context, path string) ([]byte, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.Base+path, nil)
+// onceFrom makes one request to the API rooted at base.
+func (c *Client) onceFrom(ctx context.Context, base, path string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+path, nil)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", about.UserAgent)
+	req.Header.Set("User-Agent", about.UserAgent())
 	// What is asked for is asked for by this header and nothing else: the API
 	// labels its JSON as text/html, so a reply is never judged by its content
 	// type.

@@ -1060,3 +1060,118 @@ func TestTheStoreSaysWhenTheCategoriesCouldNotBeRead(t *testing.T) {
 		t.Errorf("reading the tree took the listing with it: %q", tt.Texts())
 	}
 }
+
+// A mod that is already installed opens with the files it was installed from
+// selected, so installing it again keeps the variants the user chose. A file
+// the author archived is not one of them.
+func TestAModOpensWithTheFilesItWasInstalledFrom(t *testing.T) {
+	files := []gb.File{
+		{ID: 1, Name: "base.zip"},
+		{ID: 2, Name: "old.zip", Archived: true},
+		{ID: 3, Name: "extra.zip"},
+	}
+	picked := defaultPicked(files, []int{1, 2, 3})
+	if !picked[1] || !picked[3] {
+		t.Errorf("defaultPicked = %v, want the installed files", picked)
+	}
+	if picked[2] {
+		t.Errorf("defaultPicked = %v, want no archived file", picked)
+	}
+}
+
+// A mod with no recorded install opens with one file selected rather than all
+// of them: the variants replace each other, and installing every one at once
+// would be a mod that fights itself.
+func TestAModOpensWithOneFileSelected(t *testing.T) {
+	files := []gb.File{
+		{ID: 1, Name: "variant-a.zip"},
+		{ID: 2, Name: "archived.zip", Archived: true},
+		{ID: 3, Name: "variant-b.zip"},
+	}
+	picked := defaultPicked(files, nil)
+	if len(picked) != 1 || !picked[3] {
+		t.Errorf("defaultPicked = %v, want the newest current file", picked)
+	}
+
+	archived := []gb.File{{ID: 4, Name: "only-old.zip", Archived: true}}
+	if picked := defaultPicked(archived, nil); len(picked) != 1 || !picked[4] {
+		t.Errorf("defaultPicked = %v, want the archived file when it is all there is", picked)
+	}
+}
+
+// The button says how many files it will install, and the install takes them in
+// the order the page lists them rather than the order they were clicked.
+func TestPickedFilesAndTheInstallButton(t *testing.T) {
+	files := []gb.File{{ID: 1}, {ID: 2}, {ID: 3}}
+	picked := map[int]bool{3: true, 1: true}
+	got := pickedFiles(files, picked)
+	if len(got) != 2 || got[0].ID != 1 || got[1].ID != 3 {
+		t.Errorf("pickedFiles = %+v, want files 1 and 3 in page order", got)
+	}
+
+	if label := installLabel(1); label != "安装" {
+		t.Errorf("installLabel(1) = %q, want 安装", label)
+	}
+	if label := installLabel(2); !strings.Contains(label, "2") || !strings.Contains(label, "文件") {
+		t.Errorf("installLabel(2) = %q, want it to say two files", label)
+	}
+}
+
+// The page offers the current files and hides the older versions an author
+// archived, rather than offering a variant that would fight its replacement.
+func TestTheModsPageOffersTheCurrentFiles(t *testing.T) {
+	a := newApp()
+	a.store.started = true
+	a.store.mu.Lock()
+	a.store.items = []gb.Submission{mod("Yamato redesign")}
+	a.store.chosen = 0
+	a.store.profile = gb.Profile{Files: []gb.File{
+		{ID: 1, Name: "variant-a.zip"},
+		{ID: 2, Name: "variant-b.zip"},
+		{ID: 3, Name: "old-variant.zip", Archived: true},
+	}}
+	a.store.picked = map[int]bool{1: true}
+	a.store.mu.Unlock()
+	a.router.Push("/store")
+	tt := ui.NewTester(a.view, 1280, 800)
+
+	for _, name := range []string{"variant-a.zip", "variant-b.zip", "安装"} {
+		if !tt.HasText(name) {
+			t.Errorf("the mod's page does not show %q: %q", name, tt.Texts())
+		}
+	}
+	if tt.HasText("old-variant.zip") {
+		t.Errorf("the mod's page offers an archived file: %q", tt.Texts())
+	}
+}
+
+// Checking a second file adds it to the install rather than replacing the
+// first, and the button says so.
+func TestTheModsPageInstallsSeveralFilesTogether(t *testing.T) {
+	a := newApp()
+	a.store.started = true
+	a.store.mu.Lock()
+	a.store.items = []gb.Submission{mod("Yamato redesign")}
+	a.store.chosen = 0
+	a.store.profile = gb.Profile{Files: []gb.File{
+		{ID: 1, Name: "variant-a.zip"},
+		{ID: 2, Name: "variant-b.zip"},
+	}}
+	a.store.picked = map[int]bool{1: true}
+	a.store.mu.Unlock()
+	a.router.Push("/store")
+	tt := ui.NewTester(a.view, 1280, 800)
+
+	if err := tt.Click("variant-b.zip"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+
+	state := a.store.shown()
+	if !state.picked[1] || !state.picked[2] {
+		t.Errorf("the page picked %v, want both files", state.picked)
+	}
+	if !tt.HasText("安装选中的 2 个文件") {
+		t.Errorf("the button does not say it will install two files: %q", tt.Texts())
+	}
+}

@@ -10,10 +10,12 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 
+	"github.com/BabyLy233/mylock/internal/about"
 	"github.com/BabyLy233/mylock/internal/addons"
 	"github.com/BabyLy233/mylock/internal/config"
 	"github.com/BabyLy233/mylock/internal/download"
@@ -107,6 +109,27 @@ type app struct {
 	// not started again on the next read.
 	library     map[string]config.ModInfo
 	libraryBusy map[string]bool
+
+	// The update check: what the catalogue last said about the installed mods,
+	// when it was last asked, and what that request left behind. updates is
+	// keyed by mod id, the way the manifest and the library are.
+	updates   map[string]gb.UpdateSnapshot
+	checkedAt time.Time
+	checking  bool
+	checkErr  string
+	// The update in flight, if there is one: which mod, how far the download
+	// has got, and what the last one left behind.
+	updating string
+	// updateIndex is which of the mod's downloads is being fetched, counting
+	// from one, and updateFileCount how many there are. A mod made of several
+	// downloads says so, so that a progress bar that starts over reads as the
+	// next file rather than as a download that went backwards.
+	updateIndex     int
+	updateFileCount int
+	updateProgress  download.Progress
+	updateErr       string
+	updateDone      string
+
 	gameInfo    game.GameInfo
 	gameInfoErr string
 	// The launch in flight, if there is one: why it could not be started, and
@@ -264,10 +287,16 @@ func (a *app) sidebar(c *ui.Context) {
 // them, with a switch on each to turn it on or off.
 func (a *app) modsPage(c *ui.Context) {
 	t := c.Theme()
+	// Asking here rather than only when the button is pressed is what keeps the
+	// list current: the check stands for its time, so the several rebuilds of
+	// one frame and the redraws after it ask at most once in a while.
+	a.maybeCheckUpdates()
 	s := a.state()
 	mods := a.installed()
 	profiles := a.profileStateNow()
 	infos := a.modInfos()
+	ups := a.updateState()
+	updates := updateCount(mods.list, infos, ups.snapshots)
 
 	a.deleteDialog(c)
 	a.profilesDialog(c)
@@ -280,6 +309,11 @@ func (a *app) modsPage(c *ui.Context) {
 			ui.Spacer(c)
 			ui.Text(c, "配置档："+profileDisplayName(profiles.folder, profiles.profiles)).
 				FontSize(12).TextColor(t.TextMuted)
+			ui.Button(c, "检查更新").
+				Label("检查模组更新").
+				Disabled(s.install == nil || s.looking || len(mods.list) == 0 ||
+					ups.checking || ups.updating != "").
+				OnClick(func() { a.checkUpdates(true) })
 			ui.Button(c, "切换 / 管理…").
 				Disabled(s.install == nil || s.looking).
 				OnClick(a.openProfiles)
@@ -288,6 +322,7 @@ func (a *app) modsPage(c *ui.Context) {
 		// page is for, and it is the one thing here that is about the game
 		// rather than about one of the mods.
 		a.launchRow(c, s)
+		a.updatePanel(c, ups, infos, updates, s.gameRunning)
 		switch {
 		case s.install == nil:
 			ui.Text(c, "还没有找到游戏目录，先到设置里指定。").TextColor(t.TextMuted)
@@ -332,7 +367,10 @@ func (a *app) modsPage(c *ui.Context) {
 			Gap(8).
 			Rows(func(r ui.ListRow) {
 				mod := mods.list[r.Index]
-				a.modRow(c, r, mod, infos[mod.ID], mods.reading || s.gameRunning)
+				info := infos[mod.ID]
+				update, hasUpdate := updateFor(ups.snapshots[mod.ID], info, mod)
+				a.modRow(c, r, mod, info, update, hasUpdate,
+					ups.updating == mod.ID, mods.reading || s.gameRunning || ups.updating != "")
 			})
 	})
 }
@@ -344,8 +382,10 @@ var modPicture = box{W: 160, H: 90}
 // modRow is one mod, as a card: its picture, what it is called, and what it is
 // made of, with the switch and the way to delete it on the right. The name and
 // picture come from the library; a mod the library does not know yet shows its
-// id and no picture.
-func (a *app) modRow(c *ui.Context, r ui.ListRow, mod addons.Mod, info config.ModInfo, reading bool) {
+// id and no picture. A mod the last check found an update for offers the way to
+// install it here.
+func (a *app) modRow(c *ui.Context, r ui.ListRow, mod addons.Mod, info config.ModInfo,
+	update availableUpdate, hasUpdate, updating, reading bool) {
 	t := c.Theme()
 	// A local copy, because the switch binds to a value the view rebuilds every
 	// pass. OnChange runs once the bound switch has written the new state into
@@ -379,12 +419,25 @@ func (a *app) modRow(c *ui.Context, r ui.ListRow, mod addons.Mod, info config.Mo
 			ui.Text(c, modMeta(mod.ID, info)).FontSize(12).TextColor(t.TextMuted).
 				MaxLines(1).Ellipsis("…")
 			ui.Text(c, modSummary(mod)).FontSize(12).TextColor(t.TextMuted)
+			if hasUpdate {
+				color := t.Accent
+				if updating {
+					color = t.TextMuted
+				}
+				ui.Text(c, updateLine(update, updating)).FontSize(12).TextColor(color)
+			}
 			if len(mod.Missing) > 0 {
 				ui.Text(c, fmt.Sprintf("缺少 %d 个文件，游戏可能读不到它", len(mod.Missing))).
 					FontSize(12).TextColor(t.Danger)
 			}
 		})
 		ui.Row(c).Shrink(0).Gap(10).AlignItems(ui.Center).Children(func() {
+			if hasUpdate {
+				ui.Button(c, "更新").
+					Label("更新 " + mod.ID).
+					Disabled(reading || updating).
+					OnClick(func() { a.updateMod(mod.ID) })
+			}
 			ui.Switch(c, &enabled).
 				// The switch shows no text of its own, so it is named for
 				// assistive technology rather than left as an unnamed
@@ -588,6 +641,9 @@ func (a *app) removeMod(id string) {
 			a.reading = false
 			a.blocked = ""
 			a.mods, a.modsErr = mods, message
+			// The mod is not there to be updated any more, whatever the last
+			// check said about it.
+			delete(a.updates, id)
 			if removeErr == nil {
 				a.gameInfo, a.gameInfoErr = info, infoMessage
 				// This wrote the mod paths, so it is no longer a launch
@@ -685,6 +741,7 @@ func (a *app) settingsPage(c *ui.Context) {
 		a.pathSection(c, s)
 		a.themeSection(c, s)
 		a.cacheSection(c, s)
+		a.aboutSection(c)
 	})
 }
 
@@ -833,6 +890,16 @@ func (a *app) cacheSection(c *ui.Context, s state) {
 				Disabled(s.cacheBusy).
 				OnClick(a.clearImageCache)
 		})
+	})
+}
+
+// aboutSection shows which build is running: the version, and the commit it
+// came from, which is what a bug report needs to name it.
+func (a *app) aboutSection(c *ui.Context) {
+	ui.Column(c).Gap(8).Children(func() {
+		ui.Text(c, "关于").Bold()
+		field(c, "版本", about.Version)
+		field(c, "提交", about.Commit())
 	})
 }
 
@@ -1102,6 +1169,9 @@ func (a *app) look(pinned string, remember bool, warn error) {
 			// own mods and profile in place, and is newer than this read.
 			if a.profileFolder == folder {
 				a.mods, a.modsErr = mods, modsErr
+				// A different directory or profile can hold another set of
+				// mods, so the last check no longer stands for what is shown.
+				a.checkedAt = time.Time{}
 			}
 			a.gameInfo, a.gameInfoErr = info, infoErr
 			if lookErr != nil {
@@ -1287,6 +1357,11 @@ func (a *app) invalidate() {
 }
 
 func main() {
+	// The version comes from the build, which mygo build takes from mygo.json.
+	// The user agent and the about section show the same one.
+	if version := mygo.App.Version(); version != "" {
+		about.Version = version
+	}
 	a := newApp()
 	var cfg config.Config
 	var cfgErr error

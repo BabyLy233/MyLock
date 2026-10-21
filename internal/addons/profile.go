@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Profile is one profile's mods: the manifest that describes them, and the
@@ -133,6 +134,11 @@ type Mod struct {
 	Pak int
 	// Missing names the files the manifest claims but the disk does not have.
 	Missing []string
+	// Modified is when the newest of the mod's files on disk was written, and
+	// the zero time when none of them is there. An install writes the files, so
+	// it is when the mod was installed; it is what an update check goes by for a
+	// mod the app did not install and so has no other record of.
+	Modified time.Time
 }
 
 // Read returns the mods of the profile, the enabled ones in the order the game
@@ -183,9 +189,13 @@ func (p Profile) mod(id string, entry Entry) Mod {
 		if n := pakNumber(name); n > 0 && (m.Pak == 0 || n < m.Pak) {
 			m.Pak = n
 		}
-		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+		info, err := os.Stat(filepath.Join(dir, name))
+		if err != nil {
 			m.Missing = append(m.Missing, name)
 			continue
+		}
+		if info.ModTime().After(m.Modified) {
+			m.Modified = info.ModTime()
 		}
 		m.Vpks = append(m.Vpks, name)
 	}

@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"fmt"
+	"maps"
+	"slices"
 	"strings"
 	"sync"
 
@@ -102,6 +104,10 @@ type store struct {
 	// turning it into something to read is work of its own, so a reply does it
 	// once rather than every frame.
 	writeUp string
+	// picked is the downloads of the chosen mod the user means to install, by
+	// file id. An author often publishes several -- variants of a skin, a base
+	// file and its extras -- and they are installed together as one mod.
+	picked map[int]bool
 
 	// viewer is the screenshot the user opened out of the row of them, if any.
 	viewer viewer
@@ -151,6 +157,7 @@ type shown struct {
 	profileBusy bool
 	profileErr  string
 	writeUp     string
+	picked      map[int]bool
 
 	installing string
 	progress   download.Progress
@@ -702,11 +709,18 @@ func (s *store) open(item int) {
 	}
 	mod := mods[item]
 
+	// What the mod was installed from, if it was installed from here: opening a
+	// mod that is already installed shows the same files it has.
+	s.app.mu.Lock()
+	installed := slices.Clone(s.app.library[mod.Slug()].FileIDs)
+	s.app.mu.Unlock()
+
 	s.mu.Lock()
 	s.chosen = item
 	// The mod that was open before is not this one: nothing of it is left to be
 	// drawn while this one's page is on its way.
 	s.profile, s.profileErr, s.writeUp = gb.Profile{}, "", ""
+	s.picked = nil
 	s.profileBusy = true
 	s.installErr, s.installed = "", ""
 	s.mu.Unlock()
@@ -732,8 +746,30 @@ func (s *store) open(item int) {
 			s.profileBusy = false
 			s.profile, s.profileErr = profile, message
 			s.writeUp = writeUp
+			s.picked = defaultPicked(profile.Files, installed)
 		})
 	}()
+}
+
+// defaultPicked is what a mod's page starts with selected: the files it was
+// installed from, so a second install keeps the variants the user chose, or the
+// newest current one when there is no such record. Variants of one mod replace
+// each other, so every one of them being selected would be a mod that fights
+// itself; the user picks any others they want by hand.
+func defaultPicked(files []gb.File, installed []int) map[int]bool {
+	picked := make(map[int]bool, len(installed))
+	for _, file := range files {
+		if !file.Archived && slices.Contains(installed, file.ID) {
+			picked[file.ID] = true
+		}
+	}
+	if len(picked) > 0 {
+		return picked
+	}
+	if file, ok := newestOffered(files); ok {
+		picked[file.ID] = true
+	}
+	return picked
 }
 
 // back returns to the catalogue.
@@ -741,6 +777,7 @@ func (s *store) back() {
 	s.mu.Lock()
 	s.chosen = -1
 	s.profile, s.profileErr, s.writeUp = gb.Profile{}, "", ""
+	s.picked = nil
 	s.mu.Unlock()
 	// A picture of the mod that was open is not a picture of anything once the
 	// mod is not.
@@ -769,6 +806,7 @@ func (s *store) shown() shown {
 		profileBusy: s.profileBusy,
 		profileErr:  s.profileErr,
 		writeUp:     s.writeUp,
+		picked:      maps.Clone(s.picked),
 		installing:  s.installing,
 		progress:    s.progress,
 		installErr:  s.installErr,
