@@ -8,7 +8,7 @@ import (
 
 func TestSaveAndLoad(t *testing.T) {
 	path := filepath.Join(t.TempDir(), fileName)
-	want := Config{GamePath: "/games/Deadlock"}
+	want := Config{GamePath: "/games/Deadlock", Theme: "dark", VanillaPending: true, VanillaSeen: true}
 
 	if err := want.Save(path); err != nil {
 		t.Fatal(err)

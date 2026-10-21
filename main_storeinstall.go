@@ -154,8 +154,11 @@ func (s *store) files(c *ui.Context, mod gb.Submission, state shown) {
 		// and each is a separate archive, so each is offered on its own rather
 		// than one being picked for the user.
 		ui.Text(c, "选择要安装的文件").Bold()
+		if state.gameRunning {
+			ui.Text(c, "游戏正在运行，先退出游戏再安装模组。").FontSize(12).TextColor(t.Danger)
+		}
 		for _, file := range state.profile.Files {
-			s.fileRow(c, mod, file, state.installing != "")
+			s.fileRow(c, mod, file, state.installing != "" || state.gameRunning)
 		}
 	}
 }
@@ -279,10 +282,14 @@ func humanSize(n int64) string {
 func (s *store) install(mod gb.Submission, file gb.File) {
 	a := s.app
 	a.mu.Lock()
-	install := a.install
+	install, running := a.install, a.gameRunning
 	a.mu.Unlock()
 	if install == nil {
 		s.failed("先到设置里指定游戏目录，再安装模组。")
+		return
+	}
+	if running {
+		s.failed("游戏正在运行，先退出游戏再安装模组。")
 		return
 	}
 
@@ -359,6 +366,13 @@ func (s *store) fetch(a *app, install *game.Install, mod gb.Submission, file gb.
 		return fmt.Errorf("%s 里没有 VPK 文件，可能不是 Deadlock 的模组。", file.Name)
 	}
 
+	// Checked again here, after the download: the game can have been started
+	// while the archive was being fetched, and this is the point where files
+	// it holds are moved.
+	if a.isGameRunning() {
+		return fmt.Errorf("游戏正在运行，先退出游戏再安装模组。")
+	}
+
 	profile := addons.Open(install.AddonsDir())
 	if err := profile.Install(mod.Slug(), files); err != nil {
 		return err
@@ -372,20 +386,27 @@ func (s *store) fetch(a *app, install *game.Install, mod gb.Submission, file gb.
 
 	// The game is told where the mods are, and the list is read back rather
 	// than assumed: what the mods page shows is then what is on disk.
-	info, infoErr := patchGameInfo(install)
+	info, infoErr := a.patchGameInfo(install)
 	mods, readErr := profile.Read()
 
+	var forgot bool
 	a.publish(func() {
 		a.mu.Lock()
-		defer a.mu.Unlock()
 		a.mods, a.modsErr = mods, ""
 		if readErr != nil {
 			a.modsErr = readErr.Error()
 		}
 		if infoErr == nil {
 			a.gameInfo, a.gameInfoErr = info, ""
+			// The install wrote the mod paths, so it is no longer a launch
+			// without mods the app is waiting on.
+			forgot = a.clearVanillaSession()
 		} else {
 			a.gameInfoErr = infoErr.Error()
+		}
+		a.mu.Unlock()
+		if forgot {
+			a.rememberSession()
 		}
 	})
 	return nil

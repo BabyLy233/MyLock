@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 )
 
 // The game reads its mod search paths from gameinfo.gi, and only from there:
@@ -23,6 +24,13 @@ const (
 // errNoMarkers reports a gameinfo.gi with no section of ours in it, which is
 // what a game update leaves: it replaces the file with the one it shipped.
 var errNoMarkers = errors.New("gameinfo.gi has no section this app wrote")
+
+// writeMu keeps the read-patch-write in writeGameInfo one at a time. Two of
+// them at once -- a switch being flipped while a session's mods are put back --
+// would each patch the copy it read, and the later rename would undo the
+// earlier one, leaving the game told to load a set of paths that does not
+// match the profile.
+var writeMu sync.Mutex
 
 // GameInfo is the state of an installation's gameinfo.gi.
 type GameInfo struct {
@@ -82,6 +90,9 @@ func (i *Install) PatchGameInfoVanilla() (bool, error) {
 // writeGameInfo puts block in place of the section of the game's configuration
 // that holds the search paths, and reports whether the file changed.
 func (i *Install) writeGameInfo(block string) (bool, error) {
+	writeMu.Lock()
+	defer writeMu.Unlock()
+
 	path := i.GameInfoPath()
 	original, err := os.ReadFile(path)
 	if err != nil {

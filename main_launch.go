@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/egoist/mygo/ui"
@@ -25,7 +26,7 @@ func (a *app) launchRow(c *ui.Context, s state) {
 	// configuration is being written: both of those write that configuration
 	// too, and two writers at once would leave whichever finished last to say
 	// what the game loads.
-	busy := s.launching || mods.reading || s.patching
+	busy := s.launching || mods.reading || s.patching || s.gameRunning
 
 	ui.Column(c).Gap(6).Children(func() {
 		ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
@@ -46,6 +47,17 @@ func (a *app) launchRow(c *ui.Context, s state) {
 			ui.Text(c, "正在启动…").FontSize(12).TextColor(t.TextMuted)
 		case s.launchErr != "":
 			ui.Text(c, s.launchErr).FontSize(12).TextColor(t.Danger)
+		// What the page says when the game is in the way comes before what an
+		// earlier session left behind: starting again is what the buttons are
+		// for, and it is what cannot be done.
+		case s.gameRunning:
+			ui.Text(c, "游戏正在运行，先退出游戏再启动。").FontSize(12).TextColor(t.TextMuted)
+		// What putting the mods back after a vanilla session came to is newer
+		// than the launch that session started with.
+		case s.restoreErr != "":
+			ui.Text(c, s.restoreErr).FontSize(12).TextColor(t.Danger)
+		case s.restored != "":
+			ui.Text(c, s.restored).FontSize(12).TextColor(t.Success)
 		case s.launched != "":
 			ui.Text(c, s.launched).FontSize(12).TextColor(t.Success)
 		}
@@ -73,9 +85,19 @@ func (a *app) launch(vanilla bool) {
 	a.invalidate()
 
 	go func() {
-		info, err := prepareLaunch(install, vanilla)
-		if err == nil {
-			err = install.Launch()
+		var info game.GameInfo
+		err := error(nil)
+		// The launch writes the game's configuration too, and the running game
+		// is the one thing that must not have it changed underneath it. Asked
+		// again here rather than trusting the last look, which is up to a poll
+		// old.
+		if a.isGameRunning() {
+			err = errors.New("游戏正在运行，先退出游戏再启动。")
+		} else {
+			info, err = a.prepareLaunch(install, vanilla)
+			if err == nil {
+				err = install.Launch()
+			}
 		}
 
 		var message string
@@ -92,10 +114,10 @@ func (a *app) launch(vanilla bool) {
 
 		a.publish(func() {
 			a.mu.Lock()
-			defer a.mu.Unlock()
 			a.launching = false
 			a.launchErr = message
 			if err != nil {
+				a.mu.Unlock()
 				return
 			}
 			// What the launch left the configuration in is what the mods page
@@ -103,13 +125,27 @@ func (a *app) launch(vanilla bool) {
 			// without mods is the one thing that turns them off.
 			a.gameInfo, a.gameInfoErr = info, ""
 			a.launched = said
+			a.blocked = ""
+			a.restored, a.restoreErr = "", ""
+			// A launch without mods is followed until its game has come and
+			// gone, and then the mods are put back. One with mods is the
+			// configuration the game goes back to, so it cancels any waiting.
+			a.vanillaPending, a.vanillaSeen = vanilla, false
+			a.mu.Unlock()
+			// Written down as well, so that closing the app before the game
+			// does not lose track of the session.
+			a.rememberSession()
 		})
 	}()
 }
 
 // prepareLaunch writes the game's configuration for a launch, and reports what
-// state that left it in.
-func prepareLaunch(install *game.Install, vanilla bool) (game.GameInfo, error) {
+// state that left it in. The write is one at a time with the switches and the
+// settings page's button, which write the same file.
+func (a *app) prepareLaunch(install *game.Install, vanilla bool) (game.GameInfo, error) {
+	a.gameinfoMu.Lock()
+	defer a.gameinfoMu.Unlock()
+
 	// A launch with mods writes what the settings page's button writes, and
 	// reports the state it left behind in the same way.
 	if !vanilla {

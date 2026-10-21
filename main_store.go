@@ -105,6 +105,9 @@ type shown struct {
 	progress   download.Progress
 	installErr string
 	installed  string
+	// gameRunning is whether Deadlock is running, in which case nothing may be
+	// installed into the files it holds.
+	gameRunning bool
 }
 
 // view is the store: a search box over the catalogue, the catalogue itself, and
@@ -372,6 +375,12 @@ func (s *store) back() {
 
 // shown reads what the last requests brought back, in one lock.
 func (s *store) shown() shown {
+	// Read before this store's lock, because the app's is never taken while
+	// that one is held.
+	s.app.mu.Lock()
+	running := s.app.gameRunning
+	s.app.mu.Unlock()
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return shown{
@@ -389,5 +398,6 @@ func (s *store) shown() shown {
 		progress:    s.progress,
 		installErr:  s.installErr,
 		installed:   s.installed,
+		gameRunning: running,
 	}
 }

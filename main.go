@@ -54,7 +54,15 @@ type app struct {
 
 	// mu guards what the lookups publish for the view to read, and the
 	// appearance, which a save reads from a goroutine.
-	mu          sync.Mutex
+	mu sync.Mutex
+	// settingsMu keeps one write of the settings file at a time: a launch and
+	// a path change can both save, and the file is replaced whole.
+	settingsMu sync.Mutex
+	// gameinfoMu keeps one read of the profile and write of the game's
+	// configuration together: a switch and a session's mods being put back can
+	// both do it, and the paths the later write puts down must be the profile
+	// as it is then.
+	gameinfoMu  sync.Mutex
 	theme       mygo.ThemeSource
 	looking     bool
 	browsing    bool
@@ -72,6 +80,25 @@ type app struct {
 	launching bool
 	launchErr string
 	launched  string
+
+	// running is how the app asks whether Deadlock is running. It is a field
+	// so that a test can answer instead of the process list.
+	running func() bool
+	// gameRunning is whether the last look at the process list found the game,
+	// which is what the window is drawn from.
+	gameRunning bool
+	// vanillaPending and vanillaSeen belong to a launch without mods: the game
+	// was last asked to start without them, and whether that launch's process
+	// has been seen. Once it has been seen and then goes away, the game is put
+	// back to loading the mods.
+	vanillaPending bool
+	vanillaSeen    bool
+	// blocked is why the last switching or installing was not done, which is
+	// what a game that started in the meantime leaves behind. restored and
+	// restoreErr are what putting the mods back after a vanilla session came to.
+	blocked    string
+	restored   string
+	restoreErr string
 }
 
 // state is what the view reads about the game directory, taken in one lock.
@@ -99,6 +126,18 @@ type state struct {
 	launching bool
 	launchErr string
 	launched  string
+	// gameRunning is whether the last look at the process list found the game,
+	// which is when the mods must be left alone.
+	gameRunning bool
+	// vanillaPending reports that the last launch was made without mods, so
+	// the paths missing from the game's configuration are on purpose.
+	vanillaPending bool
+	// blocked is why the last switching or installing was not done, and
+	// restored and restoreErr are what putting the mods back after a vanilla
+	// session came to.
+	blocked    string
+	restored   string
+	restoreErr string
 	// theme is the appearance in effect, which the settings page shows as the
 	// chosen segment.
 	theme mygo.ThemeSource
@@ -138,6 +177,7 @@ func newApp() *app {
 		catalogue:  gb.New(),
 		downloads:  download.New(),
 		thumbnails: newImages(),
+		running:    game.Running,
 	}
 	a.store = newStore(a)
 	return a
@@ -207,10 +247,18 @@ func (a *app) modsPage(c *ui.Context) {
 		}
 
 		ui.Text(c, s.install.AddonsDir()).FontSize(12).Selectable().TextColor(t.TextMuted)
+		// The game holds the files it loaded, so moving them under it is how a
+		// mod ends up half read. Nothing here is offered until it is closed.
+		if s.gameRunning {
+			ui.Text(c, "游戏正在运行，先退出游戏再装卸模组。").FontSize(12).TextColor(t.Danger)
+		}
+		if s.blocked != "" {
+			ui.Text(c, s.blocked).FontSize(12).TextColor(t.Danger)
+		}
 		// Enabled mods that the game is not set up to load are the one thing
 		// the list cannot show by itself, and the one thing a game update
 		// causes without any other sign.
-		if enabled := enabledCount(mods.list); enabled > 0 && !s.gameInfo.ModPaths {
+		if enabled := enabledCount(mods.list); enabled > 0 && !s.gameInfo.ModPaths && !s.vanillaPending {
 			ui.Text(c, fmt.Sprintf(
 				"游戏没有在加载模组目录，这 %d 个已启用的模组不会生效。到设置里点一下「应用模组路径」。",
 				enabled)).FontSize(12).TextColor(t.Danger)
@@ -222,7 +270,7 @@ func (a *app) modsPage(c *ui.Context) {
 			ItemKey(func(i int) any { return mods.list[i].ID }).
 			Fill().
 			Rows(func(r ui.ListRow) {
-				a.modRow(c, r, mods.list[r.Index], mods.reading)
+				a.modRow(c, r, mods.list[r.Index], mods.reading || s.gameRunning)
 			})
 	})
 }
@@ -305,6 +353,19 @@ func (a *app) setEnabled(id string, on bool) {
 	a.invalidate()
 
 	go func() {
+		// Checked here rather than trusting the last look at the process list:
+		// the game can start in the interval between the two, and it holds the
+		// files this is about to move.
+		if a.isGameRunning() {
+			a.publish(func() {
+				a.mu.Lock()
+				a.reading = false
+				a.blocked = "游戏正在运行，先退出游戏再装卸模组。"
+				a.mu.Unlock()
+			})
+			return
+		}
+
 		profile := addons.Open(install.AddonsDir())
 		switchErr := profile.SetEnabled(id, on)
 		// Read back whatever the profile holds now, whether the switch worked
@@ -316,7 +377,7 @@ func (a *app) setEnabled(id string, on bool) {
 		// doing nothing, so the game's configuration follows every change.
 		info, infoErr := game.GameInfo{}, error(nil)
 		if switchErr == nil {
-			info, infoErr = patchGameInfo(install)
+			info, infoErr = a.patchGameInfo(install)
 		}
 
 		var message string
@@ -327,13 +388,21 @@ func (a *app) setEnabled(id string, on bool) {
 		if infoErr != nil {
 			infoMessage = infoErr.Error()
 		}
+		var forgot bool
 		a.publish(func() {
 			a.mu.Lock()
-			defer a.mu.Unlock()
 			a.reading = false
+			a.blocked = ""
 			a.mods, a.modsErr = mods, message
 			if switchErr == nil {
 				a.gameInfo, a.gameInfoErr = info, infoMessage
+				// This wrote the mod paths, so it is no longer a launch
+				// without mods the app is waiting on.
+				forgot = a.clearVanillaSession()
+			}
+			a.mu.Unlock()
+			if forgot {
+				a.rememberSession()
 			}
 		})
 	}()
@@ -355,23 +424,53 @@ func (a *app) applyGameInfo() {
 	a.invalidate()
 
 	go func() {
-		info, err := patchGameInfo(install)
+		if a.isGameRunning() {
+			a.publish(func() {
+				a.mu.Lock()
+				a.patching = false
+				a.blocked = "游戏正在运行，先退出游戏再应用模组路径。"
+				a.mu.Unlock()
+			})
+			return
+		}
+
+		info, err := a.patchGameInfo(install)
 		var message string
 		if err != nil {
 			message = err.Error()
 		}
+		var forgot bool
 		a.publish(func() {
 			a.mu.Lock()
-			defer a.mu.Unlock()
 			a.patching = false
+			a.blocked = ""
 			a.gameInfo, a.gameInfoErr = info, message
+			if err == nil {
+				// This wrote the mod paths, so it is no longer a launch
+				// without mods the app is waiting on.
+				forgot = a.clearVanillaSession()
+			}
+			a.mu.Unlock()
+			if forgot {
+				a.rememberSession()
+			}
 		})
 	}()
 }
 
 // patchGameInfo tells the game to search the directories this profile's mods
 // are in, and reports what state that left the configuration in. It reads and
-// writes the game's own files, so it runs off the main thread.
+// writes the game's own files, so it runs off the main thread, and the read of
+// the profile and the write of the file are kept together: two of them at once
+// could leave the file naming a set of paths that misses a mod switched on in
+// between.
+func (a *app) patchGameInfo(install *game.Install) (game.GameInfo, error) {
+	a.gameinfoMu.Lock()
+	defer a.gameinfoMu.Unlock()
+	return patchGameInfo(install)
+}
+
+// patchGameInfo is the write itself, without the lock this app's callers take.
 func patchGameInfo(install *game.Install) (game.GameInfo, error) {
 	paths, err := addons.Open(install.AddonsDir()).SearchPaths()
 	if err != nil {
@@ -409,6 +508,8 @@ func (a *app) gameInfoSection(c *ui.Context, s state) {
 		case s.gameInfo.ModPaths:
 			ui.Text(c, "已应用，游戏会加载模组目录。").TextColor(t.TextMuted)
 			field(c, "gameinfo.gi", s.gameInfo.Path)
+		case s.vanillaPending:
+			ui.Text(c, "这次启动不加载模组，退出游戏后会自动恢复。").TextColor(t.TextMuted)
 		default:
 			ui.Text(c, "还没应用。游戏不会去读模组目录，除非 gameinfo.gi 里写上它们。").
 				TextColor(t.Danger)
@@ -418,12 +519,15 @@ func (a *app) gameInfoSection(c *ui.Context, s state) {
 		if s.gameInfoErr != "" && !s.patching {
 			ui.Text(c, s.gameInfoErr).TextColor(t.Danger)
 		}
+		if s.blocked != "" {
+			ui.Text(c, s.blocked).TextColor(t.Danger)
+		}
 	})
 	if s.install != nil {
 		// In a row so the button takes its own width, as the ones below do.
 		ui.Row(c).Children(func() {
 			ui.Button(c, "应用模组路径").
-				Disabled(s.patching || s.looking).
+				Disabled(s.patching || s.looking || s.gameRunning).
 				OnClick(a.applyGameInfo)
 		})
 	}
@@ -516,18 +620,23 @@ func (a *app) state() state {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return state{
-		looking:     a.looking,
-		browsing:    a.browsing,
-		pinned:      a.pinned,
-		install:     a.install,
-		lookErr:     a.lookErr,
-		gameInfo:    a.gameInfo,
-		gameInfoErr: a.gameInfoErr,
-		patching:    a.patching,
-		launching:   a.launching,
-		launchErr:   a.launchErr,
-		launched:    a.launched,
-		theme:       a.theme,
+		looking:        a.looking,
+		browsing:       a.browsing,
+		pinned:         a.pinned,
+		install:        a.install,
+		lookErr:        a.lookErr,
+		gameInfo:       a.gameInfo,
+		gameInfoErr:    a.gameInfoErr,
+		patching:       a.patching,
+		launching:      a.launching,
+		launchErr:      a.launchErr,
+		launched:       a.launched,
+		gameRunning:    a.gameRunning,
+		vanillaPending: a.vanillaPending,
+		blocked:        a.blocked,
+		restored:       a.restored,
+		restoreErr:     a.restoreErr,
+		theme:          a.theme,
 	}
 }
 
@@ -535,6 +644,9 @@ func (a *app) state() state {
 // the app runs rather than here, because the appearance has to be known before
 // the first frame is drawn.
 func (a *app) start(cfg config.Config, cfgErr error) {
+	// A session the app was following when it last ended is picked up again,
+	// whether its game is still running or has closed in the meantime.
+	a.vanillaPending, a.vanillaSeen = cfg.VanillaPending, cfg.VanillaSeen
 	if cfgErr != nil {
 		// The directory the user chose last time is not in effect, so the app
 		// detects the game instead, and says why.
@@ -682,10 +794,43 @@ func (a *app) saveSettings(pinned string) error {
 	if a.configPath == "" {
 		return nil
 	}
+	a.settingsMu.Lock()
+	defer a.settingsMu.Unlock()
+
 	a.mu.Lock()
-	theme := a.theme
+	cfg := config.Config{
+		GamePath:       pinned,
+		Theme:          string(a.theme),
+		VanillaPending: a.vanillaPending,
+		VanillaSeen:    a.vanillaSeen,
+	}
 	a.mu.Unlock()
-	return config.Config{GamePath: pinned, Theme: string(theme)}.Save(a.configPath)
+	return cfg.Save(a.configPath)
+}
+
+// rememberSession writes what the app is waiting on into the settings file, so
+// that a restart in the middle of a session still puts the mods back when it
+// ends. A failure is logged rather than shown: the run in progress already
+// knows what it is waiting for, and only the next one would lose it.
+func (a *app) rememberSession() {
+	a.mu.Lock()
+	pinned := a.pinned
+	a.mu.Unlock()
+	if err := a.saveSettings(pinned); err != nil {
+		log.Printf("remembering the game session: %v", err)
+	}
+}
+
+// clearVanillaSession forgets a launch without mods, which something else has
+// just superseded: a mod was switched, the paths were applied, or a newer
+// launch was made. It reports whether there was one to forget, and must be
+// called with mu held.
+func (a *app) clearVanillaSession() bool {
+	if !a.vanillaPending && !a.vanillaSeen {
+		return false
+	}
+	a.vanillaPending, a.vanillaSeen = false, false
+	return true
 }
 
 // appearance is the appearance in effect.
@@ -828,6 +973,10 @@ func main() {
 			Content: ui.View(a.view),
 		})
 		a.start(cfg, cfgErr)
+		// The game's process list is followed from here on: it decides
+		// whether the mods can be moved, and when a session without them has
+		// ended.
+		go a.watchGame()
 	})
 	if err := mygo.App.Run(); err != nil {
 		log.Fatal(err)

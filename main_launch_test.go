@@ -183,17 +183,22 @@ func TestTheLaunchSaysWhySteamCouldNotBeAsked(t *testing.T) {
 	}
 }
 
-// Starting the game writes the game's own configuration, which the page reads
-// back: the warning about mods not loading has to go as the launch goes out.
-func TestLaunchingWithoutModsWarnsThatTheyAreNotLoaded(t *testing.T) {
+// A launch without mods writes the paths out of the game's configuration on
+// purpose, which is not a game update having detached them: the page says the
+// mods are left out, not that something is broken.
+func TestLaunchingWithoutModsDoesNotWarnAboutDetachedMods(t *testing.T) {
 	a, _, tt := launchable(t)
 	if tt.HasText("游戏没有在加载模组目录") {
 		t.Fatalf("the warning is up before the launch: %q", tt.Texts())
 	}
 
 	launch(t, a, tt, "启动原版游戏")
+	tt.Frame()
 
-	if !tt.HasText("游戏没有在加载模组目录") {
-		t.Errorf("the page does not say the mods are off after a vanilla launch: %q", tt.Texts())
+	if !tt.HasText("这次不加载模组") {
+		t.Errorf("the page does not say the mods were left out: %q", tt.Texts())
+	}
+	if tt.HasText("游戏没有在加载模组目录") {
+		t.Errorf("a launch without mods is reported as mods detached: %q", tt.Texts())
 	}
 }
