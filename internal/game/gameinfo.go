@@ -64,6 +64,24 @@ func (i *Install) ReadGameInfo() (GameInfo, error) {
 // rebuilt around a new one, so the game loads mods again without the user
 // having to reinstall anything.
 func (i *Install) PatchGameInfo(paths []string) (bool, error) {
+	return i.writeGameInfo(markerStart + "\n" + section(paths) + "\n" + markerEnd)
+}
+
+// PatchGameInfoVanilla puts the search paths the game ships with back into
+// gameinfo.gi, and reports whether the file changed. It is what a launch
+// without mods is given.
+//
+// Nothing of this app's is left in the file: no mod directory is named, the two
+// Mod lines that let a mod's files stand in for the game's own are gone with
+// them, and so are the markers. What is left is the game's own configuration,
+// which is also what the next patch finds its way back from.
+func (i *Install) PatchGameInfoVanilla() (bool, error) {
+	return i.writeGameInfo(vanillaSection())
+}
+
+// writeGameInfo puts block in place of the section of the game's configuration
+// that holds the search paths, and reports whether the file changed.
+func (i *Install) writeGameInfo(block string) (bool, error) {
 	path := i.GameInfoPath()
 	original, err := os.ReadFile(path)
 	if err != nil {
@@ -71,7 +89,7 @@ func (i *Install) PatchGameInfo(paths []string) (bool, error) {
 	}
 	content := string(original)
 
-	patched, err := patchGameInfo(content, paths)
+	patched, err := patchGameInfo(content, block)
 	if err != nil {
 		return false, fmt.Errorf("%s: %w", path, err)
 	}
@@ -107,17 +125,16 @@ func (i *Install) PatchGameInfo(paths []string) (bool, error) {
 	return true, nil
 }
 
-// patchGameInfo returns gameinfo.gi with the mod search paths in it.
-func patchGameInfo(content string, paths []string) (string, error) {
+// patchGameInfo returns gameinfo.gi with block in place of the section this app
+// wrote, or -- in a file holding none, which is what a game update or a launch
+// without mods leaves -- in place of the SearchPaths section it reproduces.
+func patchGameInfo(content, block string) (string, error) {
 	start, end, err := markerSpan(content)
 	if err != nil {
-		// No section of ours: put one where the SearchPaths section is, which
-		// is the section it reproduces.
 		if start, end, err = searchPathsSpan(content); err != nil {
 			return "", err
 		}
 	}
-	block := markerStart + "\n" + section(paths) + "\n" + markerEnd
 	return content[:start] + matchLineEndings(block, content) + content[end:], nil
 }
 
@@ -234,6 +251,32 @@ func section(paths []string) string {
 		entry("Game", "core"+"        "),
 		"        }",
 	), "\n")
+}
+
+// vanillaSection is the block the game ships with, which is what a launch
+// without mods is given. It is the block above with the mod directory taken out
+// and the two Mod lines along with it: with no mod directory named, and nothing
+// let to stand in for the game's own files, the game loads nothing but itself.
+//
+// The lines are the Tauri app's, byte for byte, as section's are. The one
+// difference is a blank line: the Tauri app's block opens with a newline, which
+// a file with no section of ours has nothing to replace, so it lands above the
+// SearchPaths line and stays there -- and every launch without mods, finding no
+// markers again, adds another. Here the block begins at the line it replaces,
+// so a launch that changes nothing writes nothing.
+func vanillaSection() string {
+	return strings.Join([]string{
+		"\t\tSearchPaths",
+		"        {  ",
+		entry("Game_UILanguage", "citadel_*LANGUAGE*"),
+		entry("Game_LowViolence", "citadel_lv"),
+		entry("Game", "citadel"),
+		entry("Write", "citadel"+"          "),
+		entry("Game", "citadel"),
+		entry("Write", "core"),
+		entry("Game", "core"+"        "),
+		"        }",
+	}, "\n")
 }
 
 // entry is one line of the block: twelve spaces, the key padded to twenty

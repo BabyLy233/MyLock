@@ -67,6 +67,11 @@ type app struct {
 	modsErr     string
 	gameInfo    game.GameInfo
 	gameInfoErr string
+	// The launch in flight, if there is one: why it could not be started, and
+	// what came of the last one that was.
+	launching bool
+	launchErr string
+	launched  string
 }
 
 // state is what the view reads about the game directory, taken in one lock.
@@ -89,6 +94,11 @@ type state struct {
 	gameInfoErr string
 	// patching is set while the game's configuration is being written.
 	patching bool
+	// launching is set while the game is being started, and the other two are
+	// why it could not be and what came of it.
+	launching bool
+	launchErr string
+	launched  string
 	// theme is the appearance in effect, which the settings page shows as the
 	// chosen segment.
 	theme mygo.ThemeSource
@@ -177,6 +187,10 @@ func (a *app) modsPage(c *ui.Context) {
 
 	ui.Column(c).Fill().Padding(24).Gap(12).Children(func() {
 		ui.Text(c, "已安装模组").FontSize(22).Bold()
+		// Above the list rather than below it: starting the game is what the
+		// page is for, and it is the one thing here that is about the game
+		// rather than about one of the mods.
+		a.launchRow(c, s)
 		switch {
 		case s.install == nil:
 			ui.Text(c, "还没有找到游戏目录，先到设置里指定。").TextColor(t.TextMuted)
@@ -510,6 +524,9 @@ func (a *app) state() state {
 		gameInfo:    a.gameInfo,
 		gameInfoErr: a.gameInfoErr,
 		patching:    a.patching,
+		launching:   a.launching,
+		launchErr:   a.launchErr,
+		launched:    a.launched,
 		theme:       a.theme,
 	}
 }

@@ -46,6 +46,21 @@ const wantSection = "\n" +
 	"            Game                core        \n" +
 	"        }"
 
+// wantVanillaSection is the block a launch without mods leaves, line for line
+// as the Tauri app writes it. It is the block above with the mod directory and
+// the two Mod lines taken out of it, and without the newline the Tauri app's
+// opens with, which it never replaces and so adds one more of each time.
+const wantVanillaSection = "\t\tSearchPaths\n" +
+	"        {  \n" +
+	"            Game_UILanguage     citadel_*LANGUAGE*\n" +
+	"            Game_LowViolence    citadel_lv\n" +
+	"            Game                citadel\n" +
+	"            Write               citadel          \n" +
+	"            Game                citadel\n" +
+	"            Write               core\n" +
+	"            Game                core        \n" +
+	"        }"
+
 // installation builds a Deadlock installation holding that gameinfo.gi, and
 // returns it with the path of the file.
 func installation(t *testing.T, content string) (*Install, string) {
@@ -146,6 +161,103 @@ func TestPatchUpdatesThePaths(t *testing.T) {
 	second := strings.Index(got, "Game                citadel/addons2\n")
 	if first < 0 || second < 0 || first > second {
 		t.Errorf("the shards are out of order, at %d and %d:\n%s", first, second, got)
+	}
+}
+
+// A launch without mods leaves the game's own search paths behind, and nothing
+// of this app's: the game is to load nothing but itself.
+func TestPatchVanillaPutsBackWhatTheGameShipsWith(t *testing.T) {
+	install, path := installation(t, vanilla)
+	if _, err := install.PatchGameInfo([]string{"citadel/addons"}); err != nil {
+		t.Fatal(err)
+	}
+
+	changed, err := install.PatchGameInfoVanilla()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !changed {
+		t.Error("putting the vanilla paths back reported no change")
+	}
+
+	got := read(t, path)
+	if !strings.Contains(got, wantVanillaSection) {
+		t.Errorf("the file does not hold the block the Tauri app writes:\n--- got ---\n%s\n--- want ---\n%s", got, wantVanillaSection)
+	}
+	// Nothing of the app's is left: no mod directory is searched, no mod is let
+	// to stand in for the game's own files, and there is no section of ours for
+	// the next patch to find.
+	for _, gone := range []string{"citadel/addons", "Mod", markerStart, markerEnd} {
+		if strings.Contains(got, gone) {
+			t.Errorf("the file still holds %q:\n%s", gone, got)
+		}
+	}
+	// The rest of the file is left alone.
+	for _, keep := range []string{`"GameInfo"`, `title		"Deadlock"`, "SteamAppId"} {
+		if !strings.Contains(got, keep) {
+			t.Errorf("patching dropped %q from the file:\n%s", keep, got)
+		}
+	}
+	if n := strings.Count(got, "SearchPaths"); n != 1 {
+		t.Errorf("the file holds %d SearchPaths sections, want 1:\n%s", n, got)
+	}
+}
+
+// Patching vanilla twice must change nothing the second time, or every launch
+// without mods would rewrite the game's configuration.
+func TestPatchVanillaChangesNothingTheSecondTime(t *testing.T) {
+	install, path := installation(t, vanilla)
+	if _, err := install.PatchGameInfo([]string{"citadel/addons"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := install.PatchGameInfoVanilla(); err != nil {
+		t.Fatal(err)
+	}
+	first := read(t, path)
+
+	changed, err := install.PatchGameInfoVanilla()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed {
+		t.Error("patching an already vanilla file reported a change")
+	}
+	if got := read(t, path); got != first {
+		t.Errorf("the file changed on a second patch:\n--- first ---\n%s\n--- second ---\n%s", first, got)
+	}
+}
+
+// Mods are turned back on after a launch without them, which is what the file a
+// vanilla patch leaves has to allow.
+func TestPatchFindsItsWayBackAfterAVanillaLaunch(t *testing.T) {
+	install, path := installation(t, vanilla)
+	if _, err := install.PatchGameInfo([]string{"citadel/addons"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := install.PatchGameInfoVanilla(); err != nil {
+		t.Fatal(err)
+	}
+
+	changed, err := install.PatchGameInfo([]string{"citadel/addons", "citadel/addons2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !changed {
+		t.Error("patching a file left vanilla reported no change")
+	}
+
+	got := read(t, path)
+	for _, want := range []string{
+		markerStart,
+		"Game                citadel/addons\n",
+		"Game                citadel/addons2\n",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the file does not hold %q:\n%s", want, got)
+		}
+	}
+	if n := strings.Count(got, "SearchPaths"); n != 1 {
+		t.Errorf("the file holds %d SearchPaths sections, want 1:\n%s", n, got)
 	}
 }
 
