@@ -315,7 +315,7 @@ func TestAMissingSubmissionReadsAsNotFound(t *testing.T) {
 		return http.StatusNotFound, `{"_sErrorCode": "NO_SUCH_RECORD", "_sErrorMessage": "This Mod doesn't exist"}`
 	})
 
-	_, err := c.Files(t.Context(), Mod, 999999999)
+	_, err := c.Profile(t.Context(), Mod, 999999999)
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("err = %v, want ErrNotFound", err)
 	}
@@ -366,7 +366,7 @@ func TestAMissingRecordSentWithA200ReadsAsNotFound(t *testing.T) {
 		return http.StatusOK, `{"_sErrorCode": "NO_SUCH_RECORD", "_sErrorMessage": "This Mod doesn't exist"}`
 	})
 
-	_, err := c.Files(t.Context(), Mod, 999999999)
+	_, err := c.Profile(t.Context(), Mod, 999999999)
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("err = %v, want ErrNotFound", err)
 	}
@@ -460,9 +460,27 @@ func TestACanceledRequestStops(t *testing.T) {
 	}
 }
 
-func TestFilesReadsADownloadPage(t *testing.T) {
+func TestProfileReadsASubmissionsPage(t *testing.T) {
 	c, s := newServer(t, func(int, http.ResponseWriter) (int, string) {
 		return http.StatusOK, `{
+			"_sName": "Yamato redesign",
+			"_sText": "Redesigned Yamato with a new look<br><br>Installation instructions in readme.txt",
+			"_sDescription": "Yamato NEW model!",
+			"_nDownloadCount": 785695,
+			"_sProfileUrl": "https://gamebanana.com/mods/599927",
+			"_aPreviewMedia": {
+				"_aImages": [
+					{
+						"_sBaseUrl": "https://images.gamebanana.com/img/ss/mods",
+						"_sFile": "6988989395e38.jpg",
+						"_sFile220": "220-90_6988989395e38.jpg"
+					},
+					{
+						"_sBaseUrl": "https://images.gamebanana.com/img/ss/mods",
+						"_sFile": "68a6b23fe674f.jpg"
+					}
+				]
+			},
 			"_aFiles": [
 				{
 					"_idRow": 1854979,
@@ -486,10 +504,40 @@ func TestFilesReadsADownloadPage(t *testing.T) {
 		}`
 	})
 
-	files, err := c.Files(t.Context(), Mod, 599927)
+	profile, err := c.Profile(t.Context(), Mod, 599927)
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	// What the author wrote is what a page shows, and it is handed over as the
+	// HTML it is: the app decides how to draw it.
+	if !strings.Contains(profile.Text, "Redesigned Yamato with a new look") {
+		t.Errorf("Text = %q", profile.Text)
+	}
+	if profile.Downloads != 785695 {
+		t.Errorf("Downloads = %d, want 785695", profile.Downloads)
+	}
+	if profile.URL != "https://gamebanana.com/mods/599927" {
+		t.Errorf("URL = %q", profile.URL)
+	}
+
+	// A picture is published at several sizes, and the two kept are the small
+	// one a row shows and the whole one behind it. One published at a single
+	// size is its own small one.
+	if len(profile.Images) != 2 {
+		t.Fatalf("the page holds %d pictures, want 2", len(profile.Images))
+	}
+	if got, want := profile.Images[0].Thumb, "https://images.gamebanana.com/img/ss/mods/220-90_6988989395e38.jpg"; got != want {
+		t.Errorf("Thumb = %q, want %q", got, want)
+	}
+	if got, want := profile.Images[0].URL, "https://images.gamebanana.com/img/ss/mods/6988989395e38.jpg"; got != want {
+		t.Errorf("URL = %q, want %q", got, want)
+	}
+	if got, want := profile.Images[1].Thumb, profile.Images[1].URL; got != want {
+		t.Errorf("a picture with no small size reads as %q, want %q", got, want)
+	}
+
+	files := profile.Files
 	if len(files) != 2 {
 		t.Fatalf("the page holds %d files, want 2", len(files))
 	}
@@ -512,8 +560,56 @@ func TestFilesReadsADownloadPage(t *testing.T) {
 	if first.Scan != "clean" {
 		t.Errorf("Scan = %q, want clean", first.Scan)
 	}
-	if len(s.paths) != 1 || s.paths[0] != "/Mod/599927/DownloadPage" {
+	if len(s.paths) != 1 || s.paths[0] != "/Mod/599927/ProfilePage" {
 		t.Errorf("the client asked for %v", s.paths)
+	}
+}
+
+// An author who wrote no more than the line beside the name has that line read
+// as what they wrote: a page with nothing on it but a title reads as the app
+// having failed. This is how the Tauri app reads the two as well.
+func TestAWriteUpFallsBackToTheOneLineDescription(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		body string
+		want string
+	}{
+		{"both", `{"_sText": "the write-up", "_sDescription": "the one line"}`, "the write-up"},
+		{"only the line", `{"_sDescription": "the one line"}`, "the one line"},
+		{"neither", `{}`, ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			c, _ := newServer(t, func(int, http.ResponseWriter) (int, string) {
+				return http.StatusOK, tt.body
+			})
+			profile, err := c.Profile(t.Context(), Mod, 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if profile.Text != tt.want {
+				t.Errorf("Text = %q, want %q", profile.Text, tt.want)
+			}
+		})
+	}
+}
+
+// A submission's page on the site is filed under the section of its kind, and
+// the number alone does not say which: the three kinds are numbered separately,
+// so mod 42 and sound 42 are two submissions.
+func TestASubmissionsPageIsFiledUnderItsKind(t *testing.T) {
+	for _, tt := range []struct {
+		kind Kind
+		want string
+	}{
+		{Mod, "https://gamebanana.com/mods/42"},
+		{Sound, "https://gamebanana.com/sounds/42"},
+		{Wip, "https://gamebanana.com/wips/42"},
+	} {
+		t.Run(string(tt.kind), func(t *testing.T) {
+			if got := (Submission{ID: 42, Kind: tt.kind}).Page(); got != tt.want {
+				t.Errorf("Page() = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 
@@ -597,14 +693,48 @@ func TestTheLiveCatalogue(t *testing.T) {
 	if withFiles.ID == 0 {
 		t.Skip("no submission on the first page has files")
 	}
-	files, err := c.Files(ctx, withFiles.Kind, withFiles.ID)
+	profile, err := c.Profile(ctx, withFiles.Kind, withFiles.ID)
 	if err != nil {
-		t.Fatalf("reading the files of %d: %v", withFiles.ID, err)
+		t.Fatalf("reading the page of %d: %v", withFiles.ID, err)
 	}
-	if len(files) == 0 {
+	if len(profile.Files) == 0 {
 		t.Fatalf("submission %d has files but its page lists none", withFiles.ID)
 	}
-	if files[0].URL == "" || files[0].Size == 0 {
-		t.Errorf("the first file reads as %+v", files[0])
+	if profile.Files[0].URL == "" || profile.Files[0].Size == 0 {
+		t.Errorf("the first file reads as %+v", profile.Files[0])
+	}
+
+	// What a listing does not carry: the write-up, the pictures, how many times
+	// the submission has been taken and where its page is. Not every submission
+	// has all of them, so they are looked for across a few rather than in one.
+	const sample = 5
+	var written, pictured, counted int
+	for _, item := range page.Items[:min(sample, len(page.Items))] {
+		p, err := c.Profile(ctx, item.Kind, item.ID)
+		if err != nil {
+			t.Errorf("reading the page of %d: %v", item.ID, err)
+			continue
+		}
+		if p.URL == "" {
+			t.Errorf("submission %d reads with no page address", item.ID)
+		}
+		if p.Text != "" {
+			written++
+		}
+		if len(p.Images) > 0 {
+			pictured++
+		}
+		if p.Downloads > 0 {
+			counted++
+		}
+	}
+	if written == 0 {
+		t.Errorf("none of the %d submissions read has a write-up", sample)
+	}
+	if pictured == 0 {
+		t.Errorf("none of the %d submissions read has a picture", sample)
+	}
+	if counted == 0 {
+		t.Errorf("none of the %d submissions read has a download count", sample)
 	}
 }

@@ -62,9 +62,20 @@ type Submission struct {
 }
 
 // Page returns the submission's page on the site, which is where a user goes to
-// read about it, and where a failure is reported.
+// read about it. It is the address the API gives as _sProfileUrl, built from the
+// number for the time before a reply carrying that has arrived.
+//
+// The three kinds are filed in different sections, and the number alone does
+// not say which: mod 42 and sound 42 are two submissions.
 func (s Submission) Page() string {
-	return "https://gamebanana.com/mods/" + strconv.Itoa(s.ID)
+	section := "mods"
+	switch s.Kind {
+	case Sound:
+		section = "sounds"
+	case Wip:
+		section = "wips"
+	}
+	return "https://gamebanana.com/" + section + "/" + strconv.Itoa(s.ID)
 }
 
 // Slug is the name an installed mod is known by: its number for a mod, and the
@@ -83,6 +94,40 @@ func (s Submission) Slug() string {
 	default:
 		return strconv.Itoa(s.ID)
 	}
+}
+
+// Profile is a submission's own page: what its author wrote about it, the
+// pictures they posted, and everything that can be downloaded from it.
+//
+// It is the one request that has all of it. A listing carries a name, a
+// thumbnail and a count of likes and nothing else, and the download list is a
+// part of this page rather than an endpoint of its own: the two answer with the
+// same files, checked against each other for all three kinds.
+type Profile struct {
+	// Text is what the author wrote, as HTML, which is what a page shows. It is
+	// their write-up, or the one line they put beside the name when they wrote
+	// no more than that -- a page with nothing on it but a title reads as the
+	// app having failed. Empty when they wrote neither.
+	Text string
+	// Downloads is how many times the submission has been taken. A listing
+	// counts views and likes, and not this.
+	Downloads int
+	// Images are the pictures the author posted, in their own order.
+	Images []Image
+	// URL is the submission's page on the site, which is where the changelog,
+	// the comments and the rest of it are read.
+	URL string
+	// Files is what can be downloaded, in the order the author's page lists it.
+	Files []File
+}
+
+// Image is one picture of a submission. Each is published at several sizes, and
+// the two kept are the ones the app asks for.
+type Image struct {
+	// Thumb is the small picture a row of them shows, URL the whole one behind
+	// it. Either is empty when the author posted no picture at all.
+	Thumb string
+	URL   string
 }
 
 // File is one downloadable file of a submission. Most submissions carry
@@ -128,18 +173,70 @@ type submissionJSON struct {
 	SubCategory struct {
 		Name string `json:"_sName"`
 	} `json:"_aSubCategory"`
-	PreviewMedia struct {
-		Images []struct {
-			Base  string `json:"_sBaseUrl"`
-			File  string `json:"_sFile"`
-			Small string `json:"_sFile220"`
-		} `json:"_aImages"`
-	} `json:"_aPreviewMedia"`
-	Likes    int   `json:"_nLikeCount"`
-	Views    int   `json:"_nViewCount"`
-	Added    int64 `json:"_tsDateAdded"`
-	Modified int64 `json:"_tsDateModified"`
-	HasFiles bool  `json:"_bHasFiles"`
+	PreviewMedia previewMediaJSON `json:"_aPreviewMedia"`
+	Likes        int              `json:"_nLikeCount"`
+	Views        int              `json:"_nViewCount"`
+	Added        int64            `json:"_tsDateAdded"`
+	Modified     int64            `json:"_tsDateModified"`
+	HasFiles     bool             `json:"_bHasFiles"`
+}
+
+// profileJSON is a submission's own page.
+type profileJSON struct {
+	Text      string           `json:"_sText"`
+	Tagline   string           `json:"_sDescription"`
+	Downloads int              `json:"_nDownloadCount"`
+	URL       string           `json:"_sProfileUrl"`
+	Preview   previewMediaJSON `json:"_aPreviewMedia"`
+	Files     []fileJSON       `json:"_aFiles"`
+}
+
+// profile converts a page. The files of a page are the ones the download list
+// carries, in the same shape, so they convert the same way.
+func (r profileJSON) profile() Profile {
+	// What the author wrote is what there is to read, and the one line beside
+	// the name is what they wrote instead when they wrote no more than that.
+	// The Tauri app reads the two the same way.
+	text := r.Text
+	if text == "" {
+		text = r.Tagline
+	}
+	files := make([]File, 0, len(r.Files))
+	for _, f := range r.Files {
+		files = append(files, f.file())
+	}
+	return Profile{
+		Text:      text,
+		Downloads: r.Downloads,
+		Images:    r.Preview.images(),
+		URL:       r.URL,
+		Files:     files,
+	}
+}
+
+// previewMediaJSON is the pictures of a submission, which a listing and a page
+// both carry in the same shape.
+type previewMediaJSON struct {
+	Images []struct {
+		Base  string `json:"_sBaseUrl"`
+		File  string `json:"_sFile"`
+		Small string `json:"_sFile220"`
+	} `json:"_aImages"`
+}
+
+// images converts them. Each is published at several sizes, and the two kept
+// are the small one a row of pictures shows and the whole one behind it.
+func (m previewMediaJSON) images() []Image {
+	images := make([]Image, 0, len(m.Images))
+	for _, i := range m.Images {
+		image := Image{Thumb: imageURL(i.Base, i.Small), URL: imageURL(i.Base, i.File)}
+		// A picture published at one size only is its own small one.
+		if image.Thumb == "" {
+			image.Thumb = image.URL
+		}
+		images = append(images, image)
+	}
+	return images
 }
 
 // submission converts a record, filling in what the listing did not carry.
@@ -161,13 +258,8 @@ func (r submissionJSON) submission() Submission {
 	// The first picture stands for the submission, which is how the site's own
 	// listings do it. Each is published at several sizes, and the list wants
 	// the small one where a page wants the large.
-	if images := r.PreviewMedia.Images; len(images) > 0 {
-		first := images[0]
-		s.Thumb = imageURL(first.Base, first.Small)
-		s.Image = imageURL(first.Base, first.File)
-	}
-	if s.Thumb == "" {
-		s.Thumb = s.Image
+	if images := r.PreviewMedia.images(); len(images) > 0 {
+		s.Thumb, s.Image = images[0].Thumb, images[0].URL
 	}
 	return s
 }

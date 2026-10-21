@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/egoist/mygo/ui"
+	"github.com/egoist/mygo/ui/richtext"
 
 	"github.com/BabyLy233/deadlock-mod-manager-mygo/internal/download"
 	"github.com/BabyLy233/deadlock-mod-manager-mygo/internal/gb"
@@ -61,10 +62,15 @@ type store struct {
 	// chosen is the item the detail panel is showing, -1 for none.
 	chosen int
 
-	// The chosen mod's files, which are read when it is opened.
-	files        []gb.File
-	filesLoading bool
-	filesErr     string
+	// The chosen mod's own page -- what its author wrote, its pictures and its
+	// files -- which is read when it is opened.
+	profile     gb.Profile
+	profileBusy bool
+	profileErr  string
+	// writeUp is that page's write-up, as text: the API gives it as HTML, and
+	// turning it into something to read is work of its own, so a reply does it
+	// once rather than every frame.
+	writeUp string
 
 	// The install in flight, if there is one: the file being fetched, how far
 	// it has got, and what the last one left behind.
@@ -87,9 +93,10 @@ type shown struct {
 	more    bool
 	chosen  int
 
-	files        []gb.File
-	filesLoading bool
-	filesErr     string
+	profile     gb.Profile
+	profileBusy bool
+	profileErr  string
+	writeUp     string
 
 	installing string
 	progress   download.Progress
@@ -171,15 +178,21 @@ func (s *store) list(c *ui.Context, state shown) {
 	s.pager(c, state)
 }
 
+// cardPicture is the room a card's picture is shown in, which is also what it
+// is fetched for. The grid's cells are at least as wide as this, and a picture
+// fetched for the smallest of them is no worse for the wider ones, which scale
+// it down.
+var cardPicture = box{W: 200, H: 130}
+
 // card is one mod in the grid: its picture, its name, and enough about it to
 // tell it from the ones beside it. Clicking it opens it.
 func (s *store) card(c *ui.Context, mod gb.Submission, item int) {
 	t := c.Theme()
 	ui.Column(c).Fill().Gap(6).OnClick(func() { s.open(item) }).Children(func() {
-		ui.Row(c).WidthPercent(100).Height(130).Background(t.Surface).Radius(8).Clip().Children(func() {
+		ui.Row(c).WidthPercent(100).Height(float32(cardPicture.H)).Background(t.Surface).Radius(8).Clip().Children(func() {
 			// A picture that has not arrived yet is nothing at all: the card is
 			// drawn without it, and the window is redrawn when it comes.
-			if bitmap := s.app.thumbnails.get(mod.Thumb, s.app.invalidate); bitmap != nil {
+			if bitmap := s.app.thumbnails.get(mod.Thumb, cardPicture, s.app.invalidate); bitmap != nil {
 				ui.Image(c, bitmap).Fit(ui.Cover).Fill()
 			}
 		})
@@ -299,7 +312,8 @@ func (s *store) load() {
 	}()
 }
 
-// open shows a mod's own page: what it is, and what can be downloaded for it.
+// open shows a mod's own page: what its author wrote about it, its pictures, and
+// what can be downloaded for it.
 func (s *store) open(item int) {
 	mods := s.shown().items
 	if item < 0 || item >= len(mods) {
@@ -309,18 +323,23 @@ func (s *store) open(item int) {
 
 	s.mu.Lock()
 	s.chosen = item
-	s.files, s.filesErr = nil, ""
-	s.filesLoading = true
+	// The mod that was open before is not this one: nothing of it is left to be
+	// drawn while this one's page is on its way.
+	s.profile, s.profileErr, s.writeUp = gb.Profile{}, "", ""
+	s.profileBusy = true
 	s.installErr, s.installed = "", ""
 	s.mu.Unlock()
 	s.app.invalidate()
 
 	go func() {
-		files, err := s.app.catalogue.Files(context.Background(), mod.Kind, mod.ID)
+		profile, err := s.app.catalogue.Profile(context.Background(), mod.Kind, mod.ID)
 		var message string
 		if err != nil {
 			message = err.Error()
 		}
+		// The write-up is HTML, and turning it into something to read is work of
+		// its own, so it is done here rather than in every frame that shows it.
+		writeUp := richtext.ParseHTML(profile.Text).PlainText()
 		s.app.publish(func() {
 			s.mu.Lock()
 			defer s.mu.Unlock()
@@ -329,8 +348,9 @@ func (s *store) open(item int) {
 			if s.chosen < 0 || s.chosen >= len(s.items) || s.items[s.chosen].ID != mod.ID {
 				return
 			}
-			s.filesLoading = false
-			s.files, s.filesErr = files, message
+			s.profileBusy = false
+			s.profile, s.profileErr = profile, message
+			s.writeUp = writeUp
 		})
 	}()
 }
@@ -339,6 +359,7 @@ func (s *store) open(item int) {
 func (s *store) back() {
 	s.mu.Lock()
 	s.chosen = -1
+	s.profile, s.profileErr, s.writeUp = gb.Profile{}, "", ""
 	s.mu.Unlock()
 	s.app.invalidate()
 }
@@ -348,18 +369,19 @@ func (s *store) shown() shown {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return shown{
-		loading:      s.loading,
-		err:          s.err,
-		items:        s.items,
-		total:        s.total,
-		more:         s.more,
-		chosen:       s.chosen,
-		files:        s.files,
-		filesLoading: s.filesLoading,
-		filesErr:     s.filesErr,
-		installing:   s.installing,
-		progress:     s.progress,
-		installErr:   s.installErr,
-		installed:    s.installed,
+		loading:     s.loading,
+		err:         s.err,
+		items:       s.items,
+		total:       s.total,
+		more:        s.more,
+		chosen:      s.chosen,
+		profile:     s.profile,
+		profileBusy: s.profileBusy,
+		profileErr:  s.profileErr,
+		writeUp:     s.writeUp,
+		installing:  s.installing,
+		progress:    s.progress,
+		installErr:  s.installErr,
+		installed:   s.installed,
 	}
 }

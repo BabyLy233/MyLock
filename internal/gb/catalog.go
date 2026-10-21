@@ -109,24 +109,22 @@ func (c *Client) listing(ctx context.Context, path string) (Page, error) {
 	return p, nil
 }
 
-// Files returns what can be downloaded for one submission, in the order the
-// author's page lists them.
+// Profile returns a submission's own page: what its author wrote about it, the
+// pictures they posted, and what can be downloaded from it.
 //
-// Files the author has replaced are left out: the API reports them separately,
-// and offering an old version beside the one that replaced it is a way to have
-// the user install the wrong thing.
-func (c *Client) Files(ctx context.Context, kind Kind, id int) ([]File, error) {
-	var reply struct {
-		Files []fileJSON `json:"_aFiles"`
-	}
-	path := fmt.Sprintf("%s/%d/DownloadPage", kind, id)
+// This is the request a listing does not have. It is also the only one needed
+// to open a submission: the page carries the download list as well, and the two
+// endpoints answer with the same files -- checked against each other for all
+// three kinds -- so asking for both would fetch the same list twice.
+//
+// Files the author has replaced are left out of that list by the API itself,
+// which is what keeps an old version from being offered beside the one that
+// replaced it.
+func (c *Client) Profile(ctx context.Context, kind Kind, id int) (Profile, error) {
+	var reply profileJSON
+	path := fmt.Sprintf("%s/%d/ProfilePage", kind, id)
 	if err := c.get(ctx, path, &reply); err != nil {
-		return nil, err
+		return Profile{}, err
 	}
-
-	files := make([]File, 0, len(reply.Files))
-	for _, f := range reply.Files {
-		files = append(files, f.file())
-	}
-	return files, nil
+	return reply.profile(), nil
 }

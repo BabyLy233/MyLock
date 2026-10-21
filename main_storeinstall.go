@@ -1,10 +1,12 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/egoist/mygo/ui"
@@ -16,48 +18,124 @@ import (
 	"github.com/BabyLy233/deadlock-mod-manager-mygo/internal/gb"
 )
 
-// detail is one mod's own page: what it is, and what can be installed from it.
+// detail is one mod's own page: what it is, what its author wrote about it, and
+// what can be installed from it.
 func (s *store) detail(c *ui.Context, state shown) {
 	t := c.Theme()
 	mod := state.items[state.chosen]
 
-	ui.Column(c).Fill().Gap(12).Clip().Children(func() {
-		ui.Row(c).FillWidth().Gap(12).AlignItems(ui.Center).Children(func() {
-			ui.Button(c, "返回").OnClick(s.back)
-			ui.Text(c, mod.Name).FontSize(18).Bold().MaxLines(1).Ellipsis("…")
-		})
-		ui.Text(c, describe(mod)).FontSize(12).TextColor(t.TextMuted)
-		ui.Divider(c)
-
-		switch {
-		case state.installing != "":
-			s.installingPanel(c, state)
-		case state.installErr != "":
-			ui.Text(c, state.installErr).TextColor(t.Danger)
-		case state.installed != "":
-			ui.Text(c, state.installed).TextColor(t.Success)
-		}
-
-		switch {
-		case state.filesLoading:
-			ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
-				ui.Spinner(c)
-				ui.Text(c, "正在读取文件…").TextColor(t.TextMuted)
+	// The page scrolls. What an author wrote runs to whatever length they
+	// wrote, and the files below it are as many as they published, so the whole
+	// of it does not fit a window and is not meant to.
+	ui.Scroll(c).FillWidth().Grow(1).Children(func() {
+		ui.Column(c).FillWidth().Gap(12).Children(func() {
+			ui.Row(c).FillWidth().Gap(12).AlignItems(ui.Center).Children(func() {
+				ui.Button(c, "返回").OnClick(s.back)
+				ui.Text(c, mod.Name).FontSize(18).Bold().MaxLines(1).Ellipsis("…")
 			})
-		case state.filesErr != "":
-			ui.Text(c, state.filesErr).TextColor(t.Danger)
-		case len(state.files) == 0:
-			ui.Text(c, "这个模组还没有可以下载的文件。").TextColor(t.TextMuted)
-		default:
-			// Most mods carry several files -- the variants an author
-			// published -- and each is a separate archive, so each is offered
-			// on its own rather than one being picked for the user.
-			ui.Text(c, "选择要安装的文件").Bold()
-			for _, file := range state.files {
-				s.fileRow(c, mod, file, state.installing != "")
+			ui.Text(c, describe(mod, state.profile)).FontSize(12).TextColor(t.TextMuted)
+			ui.Divider(c)
+
+			s.gallery(c, state.profile.Images)
+			s.writeUpSection(c, state)
+
+			// The page on the site is where the changelog, the comments and the
+			// rest of what a mod has are read. The address the API gave with
+			// the page is the one to use; the one built from the number is what
+			// there is before it arrives.
+			ui.Row(c).Children(func() {
+				ui.Button(c, "在浏览器打开原帖").OnClick(func() {
+					c.OpenURL(cmp.Or(state.profile.URL, mod.Page()))
+				})
+			})
+
+			if state.installing != "" || state.installErr != "" || state.installed != "" {
+				ui.Divider(c)
 			}
+			switch {
+			case state.installing != "":
+				s.installingPanel(c, state)
+			case state.installErr != "":
+				ui.Text(c, state.installErr).TextColor(t.Danger)
+			case state.installed != "":
+				ui.Text(c, state.installed).TextColor(t.Success)
+			}
+
+			s.files(c, mod, state)
+		})
+	})
+}
+
+// shotPicture is the room one picture of the row is shown in, which is also
+// what it is fetched for.
+var shotPicture = box{W: 240, H: 150}
+
+// gallery shows the pictures the author posted, in their own order, in a row
+// that scrolls sideways: an author posts as many as they like, and a page
+// cannot be as wide as all of them.
+func (s *store) gallery(c *ui.Context, images []gb.Image) {
+	if len(images) == 0 {
+		return
+	}
+	t := c.Theme()
+	// Named, because a row of pictures has no text of its own for assistive
+	// technology to read. Spaced, because pictures butted together read as one
+	// wide one rather than as several.
+	ui.ScrollHorizontal(c).Label("截图").FillWidth().Height(float32(shotPicture.H)).Gap(12).Children(func() {
+		for i, image := range images {
+			// Each picture is numbered for the same reason, and because a
+			// picture the author posted has no name of its own in the reply.
+			ui.Row(c).Width(float32(shotPicture.W)).Height(float32(shotPicture.H)).
+				Background(t.Surface).Radius(8).Clip().
+				Label(fmt.Sprintf("第 %d 张截图", i+1)).
+				Children(func() {
+					// A picture that has not arrived yet is nothing at all: the
+					// frame is drawn without it, and the window is redrawn when
+					// it comes.
+					if bitmap := s.app.thumbnails.get(image.Thumb, shotPicture, s.app.invalidate); bitmap != nil {
+						ui.Image(c, bitmap).Fit(ui.Cover).Fill()
+					}
+				})
 		}
 	})
+}
+
+// writeUpSection shows what the author wrote, which the API gives as HTML and
+// which is turned into text when it arrives.
+//
+// It is drawn as text rather than in the rich text view: that view is a box of
+// its own with a height it is given and a scrollbar inside it, and this page is
+// one scrollbar over everything the author posted. A write-up of any length is
+// then as tall as it reads, with the pictures above it and the files below.
+func (s *store) writeUpSection(c *ui.Context, state shown) {
+	if state.writeUp == "" {
+		return
+	}
+	ui.Text(c, state.writeUp).Selectable()
+}
+
+// files offers what can be installed, or says why there is nothing to offer.
+func (s *store) files(c *ui.Context, mod gb.Submission, state shown) {
+	t := c.Theme()
+	switch {
+	case state.profileBusy:
+		ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
+			ui.Spinner(c)
+			ui.Text(c, "正在读取模组…").TextColor(t.TextMuted)
+		})
+	case state.profileErr != "":
+		ui.Text(c, state.profileErr).TextColor(t.Danger)
+	case len(state.profile.Files) == 0:
+		ui.Text(c, "这个模组还没有可以下载的文件。").TextColor(t.TextMuted)
+	default:
+		// Most mods carry several files -- the variants an author published --
+		// and each is a separate archive, so each is offered on its own rather
+		// than one being picked for the user.
+		ui.Text(c, "选择要安装的文件").Bold()
+		for _, file := range state.profile.Files {
+			s.fileRow(c, mod, file, state.installing != "")
+		}
+	}
 }
 
 // fileRow is one downloadable file, with what installing it does.
@@ -94,8 +172,10 @@ func (s *store) installingPanel(c *ui.Context, state shown) {
 	})
 }
 
-// describe says what a mod is, in the terms the catalogue gives.
-func describe(mod gb.Submission) string {
+// describe says what a mod is, in the terms the catalogue gives. What the
+// listing carried comes first, and the download count, which only the mod's own
+// page has, is counted with the likes it belongs beside.
+func describe(mod gb.Submission, profile gb.Profile) string {
 	var parts []string
 	if mod.Author != "" {
 		parts = append(parts, "作者 "+mod.Author)
@@ -113,10 +193,27 @@ func describe(mod gb.Submission) string {
 	if mod.Likes > 0 {
 		parts = append(parts, fmt.Sprintf("赞 %d", mod.Likes))
 	}
+	if profile.Downloads > 0 {
+		parts = append(parts, fmt.Sprintf("下载 %s", thousands(profile.Downloads)))
+	}
 	if !mod.Updated.IsZero() {
 		parts = append(parts, "更新于 "+mod.Updated.Format("2006-01-02"))
 	}
 	return strings.Join(parts, " · ")
+}
+
+// thousands writes a count with a comma every three digits, which is how the
+// site writes one and how a count of hundreds of thousands is read.
+func thousands(n int) string {
+	digits := strconv.Itoa(n)
+	var b strings.Builder
+	for i, d := range digits {
+		if i > 0 && (len(digits)-i)%3 == 0 {
+			b.WriteByte(',')
+		}
+		b.WriteRune(d)
+	}
+	return b.String()
 }
 
 // describeFile says what a file is: how big it is, what the author noted about
