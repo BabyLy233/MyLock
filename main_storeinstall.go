@@ -64,6 +64,27 @@ func (s *store) detail(c *ui.Context, state shown) {
 			s.files(c, mod, state)
 		})
 	})
+
+	s.pictureViewer(c, state)
+}
+
+// pictureViewer shows the screenshot the user opened, over the page, while one
+// is open.
+func (s *store) pictureViewer(c *ui.Context, state shown) {
+	images := state.profile.Images
+	if !s.viewer.open || s.viewer.index < 0 || s.viewer.index >= len(images) {
+		return
+	}
+	// The viewer is dismissed from inside itself -- by Escape, by a click on
+	// what is behind it, or by its own button -- so what it was told is read
+	// back rather than written to the store as it goes.
+	open := true
+	ui.Modal(c, &open, func() {
+		s.viewerPanel(c, images)
+	})
+	if !open {
+		s.closePicture()
+	}
 }
 
 // shotPicture is the room one picture of the row is shown in, which is also
@@ -88,6 +109,7 @@ func (s *store) gallery(c *ui.Context, images []gb.Image) {
 			ui.Row(c).Width(float32(shotPicture.W)).Height(float32(shotPicture.H)).
 				Background(t.Surface).Radius(8).Clip().
 				Label(fmt.Sprintf("第 %d 张截图", i+1)).
+				OnClick(func() { s.openPicture(i) }).
 				Children(func() {
 					// A picture that has not arrived yet is nothing at all: the
 					// frame is drawn without it, and the window is redrawn when

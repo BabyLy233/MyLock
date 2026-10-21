@@ -72,6 +72,9 @@ type store struct {
 	// once rather than every frame.
 	writeUp string
 
+	// viewer is the screenshot the user opened out of the row of them, if any.
+	viewer viewer
+
 	// The install in flight, if there is one: the file being fetched, how far
 	// it has got, and what the last one left behind.
 	installing string
@@ -361,6 +364,9 @@ func (s *store) back() {
 	s.chosen = -1
 	s.profile, s.profileErr, s.writeUp = gb.Profile{}, "", ""
 	s.mu.Unlock()
+	// A picture of the mod that was open is not a picture of anything once the
+	// mod is not.
+	s.closePicture()
 	s.app.invalidate()
 }
 

@@ -305,6 +305,300 @@ func TestTheWriteUpIsAsTallAsWhatItSays(t *testing.T) {
 	}
 }
 
+// shot is one picture a submission carries, as the API hands it over: the small
+// one the row of them shows and the whole one behind it.
+func shot(n int) gb.Image {
+	return gb.Image{
+		Thumb: fmt.Sprintf("https://images.gamebanana.com/img/ss/mods/220-90_%d.jpg", n),
+		URL:   fmt.Sprintf("https://images.gamebanana.com/img/ss/mods/%d.jpg", n),
+	}
+}
+
+// modPage is the store showing one mod's own page, with the pictures its author
+// posted, which is where a picture is opened from.
+func modPage(t *testing.T, images ...gb.Image) (*app, *ui.Tester) {
+	t.Helper()
+	a := newApp()
+	a.store.started = true
+	a.store.mu.Lock()
+	a.store.items = []gb.Submission{mod("Yamato redesign")}
+	a.store.chosen = 0
+	a.store.profile = gb.Profile{Images: images}
+	a.store.mu.Unlock()
+	a.router.Push("/store")
+	return a, ui.NewTester(a.view, 1280, 800)
+}
+
+// Clicking a picture opens it whole. What the row of them shows is a thumbnail
+// of a screenshot that was published at a size the row has no room for, and
+// seeing that is what opening one is for.
+func TestClickingAScreenshotOpensItWhole(t *testing.T) {
+	a, tt := modPage(t, shot(1), shot(2))
+
+	if err := tt.Click("第 1 张截图"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+
+	if !a.store.viewer.open {
+		t.Fatal("the picture did not open")
+	}
+	if got := a.store.viewer.index; got != 0 {
+		t.Errorf("the viewer opened at picture %d, want the one that was clicked", got)
+	}
+	if !tt.HasText("第 1 / 共 2 张") {
+		t.Errorf("the viewer does not say which picture it is showing: %q", tt.Texts())
+	}
+	// The whole one and not the row's small one.
+	if asked := asked(a.thumbnails); !asked["https://images.gamebanana.com/img/ss/mods/1.jpg"] {
+		t.Errorf("the viewer asked for %v, want the picture as it was published", asked)
+	}
+}
+
+// The pictures of a submission are read through one after another, and the last
+// one leads back to the first.
+func TestTheViewerStepsThroughThePictures(t *testing.T) {
+	a, tt := modPage(t, shot(1), shot(2))
+
+	if err := tt.Click("第 2 张截图"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if got := a.store.viewer.index; got != 1 {
+		t.Fatalf("the viewer opened at picture %d, want the one that was clicked", got)
+	}
+
+	if err := tt.Click("下一张"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if got := a.store.viewer.index; got != 0 {
+		t.Errorf("the picture after the last is %d, want the first", got)
+	}
+
+	if err := tt.Click("上一张"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if got := a.store.viewer.index; got != 1 {
+		t.Errorf("the picture before the first is %d, want the last", got)
+	}
+}
+
+// A picture is put away again, and the page it was opened from is what is left.
+func TestTheViewerCloses(t *testing.T) {
+	a, tt := modPage(t, shot(1), shot(2))
+
+	if err := tt.Click("第 1 张截图"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if !a.store.viewer.open {
+		t.Fatal("the picture did not open")
+	}
+
+	if err := tt.Click("关闭"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if a.store.viewer.open {
+		t.Error("the picture is still up")
+	}
+	if tt.HasText("第 1 / 共 2 张") {
+		t.Errorf("the viewer is still drawn: %q", tt.Texts())
+	}
+	if !tt.HasText("在浏览器打开原帖") {
+		t.Errorf("the mod's page is not what is left: %q", tt.Texts())
+	}
+}
+
+// Escape puts the picture away as well, which is how a dialog is dismissed
+// everywhere else.
+func TestEscapePutsThePictureAway(t *testing.T) {
+	a, tt := modPage(t, shot(1), shot(2))
+
+	if err := tt.Click("第 1 张截图"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if !a.store.viewer.open {
+		t.Fatal("the picture did not open")
+	}
+
+	tt.Key(0, ui.KeyEscape)
+	tt.Frame()
+	if a.store.viewer.open {
+		t.Error("the picture is still up after Escape")
+	}
+}
+
+// The viewer zooms in and out, as far as it goes each way and no further.
+func TestTheViewerZooms(t *testing.T) {
+	a, tt := modPage(t, shot(1))
+
+	if err := tt.Click("第 1 张截图"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if got := a.store.viewer.zoom; got != zoomWhole {
+		t.Fatalf("the viewer opened at %v, want the picture whole", got)
+	}
+
+	if err := tt.Click("放大"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if got := a.store.viewer.zoom; got <= zoomWhole {
+		t.Errorf("放大 left the picture at %v", got)
+	}
+
+	// As far in as it goes: one more click is not one more step.
+	for range 20 {
+		if err := tt.Click("放大"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tt.Frame()
+	if got := a.store.viewer.zoom; got != zoomMost {
+		t.Errorf("the viewer zoomed to %v, want it to stop at %v", got, zoomMost)
+	}
+
+	for range 20 {
+		if err := tt.Click("缩小"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tt.Frame()
+	if got := a.store.viewer.zoom; got != zoomWhole {
+		t.Errorf("the viewer zoomed out to %v, want it to stop at %v", got, zoomWhole)
+	}
+}
+
+// openPicture is the picture at index opened, which is what every test of the
+// viewer starts with.
+func openPicture(t *testing.T, tt *ui.Tester, label string) {
+	t.Helper()
+	if err := tt.Click(label); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+}
+
+// The wheel over the picture zooms it, which is how one is looked at closely
+// without going to the buttons for every step.
+func TestTheWheelZoomsThePicture(t *testing.T) {
+	a, tt := modPage(t, shot(1))
+	openPicture(t, tt, "第 1 张截图")
+
+	picture, ok := tt.Find("大图")
+	if !ok {
+		t.Fatal("the viewer does not show the picture")
+	}
+	x, y := picture.X+picture.W/2, picture.Y+picture.H/2
+
+	// Scrolling up is zooming in, as it is everywhere a picture is zoomed.
+	tt.Scroll(x, y, 0, -60)
+	tt.Frame()
+	if got := a.store.viewer.zoom; got <= zoomWhole {
+		t.Errorf("scrolling up left the picture at %v", got)
+	}
+
+	in := a.store.viewer.zoom
+	tt.Scroll(x, y, 0, 60)
+	tt.Frame()
+	if got := a.store.viewer.zoom; got >= in {
+		t.Errorf("scrolling down left the picture at %v, want it smaller than %v", got, in)
+	}
+}
+
+// A zoomed picture is read along by pressing it and moving, which is what the
+// room it is drawn in cannot show at once.
+func TestDraggingMovesTheZoomedPicture(t *testing.T) {
+	a, tt := modPage(t, shot(1))
+	openPicture(t, tt, "第 1 张截图")
+
+	// Somewhere to move to: a picture shown whole has nothing beyond its edges.
+	for range 3 {
+		if err := tt.Click("放大"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tt.Frame()
+
+	picture, ok := tt.Find("大图")
+	if !ok {
+		t.Fatal("the viewer does not show the picture")
+	}
+	x, y := picture.X+picture.W/2, picture.Y+picture.H/2
+	before := a.store.viewer.scroll.X
+
+	tt.Press(x, y)
+	tt.Move(x-40, y)
+	tt.Frame()
+	tt.Move(x-80, y)
+	tt.Frame()
+	tt.Release(x-80, y)
+	tt.Frame()
+
+	if got := a.store.viewer.scroll.X; got <= before {
+		t.Errorf("dragging left left the picture scrolled to %v, want it past %v", got, before)
+	}
+}
+
+// The viewer is drawn inside the window, controls and picture both: what falls
+// outside it is a part of it nobody can reach, and a picture that cannot be put
+// away is worse than one that cannot be opened.
+func TestTheViewerIsDrawnInsideTheWindow(t *testing.T) {
+	const width, height = 1280, 800
+	a, tt := modPage(t, shot(1), shot(2))
+
+	if err := tt.Click("第 1 张截图"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if !a.store.viewer.open {
+		t.Fatal("the picture did not open")
+	}
+
+	for _, name := range []string{
+		"第 1 / 共 2 张", "大图", "缩小", "放大", "上一张", "下一张", "关闭",
+	} {
+		r, ok := tt.Find(name)
+		if !ok {
+			t.Errorf("the viewer does not show %q", name)
+			continue
+		}
+		if r.W <= 0 || r.H <= 0 {
+			t.Errorf("%q is drawn with no room: %+v", name, r)
+		}
+		if r.X < 0 || r.Y < 0 || r.X+r.W > width || r.Y+r.H > height {
+			t.Errorf("%q is drawn outside the window: %+v", name, r)
+		}
+	}
+}
+
+// A picture belongs to the mod it was opened from, and is not a picture of
+// anything once the mod is not.
+func TestGoingBackPutsThePictureAway(t *testing.T) {
+	a, tt := modPage(t, shot(1), shot(2))
+
+	if err := tt.Click("第 1 张截图"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if !a.store.viewer.open {
+		t.Fatal("the picture did not open")
+	}
+
+	// 返回 is behind the picture, as everything on the page is while a dialog
+	// is over it, so what the button does is done rather than clicked.
+	a.store.back()
+	tt.Frame()
+	if a.store.viewer.open {
+		t.Error("the picture is still up over the catalogue")
+	}
+}
+
 // A mod whose author posted no picture and wrote nothing is drawn without the
 // row and the write-up rather than around an empty one of each: the page is
 // what its author published, and there is nothing here to fill.
