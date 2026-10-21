@@ -696,6 +696,61 @@ func TestStartUsesTheSavedAppearance(t *testing.T) {
 	}
 }
 
+// The appearance the app is in is drawn into the frame rather than left to the
+// desktop: on Linux what Mygo hands the frame is the desktop's own appearance,
+// so an explicit light or dark would be ignored there. 「跟随系统」is the
+// exception and is the desktop's to decide, so it follows the desktop.
+func TestTheFrameIsDrawnInTheChosenAppearance(t *testing.T) {
+	// Built under a desktop of the other appearance, so that a choice which did
+	// not reach the frame would show.
+	background := func(t *testing.T, source mygo.ThemeSource, desktopDark bool) ui.Color {
+		t.Helper()
+		a := newApp()
+		a.theme = source
+		var drawn *ui.Theme
+		tt := ui.NewTester(func(c *ui.Context) {
+			a.view(c)
+			drawn = c.Theme()
+		}, 1280, 800)
+		tt.SetDark(desktopDark)
+		tt.Frame()
+		if drawn == nil {
+			t.Fatal("the view was not drawn")
+		}
+		return drawn.Background
+	}
+	desktops := []struct {
+		dark bool
+		name string
+	}{{false, "light"}, {true, "dark"}}
+
+	for _, tt := range []struct {
+		source mygo.ThemeSource
+		want   ui.Color
+	}{
+		{mygo.ThemeLight, ui.LightTheme().Background},
+		{mygo.ThemeDark, ui.DarkTheme().Background},
+	} {
+		for _, desktop := range desktops {
+			if got := background(t, tt.source, desktop.dark); got != tt.want {
+				t.Errorf("in %q under a %s desktop the frame is drawn on %v, want %v",
+					tt.source, desktop.name, got, tt.want)
+			}
+		}
+	}
+
+	for _, desktop := range desktops {
+		want := ui.LightTheme().Background
+		if desktop.dark {
+			want = ui.DarkTheme().Background
+		}
+		if got := background(t, mygo.ThemeSystem, desktop.dark); got != want {
+			t.Errorf("「跟随系统」under a %s desktop draws %v, want the desktop's own %v",
+				desktop.name, got, want)
+		}
+	}
+}
+
 // What a saved appearance means. A value that is not one of the three follows
 // the system rather than failing: the file can be edited by hand, and a version
 // that spelled one differently should not leave the app unable to start.

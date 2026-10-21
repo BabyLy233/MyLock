@@ -314,9 +314,11 @@ func shot(n int) gb.Image {
 	}
 }
 
-// modPage is the store showing one mod's own page, with the pictures its author
-// posted, which is where a picture is opened from.
-func modPage(t *testing.T, images ...gb.Image) (*app, *ui.Tester) {
+// storeShowing is the store showing one mod's own page, before a frame has been
+// built. A test that answers the pictures itself has to take this rather than
+// modPage: it is the first frame that starts a fetch, so what the pictures are
+// fetched with has to be in place before it.
+func storeShowing(t *testing.T, images ...gb.Image) *app {
 	t.Helper()
 	a := newApp()
 	a.store.started = true
@@ -326,6 +328,14 @@ func modPage(t *testing.T, images ...gb.Image) (*app, *ui.Tester) {
 	a.store.profile = gb.Profile{Images: images}
 	a.store.mu.Unlock()
 	a.router.Push("/store")
+	return a
+}
+
+// modPage is that page with a frame built, which is where a picture is opened
+// from.
+func modPage(t *testing.T, images ...gb.Image) (*app, *ui.Tester) {
+	t.Helper()
+	a := storeShowing(t, images...)
 	return a, ui.NewTester(a.view, 1280, 800)
 }
 
@@ -487,8 +497,9 @@ func openPicture(t *testing.T, tt *ui.Tester, label string) {
 // The viewer draws the picture it fetched, and draws it larger when it is
 // zoomed, which is the whole of what zooming is.
 func TestTheViewerDrawsThePictureItFetched(t *testing.T) {
-	a, tt := modPage(t, shot(1))
+	a := storeShowing(t, shot(1))
 	a.thumbnails.client = &http.Client{Transport: pictureStub{body: jpegOf(t, 1920, 1080)}}
+	tt := ui.NewTester(a.view, 1280, 800)
 	openPicture(t, tt, "第 1 张截图")
 
 	// A screenshot is megabytes, so until it arrives there is nothing to draw

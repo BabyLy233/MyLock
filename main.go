@@ -734,16 +734,28 @@ func (a *app) applyTheme(source mygo.ThemeSource) {
 // tellsModule says whether Mygo is told the appearance as well as the frame
 // being drawn in it. On macOS and Windows that is what draws the window the
 // desktop puts around the content in the chosen appearance, so the frame and
-// its title bar agree.
+// its title bar agree. Linux is left out, and the cost is the window's own
+// background: it keeps the desktop's appearance rather than the chosen one,
+// which shows in the band around the content while the window is resized.
 //
-// Linux is left out. Its backend answers with the source it was last told
-// rather than reading the desktop each time, so being told 「跟随系统」pins the
-// desktop's answer to what it was at that moment and the app stops following
-// it; left alone, the backend reads the desktop, which is what 「跟随系统」
-// wants. Handing a source over is also how the desktop's notice about the
-// appearance comes back, and the desktop sends it whether or not the value
-// differs, so an app that answered one with a source would answer its own
-// answer for as long as it ran.
+// What leaving it out buys is 「跟随系统」. Handing Linux a source writes
+// gtk-application-prefer-dark-theme, and for anything but an explicit light or
+// dark the backend reads that property back before it reaches the desktop
+// portal. The GTK 3 this backend uses has no portal support of its own -- the
+// property is the application's -- so nothing ever clears what was written:
+// 「跟随系统」on a dark desktop would answer dark for the rest of the session,
+// however the desktop changed. Left alone the property is false, the portal
+// answers, and the desktop is followed, which is what 「跟随系统」wants.
+//
+// mygo 0.6.0 answers an explicit light or dark with the source it was given,
+// before reading the property, so that half would work now; it is the other half
+// that keeps Linux out.
+//
+// Handing a source over is also how the desktop's notice about the appearance
+// comes back, and the desktop sends it whether or not the value differs, so an
+// app that answered one with a source would answer its own answer for as long
+// as it ran. Nothing here answers it: the notice is Mygo's to act on, and it
+// redraws by itself.
 func tellsModule() bool { return runtime.GOOS != "linux" }
 
 // setTheme is applyTheme for an appearance the user chose, which is also

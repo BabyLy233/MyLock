@@ -6,7 +6,7 @@ tool github.com/egoist/mygo/cmd/mygo
 
 require (
 	github.com/bodgit/sevenzip v1.6.5
-	github.com/egoist/mygo v0.5.5
+	github.com/egoist/mygo v0.6.0
 	github.com/nwaples/rardecode/v2 v2.4.5
 	golang.org/x/image v0.46.0
 	golang.org/x/time v0.16.0
