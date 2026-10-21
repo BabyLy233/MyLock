@@ -189,5 +189,5 @@ func (c *Client) Profile(ctx context.Context, kind Kind, id int) (Profile, error
 	if err := c.get(ctx, path, &reply); err != nil {
 		return Profile{}, err
 	}
-	return reply.profile(), nil
+	return reply.profile(kind, id), nil
 }

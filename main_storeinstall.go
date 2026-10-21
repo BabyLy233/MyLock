@@ -376,6 +376,11 @@ func (s *store) fetch(a *app, install *game.Install, profile addons.Profile, mod
 	if err := profile.Install(mod.Slug(), files); err != nil {
 		return err
 	}
+	// The manifest keeps only the id; the name and picture the store showed
+	// are remembered here so the mods page can show them too. Written after
+	// the files are in place, so a failure to enable it still leaves a mod
+	// that can be named.
+	a.rememberMod(mod)
 	// A mod that is installed and not turned on does nothing, which reads as
 	// the app having failed. Installing one from the store is asking for it to
 	// be used.

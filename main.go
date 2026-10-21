@@ -75,6 +75,9 @@ type app struct {
 	// profilesMu does the same for the profiles file, which a scan, a switch
 	// and a deletion can all write.
 	profilesMu sync.Mutex
+	// libraryMu keeps one write of the library file at a time: an install and
+	// a lookup can both add to it.
+	libraryMu sync.Mutex
 	// gameinfoMu keeps one read of the profile and write of the game's
 	// configuration together: a switch and a session's mods being put back can
 	// both do it, and the paths the later write puts down must be the profile
@@ -98,8 +101,14 @@ type app struct {
 	profileFolder  string
 	profilePresent map[string]bool
 	profilesErr    string
-	gameInfo       game.GameInfo
-	gameInfoErr    string
+	// library is what the app knows about installed mods by their id, which
+	// the manifest does not carry: their name, author and picture.
+	// libraryBusy is the ids being looked up, so that a lookup on its way is
+	// not started again on the next read.
+	library     map[string]config.ModInfo
+	libraryBusy map[string]bool
+	gameInfo    game.GameInfo
+	gameInfoErr string
 	// The launch in flight, if there is one: why it could not be started, and
 	// what came of the last one that was.
 	launching bool
@@ -258,6 +267,7 @@ func (a *app) modsPage(c *ui.Context) {
 	s := a.state()
 	mods := a.installed()
 	profiles := a.profileStateNow()
+	infos := a.modInfos()
 
 	a.deleteDialog(c)
 	a.profilesDialog(c)
@@ -265,7 +275,7 @@ func (a *app) modsPage(c *ui.Context) {
 	a.profileDeleteDialog(c)
 
 	ui.Column(c).Fill().Padding(24).Gap(12).Children(func() {
-		ui.Row(c).Fill().Gap(12).AlignItems(ui.Center).Children(func() {
+		ui.Row(c).FillWidth().Gap(12).AlignItems(ui.Center).Children(func() {
 			ui.Text(c, "已安装模组").FontSize(22).Bold()
 			ui.Spacer(c)
 			ui.Text(c, "配置档："+profileDisplayName(profiles.folder, profiles.profiles)).
@@ -319,43 +329,79 @@ func (a *app) modsPage(c *ui.Context) {
 		ui.List(c, &a.list, len(mods.list)).
 			ItemKey(func(i int) any { return mods.list[i].ID }).
 			Fill().
+			Gap(8).
 			Rows(func(r ui.ListRow) {
-				a.modRow(c, r, mods.list[r.Index], mods.reading || s.gameRunning)
+				mod := mods.list[r.Index]
+				a.modRow(c, r, mod, infos[mod.ID], mods.reading || s.gameRunning)
 			})
 	})
 }
 
-// modRow is one mod: a switch, its id, and what it is made of.
-func (a *app) modRow(c *ui.Context, r ui.ListRow, mod addons.Mod, reading bool) {
+// modPicture is the room an installed mod's thumbnail is shown in, which is
+// also what it is fetched for.
+var modPicture = box{W: 160, H: 90}
+
+// modRow is one mod, as a card: its picture, what it is called, and what it is
+// made of, with the switch and the way to delete it on the right. The name and
+// picture come from the library; a mod the library does not know yet shows its
+// id and no picture.
+func (a *app) modRow(c *ui.Context, r ui.ListRow, mod addons.Mod, info config.ModInfo, reading bool) {
 	t := c.Theme()
 	// A local copy, because the switch binds to a value the view rebuilds every
 	// pass. OnChange runs once the bound switch has written the new state into
 	// it, which is why the value is read there and not here.
 	enabled := mod.Enabled
+	name := info.Name
+	if name == "" {
+		name = mod.ID
+	}
 
-	ui.Row(c).Fill().Padding(12).Gap(12).AlignItems(ui.Center).Children(func() {
-		ui.Switch(c, &enabled).
-			// The switch shows no text of its own, so it is named for assistive
-			// technology rather than left as an unnamed control.
-			Label("启用 " + mod.ID).
-			Disabled(reading).
-			OnChange(func() {
-				a.setEnabled(mod.ID, enabled)
-			})
-		ui.Column(c).Fill().Gap(2).Children(func() {
-			ui.Text(c, mod.ID).Bold()
+	ui.Row(c).Fill().Padding(10).Gap(14).AlignItems(ui.Center).
+		Background(t.Surface).Radius(8).Children(func() {
+		// A picture that has not arrived yet is nothing at all: the card is
+		// drawn without it, and the window is redrawn when it comes.
+		ui.Row(c).Width(float32(modPicture.W)).Height(float32(modPicture.H)).
+			Shrink(0).Background(t.Background).Radius(6).Clip().
+			Justify(ui.Center).AlignItems(ui.Center).Children(func() {
+			if bitmap := a.thumbnails.get(info.Thumb, modPicture, a.invalidate); bitmap != nil {
+				ui.Image(c, bitmap).Fit(ui.Cover).Fill()
+			} else if info.Thumb == "" {
+				ui.Text(c, "无预览图").FontSize(11).TextColor(t.TextMuted)
+			}
+		})
+		// Growing rather than filling: Fill is the parent's whole width, which
+		// a long name would push the actions past, while Grow is the room left
+		// once they are placed, and the text ellipsizes inside it.
+		ui.Column(c).Grow(1).Gap(3).Children(func() {
+			ui.Text(c, name).Bold().FontSize(15).MaxLines(1).Ellipsis("…")
+			// The id stays on the card: it is what the manifest and the
+			// site's address are keyed by, and what an unnamed mod is.
+			ui.Text(c, modMeta(mod.ID, info)).FontSize(12).TextColor(t.TextMuted).
+				MaxLines(1).Ellipsis("…")
 			ui.Text(c, modSummary(mod)).FontSize(12).TextColor(t.TextMuted)
 			if len(mod.Missing) > 0 {
 				ui.Text(c, fmt.Sprintf("缺少 %d 个文件，游戏可能读不到它", len(mod.Missing))).
 					FontSize(12).TextColor(t.Danger)
 			}
 		})
-		// The id is in the label as well as the name, because a row's button
-		// reads just 删除 and the dialog has to say which mod it will take.
-		ui.Button(c, "删除").
-			Label("删除 " + mod.ID).
-			Disabled(reading).
-			OnClick(func() { a.deleteAsk = mod.ID })
+		ui.Row(c).Shrink(0).Gap(10).AlignItems(ui.Center).Children(func() {
+			ui.Switch(c, &enabled).
+				// The switch shows no text of its own, so it is named for
+				// assistive technology rather than left as an unnamed
+				// control.
+				Label("启用 " + mod.ID).
+				Disabled(reading).
+				OnChange(func() {
+					a.setEnabled(mod.ID, enabled)
+				})
+			// The id is in the label as well as the name, because a row's
+			// button reads just 删除 and the dialog has to say which mod it
+			// will take.
+			ui.Button(c, "删除").
+				Label("删除 " + mod.ID).
+				Disabled(reading).
+				OnClick(func() { a.deleteAsk = mod.ID })
+		})
 	})
 }
 
@@ -890,6 +936,15 @@ func (a *app) start(cfg config.Config, cfgErr error) {
 			a.profilesErr = err.Error()
 		}
 	}
+	// What is known about the installed mods is read before the lookup, so the
+	// first frame already shows their names rather than their ids.
+	if path := config.LibraryPath(a.configPath); path != "" {
+		library, err := config.LoadLibrary(path)
+		a.library = library.Mods
+		if err != nil {
+			log.Printf("reading the mod library: %v", err)
+		}
+	}
 	if cfgErr != nil {
 		// The directory the user chose last time is not in effect, so the app
 		// detects the game instead, and says why.
@@ -1023,6 +1078,12 @@ func (a *app) look(pinned string, remember bool, warn error) {
 					}
 				}
 			}
+		}
+		if lookErr == nil {
+			// Mods installed by the Tauri build or by hand have no entry yet;
+			// their names and pictures are looked up in the background, and
+			// the list shows their ids until that arrives.
+			a.fillModInfo(mods)
 		}
 
 		// errors.Join keeps the ones that are not nil, and returns nil when

@@ -460,6 +460,29 @@ func TestTheModsPageShowsTheProfileAndOpensTheManager(t *testing.T) {
 	}
 }
 
+// The heading and the launch buttons stay at the top: the header row spans the
+// width, not the whole column, which would leave the upper half of the page
+// empty and push everything else down.
+func TestTheModsPageKeepsItsHeaderAtTheTop(t *testing.T) {
+	a, install, def, _ := profileApp(t)
+	tt := show(t, a, install, def)
+
+	control, ok := tt.Find("切换 / 管理…")
+	if !ok {
+		t.Fatal("the mods page does not show the profile control")
+	}
+	if control.Y > 100 {
+		t.Errorf("the profile control is at y=%.0f, want it in the header", control.Y)
+	}
+	launch, ok := tt.Find("启动模组版游戏")
+	if !ok {
+		t.Fatal("the mods page does not show the launch button")
+	}
+	if launch.Y > 160 {
+		t.Errorf("the launch button is at y=%.0f, want it above the mods", launch.Y)
+	}
+}
+
 // The manager's new-profile dialog creates the profile with the name typed.
 func TestTheManagerCreatesAProfile(t *testing.T) {
 	a, install, def, _ := profileApp(t)

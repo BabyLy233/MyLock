@@ -123,6 +123,10 @@ func (s Submission) Slug() string {
 // part of this page rather than an endpoint of its own: the two answer with the
 // same files, checked against each other for all three kinds.
 type Profile struct {
+	// Submission is the record of the submission itself: its name, author,
+	// where it is filed, and the first picture. The page carries these beside
+	// the text and the files.
+	Submission Submission
 	// Text is what the author wrote, as HTML, which is what a page shows. It is
 	// their write-up, or the one line they put beside the name when they wrote
 	// no more than that -- a page with nothing on it but a title reads as the
@@ -203,17 +207,33 @@ type submissionJSON struct {
 
 // profileJSON is a submission's own page.
 type profileJSON struct {
-	Text      string           `json:"_sText"`
-	Tagline   string           `json:"_sDescription"`
-	Downloads int              `json:"_nDownloadCount"`
-	URL       string           `json:"_sProfileUrl"`
-	Preview   previewMediaJSON `json:"_aPreviewMedia"`
-	Files     []fileJSON       `json:"_aFiles"`
+	ID        int    `json:"_idRow"`
+	Name      string `json:"_sName"`
+	Version   string `json:"_sVersion"`
+	Submitter struct {
+		Name string `json:"_sName"`
+	} `json:"_aSubmitter"`
+	SuperCategory struct {
+		Name string `json:"_sName"`
+	} `json:"_aSuperCategory"`
+	Category struct {
+		Name string `json:"_sName"`
+	} `json:"_aCategory"`
+	Likes      int              `json:"_nLikeCount"`
+	Visibility string           `json:"_sInitialVisibility"`
+	Added      int64            `json:"_tsDateAdded"`
+	Modified   int64            `json:"_tsDateModified"`
+	Text       string           `json:"_sText"`
+	Tagline    string           `json:"_sDescription"`
+	Downloads  int              `json:"_nDownloadCount"`
+	URL        string           `json:"_sProfileUrl"`
+	Preview    previewMediaJSON `json:"_aPreviewMedia"`
+	Files      []fileJSON       `json:"_aFiles"`
 }
 
 // profile converts a page. The files of a page are the ones the download list
 // carries, in the same shape, so they convert the same way.
-func (r profileJSON) profile() Profile {
+func (r profileJSON) profile(kind Kind, id int) Profile {
 	// What the author wrote is what there is to read, and the one line beside
 	// the name is what they wrote instead when they wrote no more than that.
 	// The Tauri app reads the two the same way.
@@ -225,12 +245,40 @@ func (r profileJSON) profile() Profile {
 	for _, f := range r.Files {
 		files = append(files, f.file())
 	}
+
+	// The page's category is the one under the root, and its super category is
+	// the root; a kind without the second is filed directly under the first.
+	category, subcategory := r.SuperCategory.Name, r.Category.Name
+	if category == "" {
+		category, subcategory = r.Category.Name, ""
+	}
+	number := r.ID
+	if number == 0 {
+		number = id
+	}
+	s := Submission{
+		ID:          number,
+		Kind:        kind,
+		Name:        r.Name,
+		Version:     r.Version,
+		Author:      r.Submitter.Name,
+		Category:    category,
+		Subcategory: subcategory,
+		Likes:       r.Likes,
+		Added:       unix(r.Added),
+		Updated:     unix(r.Modified),
+		NSFW:        r.Visibility == "warn" || r.Visibility == "hide",
+	}
+	if images := r.Preview.images(); len(images) > 0 {
+		s.Thumb, s.Image = images[0].Thumb, images[0].URL
+	}
 	return Profile{
-		Text:      text,
-		Downloads: r.Downloads,
-		Images:    r.Preview.images(),
-		URL:       r.URL,
-		Files:     files,
+		Submission: s,
+		Text:       text,
+		Downloads:  r.Downloads,
+		Images:     r.Preview.images(),
+		URL:        r.URL,
+		Files:      files,
 	}
 }
 

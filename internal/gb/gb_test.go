@@ -572,11 +572,23 @@ func TestACanceledRequestStops(t *testing.T) {
 func TestProfileReadsASubmissionsPage(t *testing.T) {
 	c, s := newServer(t, func(int, http.ResponseWriter) (int, string) {
 		return http.StatusOK, `{
+			"_idRow": 599927,
 			"_sName": "Yamato redesign",
+			"_sVersion": "v2",
 			"_sText": "Redesigned Yamato with a new look<br><br>Installation instructions in readme.txt",
 			"_sDescription": "Yamato NEW model!",
 			"_nDownloadCount": 785695,
+			"_nLikeCount": 532,
 			"_sProfileUrl": "https://gamebanana.com/mods/599927",
+			"_aSubmitter": {
+				"_sName": "Keller Max"
+			},
+			"_aSuperCategory": {
+				"_sName": "Skins"
+			},
+			"_aCategory": {
+				"_sName": "Yamato"
+			},
 			"_aPreviewMedia": {
 				"_aImages": [
 					{
@@ -628,6 +640,24 @@ func TestProfileReadsASubmissionsPage(t *testing.T) {
 	}
 	if profile.URL != "https://gamebanana.com/mods/599927" {
 		t.Errorf("URL = %q", profile.URL)
+	}
+	// The page carries the submission's own record too, which is what the app
+	// keeps to name an installed mod and show its picture.
+	submission := profile.Submission
+	if submission.ID != 599927 || submission.Kind != Mod {
+		t.Errorf("Submission = %+v, want mod 599927", submission)
+	}
+	if submission.Name != "Yamato redesign" || submission.Author != "Keller Max" {
+		t.Errorf("Submission = %+v, want its name and author", submission)
+	}
+	if submission.Category != "Skins" || submission.Subcategory != "Yamato" {
+		t.Errorf("Submission = %+v, want it filed under Skins / Yamato", submission)
+	}
+	if submission.Version != "v2" || submission.Likes != 532 {
+		t.Errorf("Submission = %+v, want its version and likes", submission)
+	}
+	if want := "https://images.gamebanana.com/img/ss/mods/220-90_6988989395e38.jpg"; submission.Thumb != want {
+		t.Errorf("Submission.Thumb = %q, want %q", submission.Thumb, want)
 	}
 
 	// A picture is published at several sizes, and the two kept are the small
