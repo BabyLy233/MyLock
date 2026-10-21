@@ -10,7 +10,7 @@ import (
 
 	"github.com/egoist/mygo/ui"
 
-	"github.com/BabyLy233/deadlock-mod-manager-mygo/internal/game"
+	"github.com/BabyLy233/mylock/internal/game"
 )
 
 // fakeSteam makes a Steam installation whose launcher writes down what it was

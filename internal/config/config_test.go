@@ -106,3 +106,62 @@ func TestPathIsUnderTheConfigDirectory(t *testing.T) {
 		t.Errorf("Path is in %q, want %q", got, appDir)
 	}
 }
+
+// After the rename, the settings the app kept under its old name are carried
+// over rather than asking the user for their game directory again.
+func TestAdoptCarriesTheSettingsOver(t *testing.T) {
+	from := filepath.Join(t.TempDir(), fileName)
+	to := filepath.Join(t.TempDir(), fileName)
+	want := Config{GamePath: "/games/Deadlock", Theme: "dark"}
+	if err := want.Save(from); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := adopt(from, to); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load(to)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Errorf("the settings carried over are %+v, want %+v", got, want)
+	}
+}
+
+// Settings already saved under the new name are the ones the app uses; the old
+// file never overwrites them.
+func TestAdoptLeavesTheNewSettingsAlone(t *testing.T) {
+	from := filepath.Join(t.TempDir(), fileName)
+	to := filepath.Join(t.TempDir(), fileName)
+	if err := (Config{GamePath: "/old/Deadlock"}).Save(from); err != nil {
+		t.Fatal(err)
+	}
+	want := Config{GamePath: "/new/Deadlock"}
+	if err := want.Save(to); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := adopt(from, to); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load(to)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Errorf("Adopt replaced the settings with %+v, want %+v", got, want)
+	}
+}
+
+// A machine that never ran an earlier build has nothing to carry over, which
+// is not a failure.
+func TestAdoptWithoutAnOldFile(t *testing.T) {
+	to := filepath.Join(t.TempDir(), fileName)
+	if err := adopt(filepath.Join(t.TempDir(), fileName), to); err != nil {
+		t.Fatalf("adopt without an old file = %v, want nil", err)
+	}
+	if _, err := os.Stat(to); !os.IsNotExist(err) {
+		t.Error("adopt wrote a settings file where there was nothing to carry over")
+	}
+}

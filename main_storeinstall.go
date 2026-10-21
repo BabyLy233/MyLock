@@ -11,11 +11,11 @@ import (
 
 	"github.com/egoist/mygo/ui"
 
-	"github.com/BabyLy233/deadlock-mod-manager-mygo/internal/addons"
-	"github.com/BabyLy233/deadlock-mod-manager-mygo/internal/archive"
-	"github.com/BabyLy233/deadlock-mod-manager-mygo/internal/download"
-	"github.com/BabyLy233/deadlock-mod-manager-mygo/internal/game"
-	"github.com/BabyLy233/deadlock-mod-manager-mygo/internal/gb"
+	"github.com/BabyLy233/mylock/internal/addons"
+	"github.com/BabyLy233/mylock/internal/archive"
+	"github.com/BabyLy233/mylock/internal/download"
+	"github.com/BabyLy233/mylock/internal/game"
+	"github.com/BabyLy233/mylock/internal/gb"
 )
 
 // detail is one mod's own page: what it is, what its author wrote about it, and
@@ -324,7 +324,7 @@ func (s *store) fetch(a *app, install *game.Install, mod gb.Submission, file gb.
 	// Everything the download and the unpacking write goes in a directory of
 	// its own, which is thrown away whatever happens: an archive is a stranger's
 	// and nothing it holds outlives the install.
-	work, err := os.MkdirTemp("", "deadlock-mod-manager-")
+	work, err := os.MkdirTemp("", "mylock-")
 	if err != nil {
 		return err
 	}

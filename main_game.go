@@ -3,7 +3,7 @@ package main
 import (
 	"time"
 
-	"github.com/BabyLy233/deadlock-mod-manager-mygo/internal/game"
+	"github.com/BabyLy233/mylock/internal/game"
 )
 
 // gamePoll is how often the process list is looked at. The game takes far

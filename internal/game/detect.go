@@ -5,7 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/BabyLy233/deadlock-mod-manager-mygo/internal/vdf"
+	"github.com/BabyLy233/mylock/internal/vdf"
 )
 
 const (

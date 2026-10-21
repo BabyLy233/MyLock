@@ -21,7 +21,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/BabyLy233/deadlock-mod-manager-mygo/internal/about"
+	"github.com/BabyLy233/mylock/internal/about"
 )
 
 const (

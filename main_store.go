@@ -9,8 +9,8 @@ import (
 	"github.com/egoist/mygo/ui"
 	"github.com/egoist/mygo/ui/richtext"
 
-	"github.com/BabyLy233/deadlock-mod-manager-mygo/internal/download"
-	"github.com/BabyLy233/deadlock-mod-manager-mygo/internal/gb"
+	"github.com/BabyLy233/mylock/internal/download"
+	"github.com/BabyLy233/mylock/internal/gb"
 )
 
 var (

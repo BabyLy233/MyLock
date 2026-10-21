@@ -1,4 +1,4 @@
-# Deadlock Mod Manager —— 构建脚本
+# MyLock —— 构建脚本
 #
 #   make                编译全部平台的安装包
 #   make build          只编译当前平台，开发时用这个

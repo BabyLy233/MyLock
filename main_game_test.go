@@ -4,7 +4,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/BabyLy233/deadlock-mod-manager-mygo/internal/config"
+	"github.com/BabyLy233/mylock/internal/config"
 )
 
 // The game holds the files a mod is made of, so the page offers no switch

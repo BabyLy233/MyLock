@@ -42,7 +42,7 @@ func (i *Install) Launch() error {
 	// this process reads. A pipe whose reader is gone is one for a writer to be
 	// killed by, and the writer here is a launcher that outlives this app's
 	// interest in it, with the Steam it started holding the same pipe.
-	said, err := os.CreateTemp("", "deadlock-mod-manager-steam-*.log")
+	said, err := os.CreateTemp("", "mylock-steam-*.log")
 	if err != nil {
 		return fmt.Errorf("记录启动程序的输出：%w", err)
 	}

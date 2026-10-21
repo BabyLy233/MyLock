@@ -13,7 +13,11 @@ import (
 const (
 	// appDir is the directory the app keeps its files in, under the config
 	// directory of the platform.
-	appDir = "deadlock-mod-manager"
+	appDir = "mylock"
+	// legacyAppDir is where the app kept its files before it was renamed. What
+	// is there is carried over once, so that the rename does not cost the user
+	// the game directory it took them a dialog to pick.
+	legacyAppDir = "deadlock-mod-manager"
 	// fileName is the settings file inside appDir.
 	fileName = "config.json"
 )
@@ -44,6 +48,32 @@ func Path() (string, error) {
 	return filepath.Join(dir, appDir, fileName), nil
 }
 
+// Adopt carries the settings an earlier version kept under the old name to
+// path, when path does not exist yet. The old file is left where it is, so that
+// a build from before the rename still finds its own settings.
+func Adopt(path string) error {
+	dir, err := os.UserConfigDir()
+	if err != nil {
+		return fmt.Errorf("finding the config directory: %w", err)
+	}
+	return adopt(filepath.Join(dir, legacyAppDir, fileName), path)
+}
+
+// adopt copies from to to, when to does not exist yet.
+func adopt(from, to string) error {
+	if _, err := os.Stat(to); err == nil || !errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	data, err := os.ReadFile(from)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("reading %s: %w", from, err)
+	}
+	return writeFile(to, data)
+}
+
 // Load reads the settings at path. A file that is not there gives the zero
 // Config and no error, which is the state of a first run.
 func Load(path string) (Config, error) {
@@ -70,7 +100,12 @@ func (c Config) Save(path string) error {
 		return err
 	}
 	data = append(data, '\n')
+	return writeFile(path, data)
+}
 
+// writeFile replaces path with data, creating the directory above it. The file
+// appears at path whole or not at all.
+func writeFile(path string, data []byte) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("creating %s: %w", dir, err)

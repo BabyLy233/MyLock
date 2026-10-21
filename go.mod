@@ -1,4 +1,4 @@
-module github.com/BabyLy233/deadlock-mod-manager-mygo
+module github.com/BabyLy233/mylock
 
 go 1.27.3
 

@@ -42,7 +42,7 @@ const (
 
 	// appDir is the directory the app keeps its files in, under the cache
 	// directory of the platform. It is the same name the settings use.
-	appDir = "deadlock-mod-manager"
+	appDir = "mylock"
 )
 
 // entry is one picture the cache holds.

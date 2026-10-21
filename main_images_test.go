@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/BabyLy233/deadlock-mod-manager-mygo/internal/imagecache"
+	"github.com/BabyLy233/mylock/internal/imagecache"
 )
 
 // pictureStub answers every fetch with one picture of a fixed size, so that what

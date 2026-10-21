@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"runtime"
 
-	"github.com/BabyLy233/deadlock-mod-manager-mygo/internal/vdf"
+	"github.com/BabyLy233/mylock/internal/vdf"
 )
 
 // ErrNotFound reports that Steam, or the game, was not found.

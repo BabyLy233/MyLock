@@ -6,7 +6,7 @@ import (
 
 	"github.com/egoist/mygo/ui"
 
-	"github.com/BabyLy233/deadlock-mod-manager-mygo/internal/gb"
+	"github.com/BabyLy233/mylock/internal/gb"
 )
 
 // viewer is a screenshot the user opened to look at closely: which of the

@@ -8,4 +8,4 @@ const Version = "0.1"
 // UserAgent identifies the app to the servers it reads from. GameBanana turns
 // away requests without one, and its operators read it to find who is making
 // too many; the address is there so that they can.
-const UserAgent = "DeadlockModManager/" + Version + " (+https://github.com/BabyLy233/deadlock-mod-manager-mygo)"
+const UserAgent = "MyLock/" + Version + " (+https://github.com/BabyLy233/mylock)"

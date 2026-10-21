@@ -1,6 +1,6 @@
 {
-  "name": "Deadlock Mod Manager",
-  "identifier": "dev.babyly233.dmm",
+  "name": "MyLock",
+  "identifier": "dev.babyly233.mylock",
   "version": "0.1.0",
   "out": "build"
 }

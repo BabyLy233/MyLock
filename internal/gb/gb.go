@@ -27,7 +27,7 @@ import (
 
 	"golang.org/x/time/rate"
 
-	"github.com/BabyLy233/deadlock-mod-manager-mygo/internal/about"
+	"github.com/BabyLy233/mylock/internal/about"
 )
 
 // Game is Deadlock's id on GameBanana. Every request here filters by it: the

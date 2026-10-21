@@ -1,6 +1,5 @@
-// Command deadlock-mod-manager-mygo manages mods for Valve's Deadlock. Its
-// window is Mygo's native UI: the interface is Go, drawn on the GPU, with no
-// web page and no webview.
+// Command mylock manages mods for Valve's Deadlock. Its window is Mygo's native
+// UI: the interface is Go, drawn on the GPU, with no web page and no webview.
 package main
 
 import (
@@ -15,12 +14,12 @@ import (
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 
-	"github.com/BabyLy233/deadlock-mod-manager-mygo/internal/addons"
-	"github.com/BabyLy233/deadlock-mod-manager-mygo/internal/config"
-	"github.com/BabyLy233/deadlock-mod-manager-mygo/internal/download"
-	"github.com/BabyLy233/deadlock-mod-manager-mygo/internal/game"
-	"github.com/BabyLy233/deadlock-mod-manager-mygo/internal/gb"
-	"github.com/BabyLy233/deadlock-mod-manager-mygo/internal/imagecache"
+	"github.com/BabyLy233/mylock/internal/addons"
+	"github.com/BabyLy233/mylock/internal/config"
+	"github.com/BabyLy233/mylock/internal/download"
+	"github.com/BabyLy233/mylock/internal/game"
+	"github.com/BabyLy233/mylock/internal/gb"
+	"github.com/BabyLy233/mylock/internal/imagecache"
 )
 
 // app is the state the window shows. The view builds the interface from it on
@@ -1046,6 +1045,11 @@ func main() {
 	if path, err := config.Path(); err != nil {
 		log.Printf("settings will not be kept: %v", err)
 	} else {
+		// The settings of a build from before the rename are carried over once,
+		// so that the game directory it found is still known.
+		if err := config.Adopt(path); err != nil {
+			log.Printf("settings from before the rename were not carried over: %v", err)
+		}
 		a.configPath = path
 		cfg, cfgErr = config.Load(path)
 	}
@@ -1069,7 +1073,7 @@ func main() {
 
 	mygo.App.WhenReady(func() {
 		a.win = mygo.NewWindow(mygo.WindowOptions{
-			Title:     "Deadlock Mod Manager",
+			Title:     "MyLock",
 			Width:     1280,
 			Height:    800,
 			MinWidth:  880,

@@ -18,8 +18,8 @@ import (
 	"github.com/egoist/mygo/ui"
 	"golang.org/x/image/draw"
 
-	"github.com/BabyLy233/deadlock-mod-manager-mygo/internal/about"
-	"github.com/BabyLy233/deadlock-mod-manager-mygo/internal/imagecache"
+	"github.com/BabyLy233/mylock/internal/about"
+	"github.com/BabyLy233/mylock/internal/imagecache"
 )
 
 // box is the room a picture is wanted for, in DIPs: it is scaled to cover it.

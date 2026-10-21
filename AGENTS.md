@@ -1,4 +1,4 @@
-# Deadlock Mod Manager（Mygo）
+# MyLock
 
 ## 原项目
 

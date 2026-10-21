@@ -10,10 +10,10 @@ import (
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 
-	"github.com/BabyLy233/deadlock-mod-manager-mygo/internal/addons"
-	"github.com/BabyLy233/deadlock-mod-manager-mygo/internal/config"
-	"github.com/BabyLy233/deadlock-mod-manager-mygo/internal/game"
-	"github.com/BabyLy233/deadlock-mod-manager-mygo/internal/imagecache"
+	"github.com/BabyLy233/mylock/internal/addons"
+	"github.com/BabyLy233/mylock/internal/config"
+	"github.com/BabyLy233/mylock/internal/game"
+	"github.com/BabyLy233/mylock/internal/imagecache"
 )
 
 // The view runs without a window in tests, which click as a user would.
