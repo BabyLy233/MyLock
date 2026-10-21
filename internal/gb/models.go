@@ -59,6 +59,25 @@ type Submission struct {
 	// HasFiles reports whether there is anything to download. A submission
 	// without files is one whose author has not uploaded yet.
 	HasFiles bool
+	// NSFW reports whether the catalogue marks the submission for adults. The
+	// site puts such a submission behind a warning or hides it, which is what
+	// its own listings say here; it does not say which parts of it are the
+	// reason, so gore and swearing cannot be told from the rest.
+	NSFW bool
+}
+
+// Category is one node of a kind's category tree: a section such as Skins, or
+// a section under it such as Yamato.
+type Category struct {
+	// ID is the number the listing filter takes.
+	ID int
+	// Name is what the section is called.
+	Name string
+	// Items is how many submissions are filed in it, itself included.
+	Items int
+	// Children is how many sections are under it. Zero means there are none to
+	// ask for.
+	Children int
 }
 
 // Page returns the submission's page on the site, which is where a user goes to
@@ -179,6 +198,7 @@ type submissionJSON struct {
 	Added        int64            `json:"_tsDateAdded"`
 	Modified     int64            `json:"_tsDateModified"`
 	HasFiles     bool             `json:"_bHasFiles"`
+	Visibility   string           `json:"_sInitialVisibility"`
 }
 
 // profileJSON is a submission's own page.
@@ -254,6 +274,10 @@ func (r submissionJSON) submission() Submission {
 		Added:       unix(r.Added),
 		Updated:     unix(r.Modified),
 		HasFiles:    r.HasFiles,
+		// The site says "warn" for what it shows behind a warning and "hide"
+		// for what it keeps off its listings. Both are what an adult filter is
+		// meant to take out.
+		NSFW: r.Visibility == "warn" || r.Visibility == "hide",
 	}
 	// The first picture stands for the submission, which is how the site's own
 	// listings do it. Each is published at several sizes, and the list wants

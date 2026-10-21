@@ -4,6 +4,10 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"slices"
+	"strings"
+	"sync"
 	"testing"
 
 	"github.com/egoist/mygo/ui"
@@ -39,13 +43,33 @@ func catalogueReply(names ...string) string {
 		len(names), records)
 }
 
+// categoryReply is the roots of a kind's category tree, as the API sends them.
+const categoryReply = `[{"_idRow": 33295, "_sName": "Skins", "_nItemCount": 3364, "_nCategoryCount": 44}]`
+
+// searchReply is a page of search results holding submissions of two
+// categories, which is what the search endpoint sends when it was asked to
+// narrow by one: it accepts the filter and ignores it.
+const searchReply = `{"_aMetadata": {"_nRecordCount": 2, "_nPerpage": 2}, "_aRecords": [
+	{"_idRow": 1, "_sModelName": "Mod", "_sName": "Yamato skin",
+	 "_aRootCategory": {"_sName": "Skins"}, "_aSubCategory": {"_sName": "Yamato"}},
+	{"_idRow": 2, "_sModelName": "Mod", "_sName": "Cursor pack",
+	 "_aRootCategory": {"_sName": "HUD"}, "_aSubCategory": {"_sName": "Cursors"}}
+]}`
+
 // fakeCatalogue answers the API's listings and submissions' pages with fixed
 // ones, so that what the store shows can be read without asking GameBanana for
-// it.
-func fakeCatalogue(t *testing.T, a *app, reply func(path string) (int, string)) *httptest.Server {
+// it. The category tree is answered here rather than by each test: the store
+// asks for it when it opens and when the kind changes, and a test is not about
+// that request.
+func fakeCatalogue(t *testing.T, a *app, reply func(path string, query url.Values) (int, string)) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		status, body := reply(r.URL.Path)
+		if strings.HasSuffix(r.URL.Path, "/Categories") {
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, categoryReply)
+			return
+		}
+		status, body := reply(r.URL.Path, r.URL.Query())
 		w.WriteHeader(status)
 		fmt.Fprint(w, body)
 	}))
@@ -54,13 +78,55 @@ func fakeCatalogue(t *testing.T, a *app, reply func(path string) (int, string)) 
 	return srv
 }
 
+// askedPaths records what a fake catalogue was asked for. The requests run on
+// goroutines of their own, and the store can have more than one in flight.
+type askedPaths struct {
+	mu      sync.Mutex
+	paths   []string
+	queries []url.Values
+}
+
+func (a *askedPaths) add(path string, query url.Values) {
+	a.mu.Lock()
+	a.paths = append(a.paths, path)
+	a.queries = append(a.queries, query)
+	a.mu.Unlock()
+}
+
+func (a *askedPaths) has(path string) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return slices.Contains(a.paths, path)
+}
+
+func (a *askedPaths) all() []string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return slices.Clone(a.paths)
+}
+
+// lastQuery is what a path was asked for the last time, or nil when it was
+// never asked for.
+func (a *askedPaths) lastQuery(path string) url.Values {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for i := len(a.paths) - 1; i >= 0; i-- {
+		if a.paths[i] == path {
+			return a.queries[i]
+		}
+	}
+	return nil
+}
+
 // storeWith opens the store on a page of the catalogue, without a request: what
 // a test of what the page shows needs is the page, not the asking for it.
 func storeWith(t *testing.T, a *app, items ...gb.Submission) ui.Tester {
 	t.Helper()
 	a.store.started = true
 	a.store.mu.Lock()
-	a.store.items, a.store.total, a.store.more = items, len(items), false
+	a.store.raw = items
+	a.store.total, a.store.more = len(items), false
+	a.store.filterLocked()
 	a.store.mu.Unlock()
 	a.router.Push("/store")
 	return *ui.NewTester(a.view, 1280, 800)
@@ -676,7 +742,7 @@ func TestStoreShowsAModWithNothingWrittenOrPosted(t *testing.T) {
 // Clicking a card opens the mod, which is the whole of what the grid does.
 func TestClickingACardOpensTheMod(t *testing.T) {
 	a := newApp()
-	fakeCatalogue(t, a, func(string) (int, string) {
+	fakeCatalogue(t, a, func(string, url.Values) (int, string) {
 		return http.StatusOK, `{"_aFiles": [{
 			"_idRow": 1, "_sFile": "pak01_dir.vpk", "_nFilesize": 1024,
 			"_sDownloadUrl": "https://gamebanana.com/dl/1"
@@ -729,9 +795,9 @@ func TestTheStoreGoesBack(t *testing.T) {
 // is what the tabs are for.
 func TestTheStoreAsksForTheKindThatIsChosen(t *testing.T) {
 	a := newApp()
-	var asked []string
-	fakeCatalogue(t, a, func(path string) (int, string) {
-		asked = append(asked, path)
+	asked := &askedPaths{}
+	fakeCatalogue(t, a, func(path string, query url.Values) (int, string) {
+		asked.add(path, query)
 		return http.StatusOK, catalogueReply("Yamato redesign")
 	})
 
@@ -742,11 +808,11 @@ func TestTheStoreAsksForTheKindThatIsChosen(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitFor(t, "the sound listing to be read", func() bool {
-		return !a.store.shown().loading && len(asked) > 0
+		return !a.store.shown().loading && asked.has("/Sound/Index")
 	})
 
-	if len(asked) == 0 || asked[len(asked)-1] != "/Sound/Index" {
-		t.Errorf("the store asked for %v, want the Sound listing", asked)
+	if !asked.has("/Sound/Index") {
+		t.Errorf("the store asked for %v, want the Sound listing", asked.all())
 	}
 }
 
@@ -754,9 +820,9 @@ func TestTheStoreAsksForTheKindThatIsChosen(t *testing.T) {
 // name among five thousand.
 func TestSearchingAsksTheSearch(t *testing.T) {
 	a := newApp()
-	var asked []string
-	fakeCatalogue(t, a, func(path string) (int, string) {
-		asked = append(asked, path)
+	asked := &askedPaths{}
+	fakeCatalogue(t, a, func(path string, query url.Values) (int, string) {
+		asked.add(path, query)
 		return http.StatusOK, catalogueReply("Yamato redesign")
 	})
 
@@ -766,10 +832,231 @@ func TestSearchingAsksTheSearch(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitFor(t, "the search to be read", func() bool {
-		return !a.store.shown().loading && len(asked) > 0
+		return !a.store.shown().loading && asked.has("/Util/Search/Results")
 	})
 
-	if asked[len(asked)-1] != "/Util/Search/Results" {
-		t.Errorf("the store asked for %v, want the search", asked)
+	if !asked.has("/Util/Search/Results") {
+		t.Errorf("the store asked for %v, want the search", asked.all())
+	}
+}
+
+// Choosing a category narrows the listing by the API's own category filter,
+// which takes the section's id rather than its name.
+func TestChoosingACategoryAsksForItsSection(t *testing.T) {
+	a := newApp()
+	asked := &askedPaths{}
+	fakeCatalogue(t, a, func(path string, query url.Values) (int, string) {
+		asked.add(path, query)
+		return http.StatusOK, catalogueReply("Yamato redesign")
+	})
+	tt := storeWith(t, a, mod("Yamato redesign"))
+	waitFor(t, "the first page to be read", func() bool { return !a.store.shown().loading })
+
+	// The tree is read when the store opens; a test of the control is not
+	// about that request, so it is put there rather than waited for.
+	a.store.mu.Lock()
+	a.store.categories = []gb.Category{{ID: 33295, Name: "Skins", Items: 3364, Children: 44}}
+	a.store.mu.Unlock()
+	tt.Frame()
+
+	if err := tt.Click("全部分类"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if err := tt.Click("Skins"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the Skins listing to be read", func() bool {
+		query := asked.lastQuery("/Mod/Index")
+		return query != nil && query.Get("_aFilters[Generic_Category]") == "33295" && !a.store.shown().loading
+	})
+
+	if got := a.store.shown().category; got != "Skins" {
+		t.Errorf("the store is filtered by %q, want Skins", got)
+	}
+
+	// Going back to every category drops the filter from the request.
+	tt.Frame()
+	if err := tt.Click("Skins"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if err := tt.Click("全部分类"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the whole listing to be read again", func() bool {
+		query := asked.lastQuery("/Mod/Index")
+		return query != nil && query.Get("_aFilters[Generic_Category]") == "" && !a.store.shown().loading
+	})
+	if got := a.store.shown().category; got != "" {
+		t.Errorf("the store is still filtered by %q", got)
+	}
+}
+
+// Choosing a section under the chosen category narrows the listing to that
+// section's own id, without the root beside it.
+func TestChoosingAHeroAsksForTheSectionUnderIt(t *testing.T) {
+	a := newApp()
+	asked := &askedPaths{}
+	fakeCatalogue(t, a, func(path string, query url.Values) (int, string) {
+		asked.add(path, query)
+		return http.StatusOK, catalogueReply("Yamato redesign")
+	})
+	tt := storeWith(t, a, mod("Yamato redesign"))
+	waitFor(t, "the first page to be read", func() bool { return !a.store.shown().loading })
+
+	a.store.mu.Lock()
+	a.store.categories = []gb.Category{{ID: 33295, Name: "Skins", Children: 44}}
+	a.store.subcategories = []gb.Category{{ID: 33328, Name: "Yamato"}}
+	a.store.mu.Unlock()
+	a.store.category = "Skins"
+	tt.Frame()
+
+	// The section is chosen from its own control, which is only there once the
+	// root's sections have been read.
+	if err := tt.Click("全部"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if err := tt.Click("Yamato"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the Yamato listing to be read", func() bool {
+		query := asked.lastQuery("/Mod/Index")
+		return query != nil && query.Get("_aFilters[Generic_Category]") == "33328" && !a.store.shown().loading
+	})
+	if got := a.store.shown().hero; got != "Yamato" {
+		t.Errorf("the store is filtered by the section %q, want Yamato", got)
+	}
+}
+
+// A search is narrowed here rather than by the API, which accepts the category
+// filter and then ignores it, so its page holds submissions of every category.
+func TestASearchIsNarrowedByTheCategoryHere(t *testing.T) {
+	a := newApp()
+	fakeCatalogue(t, a, func(string, url.Values) (int, string) {
+		return http.StatusOK, searchReply
+	})
+	tt := storeWith(t, a)
+	a.store.query = "skin"
+	a.store.category = "Skins"
+	a.store.search()
+	waitFor(t, "the search to be read", func() bool { return !a.store.shown().loading })
+	tt.Frame()
+
+	if tt.HasText("Cursor pack") {
+		t.Errorf("the search shows a submission of another category: %q", tt.Texts())
+	}
+	if !tt.HasText("Yamato skin") {
+		t.Errorf("the search does not show the submission of the chosen category: %q", tt.Texts())
+	}
+
+	// A section narrows it the same way, by the section's own name beside its
+	// root's: Cursors is a section of HUD, not of Skins.
+	a.store.category, a.store.hero = "HUD", "Cursors"
+	a.store.search()
+	waitFor(t, "the search under the other section to be read", func() bool { return !a.store.shown().loading })
+	tt.Frame()
+
+	if tt.HasText("Yamato skin") {
+		t.Errorf("the search under Cursors shows a Yamato submission: %q", tt.Texts())
+	}
+	if !tt.HasText("Cursor pack") {
+		t.Errorf("the search under Cursors shows nothing of it: %q", tt.Texts())
+	}
+}
+
+// The adult filter leaves the submissions the catalogue marks for adults out
+// of the page, and says how many it took, without asking the API again.
+func TestHidingNSFWLeavesThemOutOfThePage(t *testing.T) {
+	a := newApp()
+	adult := mod("Yamato NSFW")
+	adult.ID = 599928
+	adult.NSFW = true
+	tt := storeWith(t, a, mod("Yamato redesign"), adult)
+	tt.Frame()
+	if !tt.HasText("Yamato NSFW") {
+		t.Fatalf("the page does not show the adult submission to begin with: %q", tt.Texts())
+	}
+
+	if err := tt.Click("隐藏 NSFW"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if tt.HasText("Yamato NSFW") {
+		t.Errorf("the adult submission is still on the page: %q", tt.Texts())
+	}
+	if !tt.HasText("Yamato redesign") {
+		t.Errorf("hiding what is for adults took the rest with it: %q", tt.Texts())
+	}
+	if !tt.HasText("本页隐藏了 1 个") {
+		t.Errorf("the page does not say what it hid: %q", tt.Texts())
+	}
+
+	// Putting them back is a redraw of the same page, not another request.
+	if err := tt.Click("隐藏 NSFW"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if !tt.HasText("Yamato NSFW") {
+		t.Errorf("the adult submission did not come back: %q", tt.Texts())
+	}
+	if tt.HasText("本页隐藏了") {
+		t.Errorf("the page still says it hid something: %q", tt.Texts())
+	}
+}
+
+// The three kinds have trees of their own, so changing the kind forgets what
+// was chosen from the one before.
+func TestChangingTheKindForgetsTheChosenCategory(t *testing.T) {
+	a := newApp()
+	fakeCatalogue(t, a, func(string, url.Values) (int, string) {
+		return http.StatusOK, catalogueReply("Yamato redesign")
+	})
+	tt := storeWith(t, a, mod("Yamato redesign"))
+	waitFor(t, "the first page to be read", func() bool { return !a.store.shown().loading })
+
+	a.store.mu.Lock()
+	a.store.categories = []gb.Category{{ID: 33295, Name: "Skins", Children: 44}}
+	a.store.subcategories = []gb.Category{{ID: 33328, Name: "Yamato"}}
+	a.store.mu.Unlock()
+	a.store.category, a.store.hero = "Skins", "Yamato"
+	tt.Frame()
+
+	if err := tt.Click("音效"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the kind to change", func() bool {
+		state := a.store.shown()
+		return state.category == "" && state.hero == ""
+	})
+	if got := a.store.shown().hero; got != "" {
+		t.Errorf("the section %q survived the change of kind", got)
+	}
+}
+
+// A tree that could not be read leaves the listing up and says so, with a way
+// to ask again.
+func TestTheStoreSaysWhenTheCategoriesCouldNotBeRead(t *testing.T) {
+	a := newApp()
+	tt := storeWith(t, a, mod("Yamato redesign"))
+	a.store.mu.Lock()
+	a.store.categoriesErr = "network is down"
+	a.store.mu.Unlock()
+	tt.Frame()
+
+	if !tt.HasText("读不到分类：network is down") {
+		t.Errorf("the store does not say why the tree is missing: %q", tt.Texts())
+	}
+
+	if err := tt.Click("重试"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the tree to be read", func() bool {
+		state := a.store.shown()
+		return !state.categoriesBusy && state.categoriesErr == "" && len(state.categories) > 0
+	})
+	if !tt.HasText("Yamato redesign") {
+		t.Errorf("reading the tree took the listing with it: %q", tt.Texts())
 	}
 }

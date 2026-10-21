@@ -160,6 +160,115 @@ func TestBrowseNamesTheGameAsAFilter(t *testing.T) {
 	}
 }
 
+// A category narrows the listing on the server, which is what makes a hero's
+// mods a listing rather than a client-side guess at what the names mean.
+func TestBrowseAsksForTheCategory(t *testing.T) {
+	c, s := newServer(t, func(int, http.ResponseWriter) (int, string) {
+		return http.StatusOK, listingReply("Yamato redesign")
+	})
+
+	if _, err := c.BrowseFiltered(t.Context(), Mod, 1, Updated, Filter{Category: 33328}); err != nil {
+		t.Fatal(err)
+	}
+
+	q := s.requests[0]
+	if got := q.Get("_aFilters[Generic_Category]"); got != "33328" {
+		t.Errorf("_aFilters[Generic_Category] = %q, want 33328", got)
+	}
+	if got := q.Get("_aFilters[Generic_Game]"); got != "20948" {
+		t.Errorf("a filtered listing stopped naming the game: _aFilters[Generic_Game] = %q", got)
+	}
+}
+
+// The whole listing asks for no category at all, rather than for a number that
+// means nothing to the API.
+func TestBrowseWithoutAFilterSendsNoCategory(t *testing.T) {
+	c, s := newServer(t, func(int, http.ResponseWriter) (int, string) {
+		return http.StatusOK, listingReply("x")
+	})
+
+	if _, err := c.Browse(t.Context(), Mod, 1, Updated); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := s.requests[0].Has("_aFilters[Generic_Category]"); got {
+		t.Error("the whole listing asked for a category")
+	}
+}
+
+// The category tree is read level by level: the roots by the game, and the
+// sections under one by the section itself.
+func TestCategoriesReadsTheTree(t *testing.T) {
+	reply := `[
+		{"_idRow": 33295, "_sName": "Skins", "_nItemCount": 3364, "_nCategoryCount": 44},
+		{"_idRow": 31713, "_sName": "HUD", "_nItemCount": 682, "_nCategoryCount": 4}
+	]`
+	c, s := newServer(t, func(int, http.ResponseWriter) (int, string) {
+		return http.StatusOK, reply
+	})
+
+	roots, err := c.Categories(t.Context(), Mod, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(roots) != 2 || roots[0].ID != 33295 || roots[0].Name != "Skins" ||
+		roots[0].Items != 3364 || roots[0].Children != 44 {
+		t.Errorf("the roots read as %+v", roots)
+	}
+	q := s.requests[0]
+	if got := q.Get("_idGameRow"); got != "20948" {
+		t.Errorf("_idGameRow = %q, want the game", got)
+	}
+	if got := q.Get("_sSort"); got != "a_to_z" {
+		t.Errorf("_sSort = %q, want a_to_z", got)
+	}
+	if s.paths[0] != "/Mod/Categories" {
+		t.Errorf("the client asked for %v, want the category tree", s.paths)
+	}
+
+	if _, err := c.Categories(t.Context(), Mod, 33295); err != nil {
+		t.Fatal(err)
+	}
+	q = s.requests[1]
+	if got := q.Get("_idCategoryRow"); got != "33295" {
+		t.Errorf("_idCategoryRow = %q, want the parent section", got)
+	}
+	if q.Has("_idGameRow") {
+		t.Error("a section's children were asked for by the game rather than by the section")
+	}
+}
+
+// What the site gates for adults is what its own listings say: a submission it
+// warns about, or one it hides, rather than one it shows like any other.
+func TestTheListingSaysWhatIsNSFW(t *testing.T) {
+	records := ""
+	for i, visibility := range []string{"show", "warn", "hide", ""} {
+		if i > 0 {
+			records += ","
+		}
+		records += fmt.Sprintf(`{
+			"_idRow": %d,
+			"_sModelName": "Mod",
+			"_sName": "mod %d",
+			"_sInitialVisibility": %q
+		}`, 100+i, i, visibility)
+	}
+	c, _ := newServer(t, func(int, http.ResponseWriter) (int, string) {
+		return http.StatusOK, `{"_aMetadata": {"_nRecordCount": 4, "_nPerpage": 4}, "_aRecords": [` + records + `]}`
+	})
+
+	page, err := c.Browse(t.Context(), Mod, 1, Updated)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []bool{false, true, true, false}
+	for i, submission := range page.Items {
+		if submission.NSFW != want[i] {
+			t.Errorf("%q is read as NSFW=%v, want %v", submission.Name, submission.NSFW, want[i])
+		}
+	}
+}
+
 // A page that came back short is the end of the listing, whatever the API's own
 // count says: it counts what the filters matched, not what it will hand over.
 func TestAListingEndsOnAShortPage(t *testing.T) {

@@ -53,9 +53,28 @@ type Page struct {
 	More bool
 }
 
+// Filter narrows a listing. It is only the listings that take one: the search
+// endpoint accepts a filter and quietly ignores it, so a search is narrowed
+// after the reply instead.
+type Filter struct {
+	// Category is a root category's id, or one of its subcategories'. Zero
+	// takes the whole listing.
+	//
+	// The API accepts either: a root such as Skins, or a section under it such
+	// as Yamato. Asking for a section is how a hero's submissions are listed,
+	// without the client having to know which of them are heroes.
+	Category int
+}
+
 // Browse returns one page of one kind of submission, sorted by order. Pages are
 // numbered from 1.
 func (c *Client) Browse(ctx context.Context, kind Kind, page int, order Order) (Page, error) {
+	return c.BrowseFiltered(ctx, kind, page, order, Filter{})
+}
+
+// BrowseFiltered returns one page of a listing narrowed by filter, sorted by
+// order. Pages are numbered from 1.
+func (c *Client) BrowseFiltered(ctx context.Context, kind Kind, page int, order Order, filter Filter) (Page, error) {
 	q := url.Values{
 		// The game is named through a filter rather than through a field of
 		// its own. The obvious _idGameRow is accepted here and then ignored,
@@ -64,6 +83,9 @@ func (c *Client) Browse(ctx context.Context, kind Kind, page int, order Order) (
 		"_nPerpage":               {strconv.Itoa(perPage)},
 		"_nPage":                  {strconv.Itoa(max(page, 1))},
 		"_sSort":                  {string(order)},
+	}
+	if filter.Category > 0 {
+		q.Set("_aFilters[Generic_Category]", strconv.Itoa(filter.Category))
 	}
 	return c.listing(ctx, string(kind)+"/Index?"+q.Encode())
 }
@@ -85,6 +107,47 @@ func (c *Client) Search(ctx context.Context, kind Kind, query string, page int) 
 		"_nPage":     {strconv.Itoa(max(page, 1))},
 	}
 	return c.listing(ctx, "Util/Search/Results?"+q.Encode())
+}
+
+// Categories returns one level of one kind's category tree: the root sections
+// when parent is zero, and the sections under parent otherwise.
+//
+// The tree is the live one, the same the site browses by, and it is asked for
+// rather than kept in the client: sections are added and renamed -- Deadlock's
+// roster alone has grown by a dozen -- and a stale list would filter by a name
+// that no longer means what it did.
+func (c *Client) Categories(ctx context.Context, kind Kind, parent int) ([]Category, error) {
+	q := url.Values{"_sSort": {"a_to_z"}}
+	if parent > 0 {
+		q.Set("_idCategoryRow", strconv.Itoa(parent))
+	} else {
+		q.Set("_idGameRow", strconv.Itoa(Game))
+	}
+
+	var reply []categoryJSON
+	path := string(kind) + "/Categories?" + q.Encode()
+	if err := c.get(ctx, path, &reply); err != nil {
+		return nil, err
+	}
+
+	categories := make([]Category, 0, len(reply))
+	for _, r := range reply {
+		categories = append(categories, Category{
+			ID:       r.ID,
+			Name:     r.Name,
+			Items:    r.Items,
+			Children: r.Children,
+		})
+	}
+	return categories, nil
+}
+
+// categoryJSON is one section of a category tree.
+type categoryJSON struct {
+	ID       int    `json:"_idRow"`
+	Name     string `json:"_sName"`
+	Items    int    `json:"_nItemCount"`
+	Children int    `json:"_nCategoryCount"`
 }
 
 // listing reads one page of a listing endpoint and converts it.
