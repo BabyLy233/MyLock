@@ -20,6 +20,7 @@ import (
 	"github.com/BabyLy233/deadlock-mod-manager-mygo/internal/download"
 	"github.com/BabyLy233/deadlock-mod-manager-mygo/internal/game"
 	"github.com/BabyLy233/deadlock-mod-manager-mygo/internal/gb"
+	"github.com/BabyLy233/deadlock-mod-manager-mygo/internal/imagecache"
 )
 
 // app is the state the window shows. The view builds the interface from it on
@@ -49,6 +50,9 @@ type app struct {
 	// thumbnails holds the store's pictures, which are fetched and decoded off
 	// the main thread.
 	thumbnails *images
+	// imageCache is where those pictures are kept between runs, under the
+	// platform's cache directory. It is nil when there is no such directory.
+	imageCache *imagecache.Cache
 	// store is the mod store page's state.
 	store *store
 
@@ -99,6 +103,10 @@ type app struct {
 	blocked    string
 	restored   string
 	restoreErr string
+	// cacheBusy is set while the picture cache is being cleared, and cacheErr
+	// is why that failed.
+	cacheBusy bool
+	cacheErr  string
 }
 
 // state is what the view reads about the game directory, taken in one lock.
@@ -138,6 +146,10 @@ type state struct {
 	blocked    string
 	restored   string
 	restoreErr string
+	// cacheBusy is set while the picture cache is being cleared, and cacheErr
+	// is why that failed.
+	cacheBusy bool
+	cacheErr  string
 	// theme is the appearance in effect, which the settings page shows as the
 	// chosen segment.
 	theme mygo.ThemeSource
@@ -490,6 +502,7 @@ func (a *app) settingsPage(c *ui.Context) {
 		a.gameInfoSection(c, s)
 		a.pathSection(c, s)
 		a.themeSection(c, s)
+		a.cacheSection(c, s)
 	})
 }
 
@@ -614,6 +627,88 @@ func field(c *ui.Context, label, value string) {
 	})
 }
 
+// cacheSection shows what the pictures take on disk, and lets the user take it
+// back. The cache is bounded, so this is a number that stops growing; the
+// button is there for a user who wants it gone now.
+func (a *app) cacheSection(c *ui.Context, s state) {
+	if a.imageCache == nil {
+		return
+	}
+	t := c.Theme()
+	bytes, pictures := a.imageCache.Stats()
+	ui.Column(c).Gap(8).Children(func() {
+		ui.Text(c, "图片缓存").Bold()
+		ui.Text(c, fmt.Sprintf("已用 %s，共 %s 张，上限 %s",
+			formatBytes(bytes), thousands(pictures), formatBytes(a.imageCache.Budget()))).
+			TextColor(t.TextMuted)
+		ui.Text(c, "看过的图片会留在磁盘上，下次打开不再下载；超过上限时，最久没看的会被删掉。").
+			FontSize(12).TextColor(t.TextMuted)
+		if s.cacheErr != "" {
+			ui.Text(c, s.cacheErr).TextColor(t.Danger)
+		}
+		ui.Row(c).Children(func() {
+			ui.Button(c, "清除缓存").
+				Disabled(s.cacheBusy).
+				OnClick(a.clearImageCache)
+		})
+	})
+}
+
+// formatBytes says how much disk something takes, in the units a person reads.
+func formatBytes(n int64) string {
+	switch {
+	case n >= 1<<20:
+		return fmt.Sprintf("%.1f MiB", float64(n)/(1<<20))
+	case n >= 1<<10:
+		return fmt.Sprintf("%.1f KiB", float64(n)/(1<<10))
+	default:
+		return fmt.Sprintf("%d B", n)
+	}
+}
+
+// useImageCache gives the pictures a cache on disk. It is called before the
+// window opens, so that nothing is fetched while the two disagree about where
+// a picture is kept.
+func (a *app) useImageCache(cache *imagecache.Cache) {
+	a.imageCache = cache
+	a.thumbnails.disk = cache
+}
+
+// clearImageCache empties the picture cache. It deletes files, so it runs off
+// the main thread, and the page shows the new size once it is done.
+func (a *app) clearImageCache() {
+	cache := a.imageCache
+	if cache == nil {
+		return
+	}
+	a.mu.Lock()
+	busy := a.cacheBusy
+	if !busy {
+		a.cacheBusy = true
+		a.cacheErr = ""
+	}
+	a.mu.Unlock()
+	if busy {
+		return
+	}
+	a.invalidate()
+
+	go func() {
+		err := cache.Clear()
+		var message string
+		if err != nil {
+			message = err.Error()
+		}
+		a.publish(func() {
+			a.mu.Lock()
+			a.cacheBusy = false
+			a.cacheErr = message
+			a.mu.Unlock()
+		})
+		a.invalidate()
+	}()
+}
+
 // state reads what the last lookup found, in the order the settings page shows
 // it.
 func (a *app) state() state {
@@ -636,6 +731,8 @@ func (a *app) state() state {
 		blocked:        a.blocked,
 		restored:       a.restored,
 		restoreErr:     a.restoreErr,
+		cacheBusy:      a.cacheBusy,
+		cacheErr:       a.cacheErr,
 		theme:          a.theme,
 	}
 }
@@ -951,6 +1048,16 @@ func main() {
 	} else {
 		a.configPath = path
 		cfg, cfgErr = config.Load(path)
+	}
+	// Pictures are kept between runs under the platform's cache directory,
+	// where the system and the user treat them as disposable. A machine with no
+	// such directory runs with the memory cache alone.
+	if dir, err := imagecache.Path(); err != nil {
+		log.Printf("pictures will not be kept between runs: %v", err)
+	} else if cache, err := imagecache.Open(dir, imagecache.DefaultBudget); err != nil {
+		log.Printf("pictures will not be kept between runs: %v", err)
+	} else {
+		a.useImageCache(cache)
 	}
 	// The appearance has to be known before the app runs, so the first frame is
 	// drawn in it rather than in the system's and then changing: paint reads what

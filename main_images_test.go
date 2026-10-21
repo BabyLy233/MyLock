@@ -2,13 +2,17 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"image"
 	"image/jpeg"
 	"io"
 	"net/http"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/BabyLy233/deadlock-mod-manager-mygo/internal/imagecache"
 )
 
 // pictureStub answers every fetch with one picture of a fixed size, so that what
@@ -21,6 +25,39 @@ func (s pictureStub) RoundTrip(*http.Request) (*http.Response, error) {
 		Body:       io.NopCloser(bytes.NewReader(s.body)),
 		Header:     http.Header{},
 	}, nil
+}
+
+// countingStub answers with one picture and counts how many times it was asked
+// for it, which is what says whether a fetch was served from the disk cache.
+type countingStub struct {
+	body []byte
+
+	mu       sync.Mutex
+	requests int
+}
+
+func (s *countingStub) RoundTrip(*http.Request) (*http.Response, error) {
+	s.mu.Lock()
+	s.requests++
+	s.mu.Unlock()
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(bytes.NewReader(s.body)),
+		Header:     http.Header{},
+	}, nil
+}
+
+func (s *countingStub) count() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.requests
+}
+
+// offStub refuses every fetch, so that a picture that arrives did so from disk.
+type offStub struct{}
+
+func (offStub) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, errors.New("the network is not to be used")
 }
 
 // jpegOf is one picture of a size, to be answered with instead of fetching one.
@@ -209,5 +246,65 @@ func TestAPictureWorthlessToFetchIsNotAskedFor(t *testing.T) {
 	}
 	if got := asked(im); len(got) != 0 {
 		t.Errorf("the cache asked for %v", got)
+	}
+}
+
+// The bytes are fetched once however many sizes one picture is drawn at: the
+// card and the viewer read the same address.
+func TestAPictureIsFetchedOnceHoweverManySizesItIsDrawnAt(t *testing.T) {
+	cache, err := imagecache.Open(t.TempDir(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stub := &countingStub{body: jpegOf(t, 1920, 1080)}
+	im := newImages()
+	im.client = &http.Client{Transport: stub}
+	im.disk = cache
+
+	im.get(address(1), cardPicture, func() {})
+	settled(t, im)
+	// The second size is decoded from the bytes the first one kept.
+	im.get(address(1), box{}, func() {})
+	settled(t, im)
+	if bitmap := im.get(address(1), box{}, func() {}); bitmap == nil {
+		t.Fatal("the picture was not decoded at the viewer's size")
+	}
+
+	if got := stub.count(); got != 1 {
+		t.Errorf("the picture was fetched %d times, want once for both sizes", got)
+	}
+	if _, ok := cache.Get(address(1)); !ok {
+		t.Error("the bytes of the picture were not kept on disk")
+	}
+}
+
+// A picture kept by an earlier run is not fetched again, which is what the
+// disk cache is for.
+func TestAPictureKeptByAnEarlierRunIsNotFetchedAgain(t *testing.T) {
+	dir := t.TempDir()
+	first, err := imagecache.Open(dir, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := newImages()
+	before.client = &http.Client{Transport: &countingStub{body: jpegOf(t, 1920, 1080)}}
+	before.disk = first
+	before.get(address(1), cardPicture, func() {})
+	settled(t, before)
+
+	// A cache opened again stands in for the next run, and a transport that
+	// refuses everything proves the picture did not come over the network.
+	reopened, err := imagecache.Open(dir, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after := newImages()
+	after.client = &http.Client{Transport: offStub{}}
+	after.disk = reopened
+
+	after.get(address(1), cardPicture, func() {})
+	settled(t, after)
+	if bitmap := after.get(address(1), cardPicture, func() {}); bitmap == nil {
+		t.Error("the picture was not read back from disk")
 	}
 }

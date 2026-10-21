@@ -19,6 +19,7 @@ import (
 	"golang.org/x/image/draw"
 
 	"github.com/BabyLy233/deadlock-mod-manager-mygo/internal/about"
+	"github.com/BabyLy233/deadlock-mod-manager-mygo/internal/imagecache"
 )
 
 // box is the room a picture is wanted for, in DIPs: it is scaled to cover it.
@@ -50,6 +51,10 @@ type picture struct {
 // they come.
 type images struct {
 	client *http.Client
+	// disk keeps the bytes of the pictures between runs, so that one seen in
+	// one session is not fetched again in the next. It is nil when the platform
+	// has no cache directory, in which case pictures are only kept in memory.
+	disk *imagecache.Cache
 	// fetching bounds how many pictures are read and decoded at once. Each is
 	// several megabytes of pixels while it is decoded, and a page asks for all
 	// of its pictures at once: a submission whose author posted twenty would
@@ -164,7 +169,21 @@ func (b box) sharper() box {
 // fetch reads and decodes one picture at the room it was asked for, and returns
 // nil for one that could not be had. A picture is not worth reporting a failure
 // for: the card it belongs to is drawn without it.
+//
+// The bytes are looked for on disk before they are asked for over the network,
+// and are kept there once they arrive. One address is drawn at more than one
+// size -- a card's and the viewer's -- and the bytes are what the two have in
+// common, so the second size is decoded from what the first one fetched.
 func (im *images) fetch(want picture) *ui.Bitmap {
+	if data, ok := im.disk.Get(want.address); ok {
+		if bitmap := decodePicture(data, want.at); bitmap != nil {
+			return bitmap
+		}
+		// A picture that no longer decodes is not worth keeping: it would be
+		// read and refused on every run.
+		im.disk.Remove(want.address)
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -187,8 +206,19 @@ func (im *images) fetch(want picture) *ui.Bitmap {
 		return nil
 	}
 
-	// What it is going to cost is read before it is paid: a picture of more
-	// pixels than this is refused rather than decoded.
+	bitmap := decodePicture(data, want.at)
+	if bitmap != nil {
+		// Not worth failing the picture over: whether or not it was kept, it is
+		// drawn from the bytes just read.
+		_ = im.disk.Put(want.address, data)
+	}
+	return bitmap
+}
+
+// decodePicture reads the bytes of one picture and scales it to the room at.
+// What it is going to cost is read before it is paid: a picture of more pixels
+// than this is refused rather than decoded.
+func decodePicture(data []byte, at box) *ui.Bitmap {
 	config, _, err := image.DecodeConfig(bytes.NewReader(data))
 	if err != nil || config.Width*config.Height > imagePixels {
 		return nil
@@ -198,7 +228,7 @@ func (im *images) fetch(want picture) *ui.Bitmap {
 	if err != nil {
 		return nil
 	}
-	return ui.NewBitmap(shrink(img, want.at))
+	return ui.NewBitmap(shrink(img, at))
 }
 
 // shrink scales img down to cover at, keeping its proportions, and leaves one

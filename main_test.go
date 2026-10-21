@@ -13,6 +13,7 @@ import (
 	"github.com/BabyLy233/deadlock-mod-manager-mygo/internal/addons"
 	"github.com/BabyLy233/deadlock-mod-manager-mygo/internal/config"
 	"github.com/BabyLy233/deadlock-mod-manager-mygo/internal/game"
+	"github.com/BabyLy233/deadlock-mod-manager-mygo/internal/imagecache"
 )
 
 // The view runs without a window in tests, which click as a user would.
@@ -647,6 +648,57 @@ func TestTheSettingsPageOffersTheAppearances(t *testing.T) {
 		if !tt.HasText(label) {
 			t.Errorf("the settings page does not offer %q: %q", label, tt.Texts())
 		}
+	}
+}
+
+// The settings page shows what the pictures take on disk, so that a cache the
+// user did not ask for is at least one they can see.
+func TestSettingsShowsThePictureCache(t *testing.T) {
+	a := newApp()
+	cache, err := imagecache.Open(t.TempDir(), imagecache.DefaultBudget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cache.Put("https://images.gamebanana.com/a.jpg", []byte("picture")); err != nil {
+		t.Fatal(err)
+	}
+	a.useImageCache(cache)
+	a.router.Push("/settings")
+	tt := ui.NewTester(a.view, 1280, 800)
+
+	if !tt.HasText("图片缓存") {
+		t.Errorf("the settings page does not show the picture cache: %q", tt.Texts())
+	}
+	if !tt.HasText("共 1 张") {
+		t.Errorf("the settings page does not say what the cache holds: %q", tt.Texts())
+	}
+}
+
+// Clearing the cache from the settings page empties it.
+func TestClearingThePictureCacheEmptiesIt(t *testing.T) {
+	a := newApp()
+	cache, err := imagecache.Open(t.TempDir(), imagecache.DefaultBudget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	address := "https://images.gamebanana.com/a.jpg"
+	if err := cache.Put(address, []byte("picture")); err != nil {
+		t.Fatal(err)
+	}
+	a.useImageCache(cache)
+	a.router.Push("/settings")
+	tt := ui.NewTester(a.view, 1280, 800)
+
+	if err := tt.Click("清除缓存"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	waitFor(t, "the picture cache to be cleared", func() bool {
+		bytes, pictures := cache.Stats()
+		return bytes == 0 && pictures == 0 && !a.state().cacheBusy
+	})
+	if _, ok := cache.Get(address); ok {
+		t.Error("the picture survived the clearing")
 	}
 }
 
