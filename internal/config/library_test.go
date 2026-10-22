@@ -11,16 +11,17 @@ func TestLibrarySaveAndLoad(t *testing.T) {
 	installed := time.Date(2026, 10, 21, 12, 0, 0, 0, time.Local)
 	want := Library{Mods: map[string]ModInfo{
 		"554012": {
-			Name:        "Bikinidicta",
-			Kind:        "Mod",
-			Category:    "Skins",
-			Subcategory: "Vindicta",
-			Author:      "Keller Max",
-			Version:     "v2",
-			Thumb:       "https://images.gamebanana.com/img/ss/mods/x.jpg",
-			Page:        "https://gamebanana.com/mods/554012",
-			Installed:   installed,
-			FileIDs:     []int{912345},
+			Name:         "Bikinidicta",
+			Kind:         "Mod",
+			Category:     "Skins",
+			Subcategory:  "Vindicta",
+			Author:       "Keller Max",
+			Version:      "v2",
+			Thumb:        "https://images.gamebanana.com/img/ss/mods/x.jpg",
+			Page:         "https://gamebanana.com/mods/554012",
+			Installed:    installed,
+			FileIDs:      []int{912345},
+			HeroOverride: "Vindicta",
 		},
 	}}
 
@@ -46,6 +47,9 @@ func TestLibrarySaveAndLoad(t *testing.T) {
 	}
 	if len(info.FileIDs) != 1 || info.FileIDs[0] != 912345 {
 		t.Errorf("FileIDs = %v, want [912345]", info.FileIDs)
+	}
+	if info.HeroOverride != "Vindicta" {
+		t.Errorf("HeroOverride = %q, want Vindicta", info.HeroOverride)
 	}
 }
 

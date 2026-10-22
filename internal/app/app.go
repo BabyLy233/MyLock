@@ -53,6 +53,14 @@ type app struct {
 	// deleteAsk is the mod the confirmation dialog is open for, empty when it
 	// is closed. Only the main thread touches it.
 	deleteAsk string
+	// heroAsk is the mod whose hero the assignment dialog is open for, empty
+	// when it is closed, and heroChoice is the option the dialog shows as
+	// chosen. Only the main thread touches them.
+	heroAsk    string
+	heroChoice string
+	heroOpen   bool
+	// skins is the skins page's state.
+	skins *skinsPage
 	// profilesOpen is whether the profile manager is open, newProfileOpen the
 	// dialog for a new one, and profileDeleteAsk the folder whose deletion is
 	// being confirmed. Only the main thread touches them.
@@ -182,6 +190,19 @@ type app struct {
 	// is why that failed.
 	cacheBusy bool
 	cacheErr  string
+	// allowMultipleSkins is whether one hero may wear several skins at once,
+	// and skipSkinConflictWarning whether installing a skin does not ask about
+	// one already enabled. Both are settings, kept in config.json.
+	allowMultipleSkins      bool
+	skipSkinConflictWarning bool
+	// heroNames is the heroes the catalogue's Skins tree lists, with
+	// heroNamesBusy and heroNamesErr the state of that read. heroNamesTried
+	// says it has been asked at least once, so the window does not ask on
+	// every frame; a failed read falls back to the hardcoded roster.
+	heroNames      []string
+	heroNamesBusy  bool
+	heroNamesErr   string
+	heroNamesTried bool
 }
 
 // state is what the view reads about the game directory, taken in one lock.
@@ -237,6 +258,11 @@ type state struct {
 	fileserverPreference string
 	fileserverLatency    map[string]int64
 	probingFileservers   bool
+	// allowMultipleSkins is whether one hero may wear several skins at once,
+	// and skipSkinConflictWarning whether installing one asks about a skin the
+	// hero is already wearing.
+	allowMultipleSkins      bool
+	skipSkinConflictWarning bool
 }
 
 // themeSources are the appearances the settings page offers, in the order it
@@ -276,6 +302,7 @@ func newApp() *app {
 		running:    game.Running,
 	}
 	a.store = newStore(a)
+	a.skins = newSkinsPage(a)
 	return a
 }
 
@@ -291,6 +318,9 @@ func (a *app) view(c *ui.Context) {
 			case r.Match("/store"):
 				r.Title("模组商店")
 				a.store.view(c)
+			case r.Match("/skins"):
+				r.Title("角色皮肤")
+				a.skins.view(c)
 			case r.Match("/settings"):
 				r.Title("设置")
 				a.settingsPage(c)
@@ -308,6 +338,7 @@ func (a *app) sidebar(c *ui.Context) {
 	ui.Sidebar(c, &page, func() {
 		ui.SidebarItem(c, "/mods", nil, "模组管理")
 		ui.SidebarItem(c, "/store", nil, "模组商店")
+		ui.SidebarItem(c, "/skins", nil, "角色皮肤")
 		ui.SidebarItem(c, "/settings", nil, "设置")
 	}).Width(220).OnChange(func() {
 		a.router.Push(page)
@@ -333,6 +364,7 @@ func (a *app) modsPage(c *ui.Context) {
 	a.profilesDialog(c)
 	a.newProfileDialog(c)
 	a.profileDeleteDialog(c)
+	a.heroDialog(c)
 
 	ui.Column(c).Fill().Padding(24).Gap(12).Children(func() {
 		ui.Row(c).FillWidth().Gap(12).AlignItems(ui.Center).Children(func() {
@@ -449,6 +481,7 @@ func (a *app) modRow(c *ui.Context, r ui.ListRow, mod addons.Mod, info config.Mo
 			// site's address are keyed by, and what an unnamed mod is.
 			ui.Text(c, modMeta(mod.ID, info)).FontSize(12).TextColor(t.TextMuted).
 				MaxLines(1).Ellipsis("…")
+			ui.Text(c, "角色："+heroLabel(heroFor(mod.ID, info))).FontSize(12).TextColor(t.TextMuted)
 			ui.Text(c, modSummary(mod)).FontSize(12).TextColor(t.TextMuted)
 			if hasUpdate {
 				color := t.Accent
@@ -469,6 +502,10 @@ func (a *app) modRow(c *ui.Context, r ui.ListRow, mod addons.Mod, info config.Mo
 					Disabled(reading || updating).
 					OnClick(func() { a.updateMod(mod.ID) })
 			}
+			ui.Button(c, "角色…").
+				Label("指定 " + mod.ID + " 的角色").
+				Disabled(reading).
+				OnClick(func() { a.openHeroDialog(mod.ID) })
 			ui.Switch(c, &enabled).
 				// The switch shows no text of its own, so it is named for
 				// assistive technology rather than left as an unnamed
@@ -776,6 +813,7 @@ func (a *app) settingsPage(c *ui.Context) {
 			a.themeSection(c, s)
 			a.fileserverSection(c, s)
 			a.cacheSection(c, s)
+			a.skinsSection(c, s)
 			a.aboutSection(c)
 		})
 	})
@@ -1000,31 +1038,33 @@ func (a *app) state() state {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return state{
-		looking:              a.looking,
-		browsing:             a.browsing,
-		pinned:               a.pinned,
-		install:              a.install,
-		lookErr:              a.lookErr,
-		gameInfo:             a.gameInfo,
-		gameInfoErr:          a.gameInfoErr,
-		patching:             a.patching,
-		launching:            a.launching,
-		launchErr:            a.launchErr,
-		launched:             a.launched,
-		gameRunning:          a.gameRunning,
-		vanillaPending:       a.vanillaPending,
-		blocked:              a.blocked,
-		restored:             a.restored,
-		restoreErr:           a.restoreErr,
-		cacheBusy:            a.cacheBusy,
-		cacheErr:             a.cacheErr,
-		theme:                a.theme,
-		fileservers:          slices.Clone(a.fileservers),
-		fileserversBusy:      a.fileserversBusy,
-		fileserversErr:       a.fileserversErr,
-		fileserverPreference: a.fileserverPreference,
-		fileserverLatency:    maps.Clone(a.fileserverLatency),
-		probingFileservers:   a.probingFileservers,
+		looking:                 a.looking,
+		browsing:                a.browsing,
+		pinned:                  a.pinned,
+		install:                 a.install,
+		lookErr:                 a.lookErr,
+		gameInfo:                a.gameInfo,
+		gameInfoErr:             a.gameInfoErr,
+		patching:                a.patching,
+		launching:               a.launching,
+		launchErr:               a.launchErr,
+		launched:                a.launched,
+		gameRunning:             a.gameRunning,
+		vanillaPending:          a.vanillaPending,
+		blocked:                 a.blocked,
+		restored:                a.restored,
+		restoreErr:              a.restoreErr,
+		cacheBusy:               a.cacheBusy,
+		cacheErr:                a.cacheErr,
+		theme:                   a.theme,
+		fileservers:             slices.Clone(a.fileservers),
+		fileserversBusy:         a.fileserversBusy,
+		fileserversErr:          a.fileserversErr,
+		fileserverPreference:    a.fileserverPreference,
+		fileserverLatency:       maps.Clone(a.fileserverLatency),
+		probingFileservers:      a.probingFileservers,
+		allowMultipleSkins:      a.allowMultipleSkins,
+		skipSkinConflictWarning: a.skipSkinConflictWarning,
 	}
 }
 
@@ -1036,6 +1076,8 @@ func (a *app) start(cfg config.Config, cfgErr error) {
 	// whether its game is still running or has closed in the meantime.
 	a.vanillaPending, a.vanillaSeen = cfg.VanillaPending, cfg.VanillaSeen
 	a.profileFolder = cfg.ProfileFolder
+	a.allowMultipleSkins = cfg.AllowMultipleSkins
+	a.skipSkinConflictWarning = cfg.SkipSkinConflictWarning
 	a.fileserverPreference = fileserverPreference(cfg.FileserverPreference)
 	a.fileserverLatency = cfg.FileserverLatencyMs
 	if a.fileserverLatency == nil {
@@ -1259,13 +1301,15 @@ func (a *app) saveSettingsFor(pinned, folder string) error {
 
 	a.mu.Lock()
 	cfg := config.Config{
-		GamePath:             pinned,
-		ProfileFolder:        folder,
-		Theme:                string(a.theme),
-		FileserverPreference: a.fileserverPreference,
-		FileserverLatencyMs:  maps.Clone(a.fileserverLatency),
-		VanillaPending:       a.vanillaPending,
-		VanillaSeen:          a.vanillaSeen,
+		GamePath:                pinned,
+		ProfileFolder:           folder,
+		Theme:                   string(a.theme),
+		FileserverPreference:    a.fileserverPreference,
+		FileserverLatencyMs:     maps.Clone(a.fileserverLatency),
+		VanillaPending:          a.vanillaPending,
+		VanillaSeen:             a.vanillaSeen,
+		AllowMultipleSkins:      a.allowMultipleSkins,
+		SkipSkinConflictWarning: a.skipSkinConflictWarning,
 	}
 	a.mu.Unlock()
 	return cfg.Save(a.configPath)

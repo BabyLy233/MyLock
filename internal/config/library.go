@@ -43,6 +43,10 @@ type ModInfo struct {
 	// installed by another app or by hand, whose files on disk are all the
 	// check has to go by.
 	FileIDs []int `json:"fileIDs,omitempty"`
+	// HeroOverride is the hero the user assigned by hand: a hero's name, or
+	// the sentinel for 「通用/其他」. Empty means the app works it out from the
+	// category and the name, which is the Tauri app's heroOverride as well.
+	HeroOverride string `json:"heroOverride,omitempty"`
 }
 
 // Library is the whole library file: what the app knows, by mod id.

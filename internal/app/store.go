@@ -109,6 +109,15 @@ type store struct {
 	// file and its extras -- and they are installed together as one mod.
 	picked map[int]bool
 
+	// conflict is the install held back for the user's answer about a hero
+	// that already wears a skin, nil when there is nothing to ask. Only the
+	// main thread touches it.
+	conflict *skinConflict
+	// pendingHeroSearch reports that the listing is being narrowed to a hero
+	// opened from the skins page: the category tree and its sections have to
+	// be read before the request can be made with the section's id.
+	pendingHeroSearch bool
+
 	// viewer is the screenshot the user opened out of the row of them, if any.
 	viewer viewer
 
@@ -192,6 +201,7 @@ func (s *store) view(c *ui.Context) {
 		s.loadCategories()
 	}
 	state := s.shown()
+	s.conflictDialog(c)
 
 	ui.Column(c).Fill().Padding(24).Gap(16).Justify(ui.Start).Children(func() {
 		ui.Row(c).FillWidth().Gap(12).AlignItems(ui.Center).Children(func() {
@@ -199,8 +209,8 @@ func (s *store) view(c *ui.Context) {
 			ui.TextInput(c, &s.query).
 				Width(280).
 				Placeholder("搜索模组…").
-				OnSubmit(s.search)
-			ui.Button(c, "搜索").OnClick(s.search)
+				OnSubmit(s.applySearch)
+			ui.Button(c, "搜索").OnClick(s.applySearch)
 		})
 
 		ui.Row(c).FillWidth().Gap(24).AlignItems(ui.Center).Children(func() {
@@ -210,6 +220,7 @@ func (s *store) view(c *ui.Context) {
 				// was chosen for one means nothing for another.
 				s.kind = kind
 				s.category, s.hero = "", ""
+				s.pendingHeroSearch = false
 				s.resetCategories()
 				s.loadCategories()
 				s.search()
@@ -335,6 +346,7 @@ func (s *store) subcategorySelect(c *ui.Context, state shown) {
 // of the new one.
 func (s *store) chooseCategory(name string) {
 	s.category, s.hero = name, ""
+	s.pendingHeroSearch = false
 	s.loadSubcategories(name)
 	s.search()
 }
@@ -343,6 +355,28 @@ func (s *store) chooseCategory(name string) {
 // takes a section's id on its own, without the root beside it.
 func (s *store) chooseHero(name string) {
 	s.hero = name
+	s.pendingHeroSearch = false
+	s.search()
+}
+
+// openHero is the skins page's way into the store: the Skins listing narrowed
+// to one hero. The section's id is what the listing is asked for, and it is
+// only known once the tree has been read, so the search waits for it.
+func (s *store) openHero(hero string) {
+	s.started = true
+	s.kind = slices.Index(kinds, gb.Mod)
+	s.category, s.hero = "Skins", hero
+	s.query, s.page = "", 1
+	s.pendingHeroSearch = true
+	s.back()
+	s.resetCategories()
+	s.loadCategories()
+}
+
+// applySearch is the search the user asked for. It gives up the hero the
+// skins page opened the store for: the controls' choice is the newer one.
+func (s *store) applySearch() {
+	s.pendingHeroSearch = false
 	s.search()
 }
 
@@ -381,19 +415,28 @@ func (s *store) loadCategories() {
 		if err != nil {
 			message = err.Error()
 		}
+		var follow string
 		s.app.publish(func() {
 			s.mu.Lock()
-			defer s.mu.Unlock()
 			// A reply for a kind the tabs have left is not this page's.
 			if seq != s.categoriesSeq {
+				s.mu.Unlock()
 				return
 			}
 			s.categoriesBusy = false
 			s.categoriesErr = message
-			if err != nil {
-				return
+			if err == nil {
+				s.categories = categories
+				// The skins page opened the store for a hero, and the
+				// sections under its category are what give that hero an id.
+				if s.pendingHeroSearch {
+					follow = s.category
+				}
 			}
-			s.categories = categories
+			s.mu.Unlock()
+			if follow != "" {
+				s.loadSubcategories(follow)
+			}
 		})
 	}()
 }
@@ -422,7 +465,12 @@ func (s *store) loadSubcategories(rootName string) {
 	s.subcategoriesBusy = false
 
 	if rootName == "" {
+		follow := s.pendingHeroSearch
+		s.pendingHeroSearch = false
 		s.mu.Unlock()
+		if follow {
+			s.search()
+		}
 		return
 	}
 	root, children := 0, 0
@@ -433,12 +481,22 @@ func (s *store) loadSubcategories(rootName string) {
 		}
 	}
 	if root == 0 || children == 0 {
+		follow := s.pendingHeroSearch
+		s.pendingHeroSearch = false
 		s.mu.Unlock()
+		if follow {
+			s.search()
+		}
 		return
 	}
 	if cached, ok := s.subsCache[root]; ok {
 		s.subcategories = cached
+		follow := s.pendingHeroSearch
+		s.pendingHeroSearch = false
 		s.mu.Unlock()
+		if follow {
+			s.search()
+		}
 		return
 	}
 	s.subcategoriesBusy = true
@@ -451,20 +509,29 @@ func (s *store) loadSubcategories(rootName string) {
 		if err != nil {
 			message = err.Error()
 		}
+		var follow bool
 		s.app.publish(func() {
 			s.mu.Lock()
-			defer s.mu.Unlock()
 			// Another category was chosen while this was on its way.
 			if seq != s.subcategoriesSeq {
+				s.mu.Unlock()
 				return
 			}
 			s.subcategoriesBusy = false
 			s.subcategoriesErr = message
-			if err != nil {
-				return
+			if err == nil {
+				s.subsCache[root] = subcategories
+				s.subcategories = subcategories
 			}
-			s.subsCache[root] = subcategories
-			s.subcategories = subcategories
+			// The listing the skins page asked for can now be narrowed by the
+			// section's id, whether or not the read worked: an unfiltered Skins
+			// page is still a better answer than none.
+			follow = s.pendingHeroSearch
+			s.pendingHeroSearch = false
+			s.mu.Unlock()
+			if follow {
+				s.search()
+			}
 		})
 	}()
 }

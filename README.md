@@ -29,6 +29,17 @@ MyLock 从 [GameBanana](https://gamebanana.com/games/20948) 浏览和安装 Dead
 - 启停靠移动和重命名 VPK 完成，不复制文件，切换很快
 - 游戏运行期间禁止装卸模组，避免游戏读到写了一半的文件
 
+**角色皮肤**
+
+- 「角色皮肤」页按英雄分组列出已安装的皮肤，有模组的英雄排在前面，可以搜索
+- 一个角色默认只穿一套皮肤：穿上新的会先停用旧的（文件保留），再点当前这套
+  就是脱下，回到默认外观
+- 从商店安装皮肤时，如果该角色已经有皮肤，会问「交换 / 两者都留 / 取消」
+- 设置里可以允许同一角色同时启用多套皮肤、关掉安装时的冲突提醒；已经同时
+  启用的多套只会在角色列表上标出，不会自动改动
+- 角色按 Skins 分类识别，也可以从模组标题的别名猜，或者在「模组管理」里
+  手动指定 / 恢复自动
+
 **更新检查**
 
 - 打开「模组管理」时自动检查，也可以随时点「检查更新」
@@ -87,6 +98,7 @@ make check   # go vet + mygo vet + 全部测试
 | 用途 | Linux | Windows | macOS |
 | --- | --- | --- | --- |
 | 设置 | `~/.config/mylock/config.json` | `%AppData%\mylock\config.json` | `~/Library/Application Support/mylock/config.json` |
+| 配置档与模组库 | 同目录的 `profiles.json`、`library.json` | 同左 | 同左 |
 | 图片缓存 | `~/.cache/mylock/images` | `%LocalAppData%\mylock\images` | `~/Library/Caches/mylock/images` |
 
 从改名前版本升级时，第一次启动会把旧的 `deadlock-mod-manager/config.json` 复制到新位置，旧文件保留不动。旧的图片缓存不会迁移，可以直接删除。
@@ -101,7 +113,7 @@ make check   # go vet + mygo vet + 全部测试
 
 还在早期开发中，当前版本 `0.1`。
 
-已实现商店、安装、启停、更新检查和启动。尚未实现：
+已实现商店、安装、启停、角色皮肤、更新检查和启动。尚未实现：
 
 - 一次更新多个模组
 - 跳过某个模组的更新

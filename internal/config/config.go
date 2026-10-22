@@ -47,6 +47,14 @@ type Config struct {
 	// ends, even if the app is restarted in between.
 	VanillaPending bool `json:"vanillaPending,omitempty"`
 	VanillaSeen    bool `json:"vanillaSeen,omitempty"`
+	// AllowMultipleSkins lets one hero wear several skins at once. It is off by
+	// default, which is what keeps a hero's skins from fighting over the same
+	// files without the user asking.
+	AllowMultipleSkins bool `json:"allowMultipleSkins,omitempty"`
+	// SkipSkinConflictWarning turns off the question asked before a skin is
+	// installed for a hero that is already wearing one. Off means the question
+	// is asked, which is what a first run gets.
+	SkipSkinConflictWarning bool `json:"skipSkinConflictWarning,omitempty"`
 }
 
 // Path returns the file the app keeps its settings in: ~/.config on Linux,

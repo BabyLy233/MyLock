@@ -4,8 +4,10 @@ import (
 	"cmp"
 	"context"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -17,6 +19,7 @@ import (
 	"github.com/BabyLy233/mylock/internal/download"
 	"github.com/BabyLy233/mylock/internal/game"
 	"github.com/BabyLy233/mylock/internal/gb"
+	"github.com/BabyLy233/mylock/internal/heroes"
 )
 
 // detail is one mod's own page: what it is, what its author wrote about it, and
@@ -344,7 +347,7 @@ func humanSize(n int64) string {
 func (s *store) install(mod gb.Submission, files []gb.File) {
 	a := s.app
 	a.mu.Lock()
-	install, folder, running := a.install, a.profileFolder, a.gameRunning
+	install, running := a.install, a.gameRunning
 	a.mu.Unlock()
 	if install == nil {
 		s.failed("先到设置里指定游戏目录，再安装模组。")
@@ -356,6 +359,117 @@ func (s *store) install(mod gb.Submission, files []gb.File) {
 	}
 
 	if len(files) == 0 {
+		return
+	}
+
+	// A hero can wear one skin. If this mod is one and the hero is already
+	// wearing another, the user answers first; the question is a setting, and
+	// allowing several at once is another.
+	hero := storeHero(mod)
+	if hero != "" {
+		a.mu.Lock()
+		allow, skip := a.allowMultipleSkins, a.skipSkinConflictWarning
+		a.mu.Unlock()
+		if !allow && !skip {
+			if wearers := s.wearersOf(hero, mod.Slug()); len(wearers) > 0 {
+				s.conflict = &skinConflict{
+					mod:     mod,
+					files:   files,
+					hero:    hero,
+					wearers: wearers,
+				}
+				a.invalidate()
+				return
+			}
+		}
+	}
+	s.beginInstall(mod, files, hero, false)
+}
+
+// skinConflict is an install waiting for the user to say what to do about the
+// skin the hero is already wearing.
+type skinConflict struct {
+	mod   gb.Submission
+	files []gb.File
+	hero  string
+	// wearers are the names of the enabled skins the hero has.
+	wearers []string
+}
+
+// storeHero is the hero a catalogue submission is for, empty when it is not a
+// skin or the catalogue does not say whose. It is the same decision the skins
+// page makes from the library, taken from the submission before it is one.
+func storeHero(mod gb.Submission) string {
+	if !heroes.IsSkinCategory(mod.Category) {
+		return ""
+	}
+	return heroes.Resolve("", mod.Category, mod.Subcategory, mod.Name)
+}
+
+// wearersOf names the enabled skins a hero has, other than keep. It reads the
+// profile the app last read, which is the one an install goes into.
+func (s *store) wearersOf(hero, keep string) []string {
+	a := s.app
+	a.mu.Lock()
+	mods := slices.Clone(a.mods)
+	infos := maps.Clone(a.library)
+	a.mu.Unlock()
+
+	var names []string
+	for _, mod := range mods {
+		if !mod.Enabled || mod.ID == keep {
+			continue
+		}
+		info := infos[mod.ID]
+		if !isSkinMod(mod.ID, info) || heroFor(mod.ID, info) != hero {
+			continue
+		}
+		name := info.Name
+		if name == "" {
+			name = mod.ID
+		}
+		names = append(names, name)
+	}
+	return names
+}
+
+// conflictDialog is the question an install asks when the hero already wears
+// a skin: exchange them, keep both, or stop.
+func (s *store) conflictDialog(c *ui.Context) {
+	if s.conflict == nil {
+		return
+	}
+	conflict := s.conflict
+	open := true
+	message := fmt.Sprintf("这个角色正穿着 %s。",
+		strings.Join(conflict.wearers, "、"))
+	switch ui.AlertDialog(c, &open, conflict.hero+" 已经有皮肤", message,
+		"取消", "两者都留", "交换") {
+	case 0, ui.AlertDismissed:
+		s.conflict = nil
+	case 1:
+		s.conflict = nil
+		s.beginInstall(conflict.mod, conflict.files, conflict.hero, false)
+	case 2:
+		s.conflict = nil
+		s.beginInstall(conflict.mod, conflict.files, conflict.hero, true)
+	}
+}
+
+// beginInstall starts the install that was asked for, after any question about
+// the hero's skin has been answered. swap takes the hero's other skins off
+// before the new one goes on.
+func (s *store) beginInstall(mod gb.Submission, files []gb.File, hero string, swap bool) {
+	a := s.app
+	a.mu.Lock()
+	install, folder, running := a.install, a.profileFolder, a.gameRunning
+	a.mu.Unlock()
+	if install == nil {
+		s.failed("先到设置里指定游戏目录，再安装模组。")
+		return
+	}
+	if running {
+		s.failed("游戏正在运行，先退出游戏再安装模组。")
 		return
 	}
 
@@ -375,7 +489,7 @@ func (s *store) install(mod gb.Submission, files []gb.File) {
 	a.invalidate()
 
 	go func() {
-		err := s.fetch(a, install, profileFor(install, folder), mod, files)
+		err := s.fetch(a, install, profileFor(install, folder), mod, files, hero, swap)
 		s.mu.Lock()
 		s.installing = ""
 		if err != nil {
@@ -388,9 +502,36 @@ func (s *store) install(mod gb.Submission, files []gb.File) {
 	}()
 }
 
+// disableWearers takes a hero's other skins off before a swap installs the new
+// one. It reads the profile again rather than trusting what was on screen: the
+// download takes time, and the user can switch a skin in the meantime.
+func (s *store) disableWearers(profile addons.Profile, keep, hero string) error {
+	mods, err := profile.Read()
+	if err != nil {
+		return err
+	}
+	s.app.mu.Lock()
+	infos := maps.Clone(s.app.library)
+	s.app.mu.Unlock()
+
+	for _, mod := range mods {
+		if !mod.Enabled || mod.ID == keep {
+			continue
+		}
+		info := infos[mod.ID]
+		if !isSkinMod(mod.ID, info) || heroFor(mod.ID, info) != hero {
+			continue
+		}
+		if err := profile.SetEnabled(mod.ID, false); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // fetch is the install itself, from the download to the game being told where
 // the mods are.
-func (s *store) fetch(a *app, install *game.Install, profile addons.Profile, mod gb.Submission, downloads []gb.File) error {
+func (s *store) fetch(a *app, install *game.Install, profile addons.Profile, mod gb.Submission, downloads []gb.File, hero string, swap bool) error {
 	// Everything the download and the unpacking write goes in a directory of
 	// its own, which is thrown away whatever happens: an archive is a stranger's
 	// and nothing it holds outlives the install.
@@ -468,6 +609,15 @@ func (s *store) fetch(a *app, install *game.Install, profile addons.Profile, mod
 	// it holds are moved.
 	if a.isGameRunning() {
 		return fmt.Errorf("游戏正在运行，先退出游戏再安装模组。")
+	}
+
+	// The user chose to exchange the hero's skins, and the download has taken
+	// long enough that the profile may have changed: the wearers are read back
+	// here rather than taken from what the question showed.
+	if swap && hero != "" {
+		if err := s.disableWearers(profile, mod.Slug(), hero); err != nil {
+			return fmt.Errorf("停用旧的皮肤失败：%w", err)
+		}
 	}
 
 	if err := profile.Install(mod.Slug(), files); err != nil {
