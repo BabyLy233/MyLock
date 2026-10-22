@@ -1,0 +1,4 @@
+# 检出即 LF：Windows 上 Git 默认把文本文件换成 CRLF，而发版时 Node 会把
+# mygo.json 重新写成 LF，git status 因此报告工作区已修改，Go 给二进制打上
+# vcs.modified=true，界面上的哈希就多了 -dirty。
+* text=auto eol=lf

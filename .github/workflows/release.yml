@@ -123,6 +123,17 @@ jobs:
         run: |
           node -e "const fs=require('fs');const p='mygo.json';const c=JSON.parse(fs.readFileSync(p,'utf8'));c.version=process.argv[1];fs.writeFileSync(p,JSON.stringify(c,null,2)+'\n')" "$VERSION"
 
+      # go build 把工作区状态写进二进制：有一处改动就会标记成 +dirty，
+      # 用户在界面里看到的哈希也会带 -dirty。构建前必须是干净的。
+      - name: Check the working tree is clean
+        shell: bash
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            git status --porcelain
+            echo "the working tree must be clean before building: Go stamps the binary +dirty otherwise" >&2
+            exit 1
+          fi
+
       - name: Build and upload
         shell: bash
         env:
