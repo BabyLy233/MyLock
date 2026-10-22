@@ -310,23 +310,29 @@ func (a *app) view(c *ui.Context) {
 	a.paint(c)
 	ui.Row(c).Fill().AlignItems(ui.Stretch).Children(func() {
 		a.sidebar(c)
-		a.router.View(c, func(r *ui.Route) {
-			switch {
-			case r.Match("/mods"):
-				r.Title("模组管理")
-				a.modsPage(c)
-			case r.Match("/store"):
-				r.Title("模组商店")
-				a.store.view(c)
-			case r.Match("/skins"):
-				r.Title("角色皮肤")
-				a.skins.view(c)
-			case r.Match("/settings"):
-				r.Title("设置")
-				a.settingsPage(c)
-			default:
-				ui.Text(c, "没有这个页面").Padding(24)
-			}
+		// The install in flight stands above the page rather than inside it:
+		// it belongs to the store, but a download takes long enough that the
+		// user can be anywhere by the time it is done.
+		ui.Column(c).Grow(1).Children(func() {
+			a.progressBanner(c)
+			a.router.View(c, func(r *ui.Route) {
+				switch {
+				case r.Match("/mods"):
+					r.Title("模组管理")
+					a.modsPage(c)
+				case r.Match("/store"):
+					r.Title("模组商店")
+					a.store.view(c)
+				case r.Match("/skins"):
+					r.Title("角色皮肤")
+					a.skins.view(c)
+				case r.Match("/settings"):
+					r.Title("设置")
+					a.settingsPage(c)
+				default:
+					ui.Text(c, "没有这个页面").Padding(24)
+				}
+			})
 		})
 	})
 }
