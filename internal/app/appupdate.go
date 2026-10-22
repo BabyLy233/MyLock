@@ -93,7 +93,7 @@ func updateUnavailableReason() string {
 			".deb 由包管理器更新，AppImage 需要重新下载。"
 	case "windows":
 		return "Windows 上只有安装到用户目录（%LOCALAPPDATA%\\Programs）的版本能自更新；" +
-			"放在 Program Files 或直接运行的便携版请手动下载新版本。"
+			"放在 Program Files 等无写权限位置的版本请手动下载新版本。"
 	case "darwin":
 		return "macOS 上只有用户可写位置（如 ~/Applications）的 .app 能自更新；" +
 			"装在 /Applications 的版本需要管理员权限，或请手动下载新版本。"

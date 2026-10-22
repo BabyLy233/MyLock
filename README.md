@@ -12,6 +12,51 @@ MyLock 从 [GameBanana](https://gamebanana.com/games/20948) 浏览和安装 Dead
 
 代码怎么分层、各部分如何协作，见 [ARCHITECTURE.md](ARCHITECTURE.md)。
 
+## 安装
+
+从 [Releases](https://github.com/BabyLy233/MyLock/releases/latest) 下载对应平台的包。
+没写架构的安装包按机器选择：普通 Intel / AMD 电脑用 `amd64`，ARM 设备用
+`arm64`。
+
+### Windows
+
+**安装版**：下载 `MyLock Setup <版本> amd64.exe`（ARM 设备用 `arm64`），运行后
+按提示安装。默认装在当前用户目录，不需要管理员权限。
+
+**便携版**：下载 `MyLock.exe`，放进任意可写目录直接运行。放在 `Program Files`
+这类没有写权限的位置时不能自动更新，请手动下载新版本。
+
+目前没有代码签名，首次运行可能出现 SmartScreen 提示，点「更多信息」→
+「仍要运行」即可。
+
+### Linux
+
+推荐用安装脚本，装到当前用户目录，不需要 root：
+
+```bash
+curl -fsSL https://github.com/BabyLy233/MyLock/releases/latest/download/install.sh | sh
+```
+
+也可以手动下载：
+
+- `mylock-<版本>-linux-amd64.tar.gz` / `linux-arm64.tar.gz`：解压后直接运行
+  `./mylock`。想装进应用菜单，就把同一 Release 里的 `install.sh` 放到压缩包
+  旁边，执行 `sh install.sh mylock-<版本>-linux-amd64.tar.gz`（不传参数则
+  下载最新版），它会装到 `~/.local/mylock.app`。
+- `mylock_<版本>_amd64.deb` / `_arm64.deb`：Debian / Ubuntu 上用
+  `sudo apt install ./mylock_<版本>_amd64.deb` 安装。包管理器安装的版本不能
+  自更新，随系统升级。
+
+卸载：`sh install.sh --uninstall`（脚本安装）；`.deb` 用
+`sudo apt remove mylock`。
+
+## 使用
+
+1. 打开「设置」，等它自动找到 Deadlock；找不到就手动选到包含 `game/citadel` 的那一层。
+2. 如果游戏更新覆盖了 `gameinfo.gi`，在「设置」里点一次「应用模组路径」。
+3. 到「模组商店」浏览或搜索，打开一个模组，选择文件后点「安装」。
+4. 回到「模组管理」开关模组，用「启动模组版游戏」进入游戏。
+
 ## 功能
 
 **模组商店**
@@ -135,13 +180,6 @@ macOS 正式分发还需要 Apple Developer ID 签名和公证，Windows 建议�
 也能发布更新，只是安装体验差一些；macOS 证书和公证凭据的导入要另外加进
 workflow。
 
-## 使用
-
-1. 打开「设置」，等它自动找到 Deadlock；找不到就手动选到包含 `game/citadel` 的那一层。
-2. 如果游戏更新覆盖了 `gameinfo.gi`，在「设置」里点一次「应用模组路径」。
-3. 到「模组商店」浏览或搜索，打开一个模组，选择文件后点「安装」。
-4. 回到「模组管理」开关模组，用「启动模组版游戏」进入游戏。
-
 ## 数据位置
 
 配置和图片缓存都放在各平台的标准目录里：
@@ -179,3 +217,7 @@ workflow。
 - 界面框架：[Mygo](https://github.com/egoist/mygo)
 
 MyLock 是非官方工具，与 Valve 无关。Deadlock 是 Valve Corporation 的商标。
+
+## 许可证
+
+[MIT](LICENSE) © 2026 BabyLy233
