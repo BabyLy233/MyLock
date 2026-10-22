@@ -342,17 +342,69 @@ func (a *app) view(c *ui.Context) {
 	})
 }
 
-// sidebar lists the pages. It is built before the router builds the page, so
-// it stays as the pages change.
+// sidebar lists the pages, with the build and a link to its source below
+// them. The column is what puts the footer at the bottom: the sidebar itself
+// scrolls when the pages do not fit.
 func (a *app) sidebar(c *ui.Context) {
+	t := c.Theme()
 	page := a.router.Path()
-	ui.Sidebar(c, &page, func() {
-		ui.SidebarItem(c, "/mods", nil, "模组管理")
-		ui.SidebarItem(c, "/store", nil, "模组商店")
-		ui.SidebarItem(c, "/skins", nil, "角色皮肤")
-		ui.SidebarItem(c, "/settings", nil, "设置")
-	}).Width(220).OnChange(func() {
-		a.router.Push(page)
+	ui.Column(c).Width(220).Shrink(0).Background(t.Surface).Children(func() {
+		ui.Sidebar(c, &page, func() {
+			ui.SidebarItem(c, "/mods", nil, "模组管理")
+			ui.SidebarItem(c, "/store", nil, "模组商店")
+			ui.SidebarItem(c, "/skins", nil, "角色皮肤")
+			ui.SidebarItem(c, "/settings", nil, "设置")
+		}).FillWidth().Grow(1).OnChange(func() {
+			a.router.Push(page)
+		})
+		a.sidebarFooter(c)
+	})
+}
+
+// sidebarFooter says which build is running and opens its repository. The
+// version is the one the build carries, and the hash is what a bug report
+// needs to name the exact commit.
+func (a *app) sidebarFooter(c *ui.Context) {
+	t := c.Theme()
+	version := about.Version
+	if version == "" {
+		version = "dev"
+	}
+	ui.Column(c).FillWidth().Shrink(0).Children(func() {
+		ui.Divider(c)
+		ui.Row(c).FillWidth().Padding(12).Gap(10).AlignItems(ui.Center).Children(func() {
+			ui.Column(c).Grow(1).Gap(2).Children(func() {
+				ui.Text(c, "MyLock "+version).FontSize(12).MaxLines(1).Ellipsis("…")
+				ui.Text(c, about.Commit()).FontSize(11).TextColor(t.TextMuted).
+					MaxLines(1).Ellipsis("…")
+			})
+			a.githubButton(c)
+		})
+	})
+}
+
+// githubButton opens the project's page, drawn as its mark rather than as a
+// word so that it stays out of the way of the build it sits beside.
+func (a *app) githubButton(c *ui.Context) {
+	t := c.Theme()
+	const label = "在 GitHub 上打开 MyLock"
+	button := ui.ButtonBase(c).
+		Width(28).Height(28).
+		Radius(8).
+		Center().
+		Background(t.Background).
+		Border(1, t.Border).
+		Tooltip(label).
+		Label(label).
+		OnClick(func() { c.OpenURL(projectURL) })
+	if button.Hovered() {
+		button.Background(t.SurfaceHover)
+	}
+	button.Children(func() {
+		icon := ui.Icon(c, githubMark()).Size(15, 15).TextColor(t.TextMuted)
+		if button.Hovered() {
+			icon.TextColor(t.Text)
+		}
 	})
 }
 
