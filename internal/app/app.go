@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"maps"
 	"runtime"
 	"slices"
 	"strings"
@@ -93,15 +94,29 @@ type app struct {
 	// as it is then.
 	gameinfoMu sync.Mutex
 	theme      mygo.ThemeSource
-	looking    bool
-	browsing   bool
-	reading    bool
-	patching   bool
-	pinned     string
-	install    *game.Install
-	lookErr    string
-	mods       []addons.Mod
-	modsErr    string
+	// fileservers is the GameBanana download servers last read, with the ones
+	// that are up first. fileserversBusy and fileserversErr are the state of
+	// the read, and fileserversTried says one has been started, so that the
+	// settings page does not ask again on every frame.
+	fileservers      []gb.Fileserver
+	fileserversBusy  bool
+	fileserversErr   string
+	fileserversTried bool
+	// fileserverPreference is which server downloads use: "default", "auto",
+	// or a server's id. fileserverLatency is the last round trip measured to
+	// each server, by id, and probingFileservers is set while that is running.
+	fileserverPreference string
+	fileserverLatency    map[string]int64
+	probingFileservers   bool
+	looking              bool
+	browsing             bool
+	reading              bool
+	patching             bool
+	pinned               string
+	install              *game.Install
+	lookErr              string
+	mods                 []addons.Mod
+	modsErr              string
 	// profiles are the named profiles beside the default one, and
 	// profileFolder is the one in use, empty for the default profile.
 	// profilePresent is which folders the last scan found on disk, so a
@@ -213,6 +228,15 @@ type state struct {
 	// theme is the appearance in effect, which the settings page shows as the
 	// chosen segment.
 	theme mygo.ThemeSource
+	// fileservers are the download servers last read, the preference downloads
+	// use, the last latency measured to each server, and whether a read or a
+	// measurement is running.
+	fileservers          []gb.Fileserver
+	fileserversBusy      bool
+	fileserversErr       string
+	fileserverPreference string
+	fileserverLatency    map[string]int64
+	probingFileservers   bool
 }
 
 // themeSources are the appearances the settings page offers, in the order it
@@ -741,14 +765,19 @@ func patchGameInfo(install *game.Install, profile addons.Profile) (game.GameInfo
 
 func (a *app) settingsPage(c *ui.Context) {
 	s := a.state()
-	ui.Column(c).Fill().Padding(24).Gap(20).Children(func() {
-		ui.Text(c, "设置").FontSize(22).Bold()
-		a.installSection(c, s)
-		a.gameInfoSection(c, s)
-		a.pathSection(c, s)
-		a.themeSection(c, s)
-		a.cacheSection(c, s)
-		a.aboutSection(c)
+	// The page scrolls: the server list alone can be twenty rows, and the
+	// sections below it must stay reachable in a short window.
+	ui.Scroll(c).FillWidth().Grow(1).Children(func() {
+		ui.Column(c).FillWidth().Padding(24).Gap(20).Children(func() {
+			ui.Text(c, "设置").FontSize(22).Bold()
+			a.installSection(c, s)
+			a.gameInfoSection(c, s)
+			a.pathSection(c, s)
+			a.themeSection(c, s)
+			a.fileserverSection(c, s)
+			a.cacheSection(c, s)
+			a.aboutSection(c)
+		})
 	})
 }
 
@@ -971,25 +1000,31 @@ func (a *app) state() state {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return state{
-		looking:        a.looking,
-		browsing:       a.browsing,
-		pinned:         a.pinned,
-		install:        a.install,
-		lookErr:        a.lookErr,
-		gameInfo:       a.gameInfo,
-		gameInfoErr:    a.gameInfoErr,
-		patching:       a.patching,
-		launching:      a.launching,
-		launchErr:      a.launchErr,
-		launched:       a.launched,
-		gameRunning:    a.gameRunning,
-		vanillaPending: a.vanillaPending,
-		blocked:        a.blocked,
-		restored:       a.restored,
-		restoreErr:     a.restoreErr,
-		cacheBusy:      a.cacheBusy,
-		cacheErr:       a.cacheErr,
-		theme:          a.theme,
+		looking:              a.looking,
+		browsing:             a.browsing,
+		pinned:               a.pinned,
+		install:              a.install,
+		lookErr:              a.lookErr,
+		gameInfo:             a.gameInfo,
+		gameInfoErr:          a.gameInfoErr,
+		patching:             a.patching,
+		launching:            a.launching,
+		launchErr:            a.launchErr,
+		launched:             a.launched,
+		gameRunning:          a.gameRunning,
+		vanillaPending:       a.vanillaPending,
+		blocked:              a.blocked,
+		restored:             a.restored,
+		restoreErr:           a.restoreErr,
+		cacheBusy:            a.cacheBusy,
+		cacheErr:             a.cacheErr,
+		theme:                a.theme,
+		fileservers:          slices.Clone(a.fileservers),
+		fileserversBusy:      a.fileserversBusy,
+		fileserversErr:       a.fileserversErr,
+		fileserverPreference: a.fileserverPreference,
+		fileserverLatency:    maps.Clone(a.fileserverLatency),
+		probingFileservers:   a.probingFileservers,
 	}
 }
 
@@ -1001,6 +1036,11 @@ func (a *app) start(cfg config.Config, cfgErr error) {
 	// whether its game is still running or has closed in the meantime.
 	a.vanillaPending, a.vanillaSeen = cfg.VanillaPending, cfg.VanillaSeen
 	a.profileFolder = cfg.ProfileFolder
+	a.fileserverPreference = fileserverPreference(cfg.FileserverPreference)
+	a.fileserverLatency = cfg.FileserverLatencyMs
+	if a.fileserverLatency == nil {
+		a.fileserverLatency = map[string]int64{}
+	}
 	// The named profiles are read before the lookup starts, so that the first
 	// frame already names the profile in use.
 	if path := config.ProfilesPath(a.configPath); path != "" {
@@ -1219,11 +1259,13 @@ func (a *app) saveSettingsFor(pinned, folder string) error {
 
 	a.mu.Lock()
 	cfg := config.Config{
-		GamePath:       pinned,
-		ProfileFolder:  folder,
-		Theme:          string(a.theme),
-		VanillaPending: a.vanillaPending,
-		VanillaSeen:    a.vanillaSeen,
+		GamePath:             pinned,
+		ProfileFolder:        folder,
+		Theme:                string(a.theme),
+		FileserverPreference: a.fileserverPreference,
+		FileserverLatencyMs:  maps.Clone(a.fileserverLatency),
+		VanillaPending:       a.vanillaPending,
+		VanillaSeen:          a.vanillaSeen,
 	}
 	a.mu.Unlock()
 	return cfg.Save(a.configPath)

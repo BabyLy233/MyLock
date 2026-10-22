@@ -48,6 +48,7 @@ MyLock 从 [GameBanana](https://gamebanana.com/games/20948) 浏览和安装 Dead
 
 - 图片按显示尺寸解码，原始字节缓存在磁盘；128 MiB 上限，LRU 淘汰，设置页可查看和清除
 - 设置页可切换浅色 / 深色 / 跟随系统
+- 下载可走 GameBanana 的文件服务器：设置页可选默认、自动或指定一台，支持刷新列表和测速
 - 只写游戏的 `addons` 目录和 `gameinfo.gi`，不改游戏本体
 
 ## 构建

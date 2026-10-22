@@ -23,6 +23,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/time/rate"
@@ -86,6 +87,13 @@ type Client struct {
 	// sleep pauses before a retry. Tests replace it so that a backoff does not
 	// make them slow.
 	sleep func(context.Context, time.Duration) error
+
+	// fileservers is the list of download servers last read, and fileserversAt
+	// when it was. The lock also keeps several callers from asking for the
+	// list at once: the first asks, the rest read what it left.
+	fileserversMu sync.Mutex
+	fileservers   []Fileserver
+	fileserversAt time.Time
 }
 
 // New returns a client reading the live catalogue.

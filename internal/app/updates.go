@@ -438,7 +438,7 @@ func (a *app) runUpdate(install *game.Install, profile addons.Profile, id string
 		// on its way as soon as there is more than one.
 		progress(download.Progress{})
 		err = a.downloads.Get(context.Background(), download.Request{
-			URL:  file.URL,
+			URL:  a.downloadURL(context.Background(), kind, file),
 			Dest: archivePath,
 			Size: file.Size,
 			MD5:  file.MD5,

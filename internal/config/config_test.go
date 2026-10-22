@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 )
 
@@ -17,7 +18,7 @@ func TestSaveAndLoad(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != want {
+	if !reflect.DeepEqual(got, want) {
 		t.Errorf("Load = %+v, want %+v", got, want)
 	}
 }
@@ -28,7 +29,7 @@ func TestLoadWithoutAFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load of a missing file = %v, want nil", err)
 	}
-	if got != (Config{}) {
+	if !reflect.DeepEqual(got, Config{}) {
 		t.Errorf("Load of a missing file = %+v, want the zero Config", got)
 	}
 }
@@ -124,7 +125,7 @@ func TestAdoptCarriesTheSettingsOver(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != want {
+	if !reflect.DeepEqual(got, want) {
 		t.Errorf("the settings carried over are %+v, want %+v", got, want)
 	}
 }
@@ -149,7 +150,7 @@ func TestAdoptLeavesTheNewSettingsAlone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != want {
+	if !reflect.DeepEqual(got, want) {
 		t.Errorf("Adopt replaced the settings with %+v, want %+v", got, want)
 	}
 }

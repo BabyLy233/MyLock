@@ -33,6 +33,14 @@ type Config struct {
 	// Theme is the appearance to run in: "system", "light" or "dark". Empty is
 	// the system's, which is what a first run gets.
 	Theme string `json:"theme,omitempty"`
+	// FileserverPreference is the GameBanana download route chosen in the
+	// settings: "default", "auto", or a file server's id. Empty is the
+	// default, which is also what a first run gets.
+	FileserverPreference string `json:"fileserverPreference,omitempty"`
+	// FileserverLatencyMs is the last measured round trip to each file server,
+	// by its id. It is only shown; a server that could not be measured keeps
+	// what it had.
+	FileserverLatencyMs map[string]int64 `json:"fileserverLatencyMs,omitempty"`
 	// VanillaPending reports that the last launch the app made was one without
 	// mods, and VanillaSeen that its game has been seen running. Together they
 	// say that the game should be put back to loading the mods when the session

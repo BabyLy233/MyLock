@@ -436,7 +436,7 @@ func (s *store) fetch(a *app, install *game.Install, profile addons.Profile, mod
 			a.invalidate()
 		}
 		err = a.downloads.Get(context.Background(), download.Request{
-			URL:  file.URL,
+			URL:  a.downloadURL(context.Background(), mod.Kind, file),
 			Dest: archivePath,
 			Size: file.Size,
 			MD5:  file.MD5,

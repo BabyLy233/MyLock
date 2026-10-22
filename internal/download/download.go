@@ -50,6 +50,10 @@ const (
 	// chunk is how much is read at a time: big enough that the progress
 	// callback and the watchdog are not run per kilobyte.
 	chunk = 64 << 10
+
+	// probeTimeout bounds how long a file server is given to answer a probe.
+	// A server that takes longer is as good as down for choosing between them.
+	probeTimeout = 5 * time.Second
 )
 
 // errRangeMismatch is a file server refusing the range asked for because what
@@ -108,6 +112,35 @@ func New() *Client {
 		},
 		domains: []string{"gamebanana.com", "deadlockmods.app"},
 	}
+}
+
+// Probe asks address for its headers, to say how long a file server takes to
+// answer. The address is checked the way a download's is, and any response
+// counts as reachable: what is measured is the round trip, not what was asked
+// for. The wait is bounded, so a server that never answers does not hold the
+// caller for the download client's own timeouts.
+func (c *Client) Probe(ctx context.Context, address string) (time.Duration, bool) {
+	if err := c.allowed(address); err != nil {
+		return 0, false
+	}
+	ctx, cancel := context.WithTimeout(ctx, probeTimeout)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead, address, nil)
+	if err != nil {
+		return 0, false
+	}
+	req.Header.Set("User-Agent", about.UserAgent())
+
+	start := time.Now()
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return 0, false
+	}
+	// The body of a HEAD is empty, but the connection is still the client's to
+	// release.
+	resp.Body.Close()
+	return time.Since(start), true
 }
 
 // Get fetches the archive, reporting progress as it goes.
