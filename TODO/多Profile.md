@@ -2,7 +2,7 @@
 
 ## 现状（已完成，2026-10-21）
 
-「已安装模组」页顶部现在显示当前配置档，旁边的「切换 / 管理…」打开管理
+「模组管理」页顶部现在显示当前配置档，旁边的「切换 / 管理…」打开管理
 对话框。默认配置档就是 `citadel/addons` 根目录，另外的配置档是它下面的
 `profile_*` 文件夹。
 
@@ -31,7 +31,7 @@
 - 商店安装在下载期间如果用户切换了配置档，模组仍然落在开始时那个配置档，
   但游戏配置和页面列表跟随「现在」的配置档。
 
-测试覆盖在 `main_profiles_test.go` 和 `internal/config/profiles_test.go`。
+测试覆盖在 `internal/app/profiles_test.go` 和 `internal/config/profiles_test.go`。
 
 ## 还没做的
 

@@ -10,6 +10,8 @@ MyLock 从 [GameBanana](https://gamebanana.com/games/20948) 浏览和安装 Dead
 
 与 Tauri + React 的[原版](https://github.com/deadlock-mod-manager/deadlock-mod-manager)共享 `.dmm.json` 清单格式和 VPK 命名规则，两边可以识别彼此安装的模组。
 
+代码怎么分层、各部分如何协作，见 [ARCHITECTURE.md](ARCHITECTURE.md)。
+
 ## 功能
 
 **模组商店**
@@ -29,7 +31,7 @@ MyLock 从 [GameBanana](https://gamebanana.com/games/20948) 浏览和安装 Dead
 
 **更新检查**
 
-- 打开「已安装模组」时自动检查，也可以随时点「检查更新」
+- 打开「模组管理」时自动检查，也可以随时点「检查更新」
 - 按安装时记下的下载文件判断有没有新版本：作者只改了说明不会误报
 - 更新会重新下载安装时选中的所有文件，多文件模组不会只剩其中一个
 - 卡片上标出新版本的日期，点「更新」下载并替换原文件，保留启用状态
@@ -75,7 +77,7 @@ make check   # go vet + mygo vet + 全部测试
 1. 打开「设置」，等它自动找到 Deadlock；找不到就手动选到包含 `game/citadel` 的那一层。
 2. 如果游戏更新覆盖了 `gameinfo.gi`，在「设置」里点一次「应用模组路径」。
 3. 到「模组商店」浏览或搜索，打开一个模组，选择文件后点「安装」。
-4. 回到「已安装模组」开关模组，用「启动模组版游戏」进入游戏。
+4. 回到「模组管理」开关模组，用「启动模组版游戏」进入游戏。
 
 ## 数据位置
 

@@ -1,4 +1,4 @@
-package main
+package app
 
 import (
 	"os"
@@ -79,7 +79,7 @@ func TestShellShowsTheSidebar(t *testing.T) {
 	a := newApp()
 	tt := ui.NewTester(a.view, 1280, 800)
 
-	for _, want := range []string{"已安装模组", "设置"} {
+	for _, want := range []string{"模组管理", "设置"} {
 		if !tt.HasText(want) {
 			t.Errorf("the sidebar does not list %q: %q", want, tt.Texts())
 		}

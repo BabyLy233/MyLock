@@ -56,9 +56,9 @@ dev:
 test:
 	CGO_ENABLED=0 go test ./...
 
-## vet: go vet 加上 mygo 的 UI 生命周期检查
+## vet: go vet 加上 mygo 的 UI 生命周期检查（界面代码在 internal/app）
 vet:
-	$(MYGO) vet .
+	$(MYGO) vet ./internal/app
 
 ## fmt: 格式化
 fmt:
