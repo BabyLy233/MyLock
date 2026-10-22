@@ -7,6 +7,10 @@ mygo_windows_*.syso
 *.test
 *.out
 
+# Update signing keys (mygo keygen): the private key must never be committed
+mygo-update.key
+mygo-update.pub
+
 # Editors / OS
 .DS_Store
 .idea/

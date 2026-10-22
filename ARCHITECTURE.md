@@ -59,14 +59,16 @@ game     ──> vdf
 `main.go` 只有入口。真正的工作在 `app.Run()`（`internal/app/app.go`）：
 
 1. 从构建信息取版本号，写入 `about.Version`。
-2. 读取设置（`config.Path` / `config.Load`），必要时从改名前的目录迁移。
-3. 打开图片磁盘缓存（`imagecache.Path` / `imagecache.Open`，预算 128 MiB）。
+2. 注册原生更新插件（`plugins/updater/native`），把它的检查和偏好接到
+   设置页的 `updaterHooks`。
+3. 读取设置（`config.Path` / `config.Load`），必要时从改名前的目录迁移。
+4. 打开图片磁盘缓存（`imagecache.Path` / `imagecache.Open`，预算 128 MiB）。
    没有缓存目录时只用内存缓存。
-4. 在窗口出现前确定外观（浅色 / 深色 / 跟随系统），保证第一帧就是用户选的
+5. 在窗口出现前确定外观（浅色 / 深色 / 跟随系统），保证第一帧就是用户选的
    主题。
-5. `mygo.App.WhenReady` 创建窗口，把 `ui.View(a.view)` 设为内容。
-6. `a.start` 读取配置档与库文件，然后在后台定位游戏并读取当前配置档。
-7. 启动 `watchGame` 协程，每 2 秒看一次游戏是否在运行。
+6. `mygo.App.WhenReady` 创建窗口，把 `ui.View(a.view)` 设为内容。
+7. `a.start` 读取配置档与库文件，然后在后台定位游戏并读取当前配置档。
+8. 启动 `watchGame` 协程，每 2 秒看一次游戏是否在运行。
 
 窗口关闭后 `mygo.App.Run()` 返回。
 
@@ -114,7 +116,7 @@ Mygo 的界面在主线程上构建，`app.view` 会在每次需要新帧时、�
 | `/mods` | 模组管理 | 模组列表、开关、角色指定、配置档、删除确认、更新面板 |
 | `/store` | 模组商店 | 目录、搜索、分类、详情、文件选择、安装进度、皮肤冲突确认 |
 | `/skins` | 角色皮肤 | 角色列表、搜索、选中角色、皮肤网格、删除确认 |
-| `/settings` | 设置 | 游戏目录、检测、主题、皮肤互斥、图片缓存、版本信息 |
+| `/settings` | 设置 | 游戏目录、检测、主题、皮肤互斥、图片缓存、应用更新、版本信息 |
 
 商店页内部还有一层状态：条目种类（模组 / 音效 / 制作中）、排序、分类与英雄
 筛选、页码、搜索词、隐藏 NSFW、详情面板、截图查看器。它们都在 `store` 结构
@@ -228,6 +230,20 @@ Mygo 的界面在主线程上构建，`app.view` 会在每次需要新帧时、�
     页面时间。
 - 更新时重新下载安装时选中的**全部**文件，用 `addons.Profile.Replace` 先
   移开旧文件再放新文件，失败回滚；完成后恢复原来的启用状态。
+
+### 应用更新
+
+- 应用本身用 Mygo 自带的签名更新：`mygo.json` 的 `updates` 给出公钥和
+  GitHub 仓库，`mygo build` 为每个平台生成签名包、delta 和
+  `update-<target>.json`，发布在 `v<版本>` 的 GitHub Release 里。
+- 运行时注册 `plugins/updater/native`：它启动后自动检查、每天一次，发现新
+  版本时打开一个同样由 Mygo 绘制的更新窗口，显示更新说明和下载进度。
+- 设置页的「应用更新」一节通过 `updaterHooks`（`appupdate.go`）读插件的
+  偏好和上次检查时间，提供手动检查与两个自动更新开关。`updaterHooks` 的零值
+  表示这个构建没有更新器（测试、未启动的窗口），此时只说明不能更新的原因，
+  不调用插件的任何函数。
+- 版本号只有 `mygo.json` 一个来源：`Run` 把它写进 `about.Version`，界面和
+  User-Agent 都读这一个值。
 
 ### 启动游戏
 

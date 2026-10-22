@@ -2,5 +2,10 @@
   "name": "MyLock",
   "identifier": "dev.babyly233.mylock",
   "version": "0.1.0",
-  "out": "build"
+  "out": "build",
+  "updates": {
+    "publicKey": "dNVy26D9tIh3KhxmniDx6yPdv3hPy/E5PLQkYtxG7b4=",
+    "github": "BabyLy233/MyLock",
+    "changelog": "CHANGELOG.md"
+  }
 }

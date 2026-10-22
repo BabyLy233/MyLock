@@ -21,6 +21,8 @@ import (
 	"time"
 
 	"github.com/egoist/mygo"
+	"github.com/egoist/mygo/plugins/updater"
+	"github.com/egoist/mygo/plugins/updater/native"
 	"github.com/egoist/mygo/ui"
 
 	"github.com/BabyLy233/mylock/internal/about"
@@ -195,6 +197,9 @@ type app struct {
 	// one already enabled. Both are settings, kept in config.json.
 	allowMultipleSkins      bool
 	skipSkinConflictWarning bool
+	// appUpdates is the update plugin's surface, set before the window opens.
+	// A zero value means this build has no updater, as in tests.
+	appUpdates updaterHooks
 	// heroNames is the heroes the catalogue's Skins tree lists, with
 	// heroNamesBusy and heroNamesErr the state of that read. heroNamesTried
 	// says it has been asked at least once, so the window does not ask on
@@ -820,6 +825,7 @@ func (a *app) settingsPage(c *ui.Context) {
 			a.fileserverSection(c, s)
 			a.cacheSection(c, s)
 			a.skinsSection(c, s)
+			a.appUpdateSection(c)
 			a.aboutSection(c)
 		})
 	})
@@ -1465,7 +1471,28 @@ func Run() {
 	if version := mygo.App.Version(); version != "" {
 		about.Version = version
 	}
+	// The update window is Mygo's, drawn native like the rest of the app: it
+	// checks in the background, shows the release notes, and installs the
+	// signed update. The settings page reads the same preferences through the
+	// hooks below.
+	mygo.Use(native.Plugin)
 	a := newApp()
+	a.appUpdates = updaterHooks{
+		Ready:                 mygo.Updater.Enabled(),
+		Check:                 updater.CheckForUpdates,
+		AutomaticChecks:       updater.AutomaticChecks,
+		SetAutomaticChecks:    updater.SetAutomaticChecks,
+		AutomaticDownloads:    updater.AutomaticDownloads,
+		SetAutomaticDownloads: updater.SetAutomaticDownloads,
+		LastCheck:             updater.LastCheck,
+		OnChange:              updater.OnChange,
+	}
+	// The checkboxes and the last-check time are the plugin's state: redraw
+	// when it changes, whether the user changed it in the window or a check
+	// finished.
+	if a.appUpdates.OnChange != nil {
+		a.appUpdates.OnChange(a.invalidate)
+	}
 	var cfg config.Config
 	var cfgErr error
 	if path, err := config.Path(); err != nil {

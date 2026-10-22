@@ -1,0 +1,145 @@
+# 发布：打标签或手动运行，编译各平台的安装包和签名更新包，
+# 上传到同一个 GitHub Release（先草稿，全部成功后再发布）。
+#
+# 需要一次性准备：
+#   - mygo.json 里的 updates（publicKey、github、changelog）
+#   - 仓库 Secret MYGO_UPDATER_PRIVATE_KEY：mygo keygen 生成的私钥内容
+#   - macOS 如果要正式分发，再加签名 / 公证的凭据（见 README）
+#
+# 标签写成 v0.2.0，和 CHANGELOG.md 里的「## 0.2.0」对应。
+
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "版本号（不带 v），例如 0.2.0"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+# 同一个版本只跑一次；后到的排队，不取消正在上传的。
+concurrency:
+  group: release-${{ github.event.inputs.version || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Vet and test
+        run: make check
+
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read the version
+        id: version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          if [ -n "$INPUT_VERSION" ]; then
+            version="${INPUT_VERSION#v}"
+          else
+            version="${GITHUB_REF_NAME#v}"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+
+      # 先建草稿，矩阵里的各平台都往这一个 release 上传；否则每个平台
+      # 的 mygo build -upload 会各建一个草稿。
+      - name: Create the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "$TAG already exists"
+            exit 0
+          fi
+          notes="$RUNNER_TEMP/notes.md"
+          awk -v ver="$VERSION" '
+            $0 == "## " ver || index($0, "## " ver " ") == 1 { printing = 1; next }
+            printing && /^## / { exit }
+            printing { print }
+          ' CHANGELOG.md > "$notes"
+          if [ ! -s "$notes" ]; then
+            echo "See CHANGELOG.md." > "$notes"
+          fi
+          gh release create "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --draft \
+            --title "$TAG" \
+            --notes-file "$notes"
+
+  build:
+    needs: [check, prepare]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux/amd64,linux/arm64
+          - os: windows-latest
+            platform: windows/amd64,windows/arm64
+          - os: macos-latest
+            platform: darwin/universal
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # 版本号只来自标签：写回 mygo.json，让 mygo build 和运行时的
+      # App.Version() 都用同一个值。Node 在所有 runner 上都有。
+      - name: Put the version in mygo.json
+        shell: bash
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          node -e "const fs=require('fs');const p='mygo.json';const c=JSON.parse(fs.readFileSync(p,'utf8'));c.version=process.argv[1];fs.writeFileSync(p,JSON.stringify(c,null,2)+'\n')" "$VERSION"
+
+      - name: Build and upload
+        shell: bash
+        env:
+          MYGO_UPDATER_PRIVATE_KEY: ${{ secrets.MYGO_UPDATER_PRIVATE_KEY }}
+          GH_TOKEN: ${{ github.token }}
+        run: go tool mygo build -platform "${{ matrix.platform }}" -upload
+
+  publish:
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          gh release edit "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --draft=false \
+            --latest=true

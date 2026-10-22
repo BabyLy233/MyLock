@@ -48,6 +48,14 @@ MyLock 从 [GameBanana](https://gamebanana.com/games/20948) 浏览和安装 Dead
 - 卡片上标出新版本的日期，点「更新」下载并替换原文件，保留启用状态
 - 更新失败时原版本会被放回去，不会留下一个装了一半的模组
 
+**应用更新**
+
+- 启动后自动检查（每天一次），也可以在设置页手动检查
+- 更新窗口显示版本、日期和更新说明，可以安装、稍后提醒或跳过这个版本
+- 下载有进度，更新包带 Ed25519 签名，校验通过后原地替换并重启
+- 开发构建和包管理器安装的版本（`.deb`、AppImage、只读的 `/Applications`）
+  会说明为什么不能自更新，不显示会失败的按钮
+
 **启动游戏**
 
 - 「启动模组版游戏」写入当前 profile 的搜索路径后交给 Steam
@@ -84,6 +92,49 @@ make check   # go vet + mygo vet + 全部测试
 | Windows | `mylock.exe`、安装包 |
 | macOS | `.app`、`.dmg`（签名和 `.dmg` 需要 macOS） |
 
+## 发布
+
+应用更新走 GitHub Releases：标签为 `v<版本>`，每个平台上传签名过的更新包和
+`update-<target>.json`。`.github/workflows/release.yml` 会在推标签或手动运行时
+编译全部平台，先建草稿，全部上传成功后再发布。
+
+一次性准备：
+
+1. 生成签名密钥，只需一次：
+
+   ```bash
+   go tool mygo keygen
+   ```
+
+   它写出 `mygo-update.key`（私钥）和 `mygo-update.pub`（公钥），默认在系统的
+   配置目录下（Linux 是 `~/.config/mygo/update-keys/`）。把公钥内容填进
+   `mygo.json`，私钥只放进 GitHub Secret `MYGO_UPDATER_PRIVATE_KEY` 和
+   密码管理器，**不要提交**。
+   私钥丢失后已安装的用户无法再自动更新；私钥泄露等同于任何人都能推送
+   任意代码。
+
+2. 在 `mygo.json` 增加更新配置：
+
+   ```json
+   "updates": {
+     "publicKey": "<mygo-update.pub 的内容>",
+     "github": "BabyLy233/MyLock",
+     "changelog": "CHANGELOG.md"
+   }
+   ```
+
+3. 仓库必须是公开的：已安装的应用直接读 latest release 里的静态文件，
+   不经过 GitHub API，也不带登录凭据。
+
+4. 发版前在 `CHANGELOG.md` 写 `## <版本>`，段落标题要和 `mygo.json` 的
+   `version` 完全一致。然后推 `v<版本>` 标签，或用 Actions 里的
+   `release` 手动指定版本运行。
+
+macOS 正式分发还需要 Apple Developer ID 签名和公证，Windows 建议做代码
+签名，否则用户首次运行会看到 Gatekeeper / SmartScreen 提示。没有这些凭据
+也能发布更新，只是安装体验差一些；macOS 证书和公证凭据的导入要另外加进
+workflow。
+
 ## 使用
 
 1. 打开「设置」，等它自动找到 Deadlock；找不到就手动选到包含 `game/citadel` 的那一层。
@@ -111,9 +162,9 @@ make check   # go vet + mygo vet + 全部测试
 
 ## 项目状态
 
-还在早期开发中，当前版本 `0.1`。
+还在早期开发中，当前版本 `0.1.0`。
 
-已实现商店、安装、启停、角色皮肤、更新检查和启动。尚未实现：
+已实现商店、安装、启停、角色皮肤、模组更新检查、应用自更新和启动。尚未实现：
 
 - 一次更新多个模组
 - 跳过某个模组的更新
