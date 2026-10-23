@@ -78,6 +78,14 @@ type store struct {
 	hiddenNSFW int
 	// chosen is the item the detail panel is showing, -1 for none.
 	chosen int
+	// shared is the submission a pasted share link opened. It is shown instead
+	// of one of items, because the listing may not hold it: the link names a
+	// mod of its own, and the listing behind it is read for the link's kind.
+	// Only the main thread touches it.
+	shared gb.Submission
+	// copiedShare is the slug of the mod whose share link was just copied, so
+	// that its page can say so. Only the main thread touches it.
+	copiedShare string
 
 	// categories is the tree of the kind being shown, and subcategories the
 	// sections under the chosen root. Both are read from the API, so both can
@@ -166,6 +174,10 @@ type shown struct {
 	total   int
 	more    bool
 	chosen  int
+	// mod is the submission whose page is open, from the listing or from a
+	// share link, and opened says one is. The zero submission is no page.
+	mod    gb.Submission
+	opened bool
 
 	profile     gb.Profile
 	profileBusy bool
@@ -211,7 +223,7 @@ func (s *store) view(c *ui.Context) {
 			ui.Text(c, "模组商店").FontSize(22).Bold()
 			ui.TextInput(c, &s.query).
 				Width(280).
-				Placeholder("搜索模组…").
+				Placeholder("搜索模组，或粘贴分享链接…").
 				OnSubmit(s.applySearch)
 			ui.Button(c, "搜索").OnClick(s.applySearch)
 		})
@@ -237,7 +249,7 @@ func (s *store) view(c *ui.Context) {
 
 		s.filterRow(c, state)
 
-		if state.chosen >= 0 && state.chosen < len(state.items) {
+		if state.opened {
 			s.detail(c, state)
 			return
 		}
@@ -376,11 +388,94 @@ func (s *store) openHero(hero string) {
 	s.loadCategories()
 }
 
-// applySearch is the search the user asked for. It gives up the hero the
-// skins page opened the store for: the controls' choice is the newer one.
+// applySearch is the search the user asked for. A share link pasted into the
+// box opens the mod it names rather than being searched for, which is what
+// sharing one is for. It gives up the hero the skins page opened the store for:
+// the controls' choice is the newer one.
 func (s *store) applySearch() {
 	s.pendingHeroSearch = false
+	if kind, id, ok := parseShare(s.query, kinds[s.kind]); ok {
+		s.openShared(kind, id)
+		return
+	}
 	s.search()
+}
+
+// openShared shows the mod one share link names, whether or not the listing
+// that is up holds it. The tab moves to the link's kind and the listing behind
+// the page is read again for that kind, so that 返回 leaves the user where the
+// mod lives rather than in the tab they pasted the link from.
+func (s *store) openShared(kind gb.Kind, id int) {
+	s.started = true
+	if index := slices.Index(kinds, kind); index >= 0 {
+		s.kind = index
+	}
+	s.query = ""
+	s.page = 1
+	s.category, s.hero = "", ""
+	s.pendingHeroSearch = false
+	s.closePicture()
+
+	// What the mod was installed from, if it was installed from here: opening
+	// it shows the same files the store would have shown it with.
+	s.app.mu.Lock()
+	installed := slices.Clone(s.app.library[gb.Submission{Kind: kind, ID: id}.Slug()].FileIDs)
+	s.app.mu.Unlock()
+
+	s.mu.Lock()
+	// A listing asked for before the jump is not this one: it is for another
+	// kind, or for the words the search box held then.
+	s.seq++
+	s.loading = false
+	s.err = ""
+	s.raw, s.items, s.total, s.more = nil, nil, 0, false
+	s.chosen = -1
+	// The page is drawn from the name and number the link carries while its
+	// own reply is on its way.
+	s.shared = gb.Submission{Kind: kind, ID: id}
+	s.profile, s.profileErr, s.writeUp = gb.Profile{}, "", ""
+	s.picked = nil
+	s.profileBusy = true
+	s.copiedShare = ""
+	s.mu.Unlock()
+	s.app.invalidate()
+
+	s.resetCategories()
+	s.loadCategories()
+	s.load()
+
+	go func() {
+		profile, err := s.app.catalogue.Profile(context.Background(), kind, id)
+		var message string
+		if err != nil {
+			message = err.Error()
+		}
+		writeUp := richtext.ParseHTML(profile.Text).PlainText()
+		s.app.publish(func() {
+			s.mu.Lock()
+			defer s.mu.Unlock()
+			// Another mod was opened, or the page was left, while this was in
+			// flight.
+			if s.shared.ID != id || s.shared.Kind != kind {
+				return
+			}
+			s.profileBusy = false
+			s.profile, s.profileErr = profile, message
+			s.writeUp = writeUp
+			if err != nil {
+				return
+			}
+			shared := profile.Submission
+			if shared.ID == 0 {
+				shared.ID = id
+			}
+			if shared.Kind == "" {
+				shared.Kind = kind
+			}
+			s.shared = shared
+			s.picked = defaultPicked(profile.Files, installed)
+		})
+	}()
 }
 
 // setHideNSFW leaves the adult-marked submissions out, or puts them back. The
@@ -393,9 +488,12 @@ func (s *store) setHideNSFW(hide bool) {
 	}
 	s.hideNSFW = hide
 	s.filterLocked()
-	// What was open was an item of the list that just changed.
-	s.chosen = -1
-	s.profile, s.profileErr, s.writeUp = gb.Profile{}, "", ""
+	// What was open was an item of the list that just changed. A page opened
+	// from a share link is not one of the list's, and stays as it is.
+	if s.chosen >= 0 {
+		s.chosen = -1
+		s.profile, s.profileErr, s.writeUp = gb.Profile{}, "", ""
+	}
 	s.mu.Unlock()
 	s.closePicture()
 	s.app.invalidate()
@@ -787,6 +885,8 @@ func (s *store) open(item int) {
 
 	s.mu.Lock()
 	s.chosen = item
+	s.shared = gb.Submission{}
+	s.copiedShare = ""
 	// The mod that was open before is not this one: nothing of it is left to be
 	// drawn while this one's page is on its way.
 	s.profile, s.profileErr, s.writeUp = gb.Profile{}, "", ""
@@ -845,6 +945,8 @@ func defaultPicked(files []gb.File, installed []int) map[int]bool {
 func (s *store) back() {
 	s.mu.Lock()
 	s.chosen = -1
+	s.shared = gb.Submission{}
+	s.copiedShare = ""
 	s.profile, s.profileErr, s.writeUp = gb.Profile{}, "", ""
 	s.picked = nil
 	s.mu.Unlock()
@@ -864,9 +966,17 @@ func (s *store) shown() shown {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	var mod gb.Submission
+	switch {
+	case s.shared.ID != 0:
+		mod = s.shared
+	case s.chosen >= 0 && s.chosen < len(s.items):
+		mod = s.items[s.chosen]
+	}
+	opened := mod.ID != 0
 	slug := ""
-	if s.chosen >= 0 && s.chosen < len(s.items) {
-		slug = s.items[s.chosen].Slug()
+	if opened {
+		slug = mod.Slug()
 	}
 	return shown{
 		loading:     s.loading,
@@ -875,6 +985,8 @@ func (s *store) shown() shown {
 		total:       s.total,
 		more:        s.more,
 		chosen:      s.chosen,
+		mod:         mod,
+		opened:      opened,
 		profile:     s.profile,
 		profileBusy: s.profileBusy,
 		profileErr:  s.profileErr,

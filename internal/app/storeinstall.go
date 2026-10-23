@@ -27,7 +27,13 @@ import (
 // what can be installed from it.
 func (s *store) detail(c *ui.Context, state shown) {
 	t := c.Theme()
-	mod := state.items[state.chosen]
+	mod := state.mod
+	// A page opened from a share link is named by the link's number until its
+	// own reply brings the name, and stays named that way if the reply fails.
+	name := mod.Name
+	if name == "" {
+		name = fmt.Sprintf("GameBanana #%d", mod.ID)
+	}
 
 	// The page scrolls. What an author wrote runs to whatever length they
 	// wrote, and the files below it are as many as they published, so the whole
@@ -36,7 +42,7 @@ func (s *store) detail(c *ui.Context, state shown) {
 		ui.Column(c).FillWidth().Gap(12).Children(func() {
 			ui.Row(c).FillWidth().Gap(12).AlignItems(ui.Center).Children(func() {
 				ui.Button(c, "返回").OnClick(s.back)
-				ui.Text(c, mod.Name).FontSize(18).Bold().MaxLines(1).Ellipsis("…")
+				ui.Text(c, name).FontSize(18).Bold().MaxLines(1).Ellipsis("…")
 			})
 			ui.Text(c, describe(mod, state.profile)).FontSize(12).TextColor(t.TextMuted)
 			ui.Divider(c)
@@ -48,10 +54,24 @@ func (s *store) detail(c *ui.Context, state shown) {
 			// rest of what a mod has are read. The address the API gave with
 			// the page is the one to use; the one built from the number is what
 			// there is before it arrives.
-			ui.Row(c).Children(func() {
+			//
+			// The share link is that same address, copied where another user of
+			// the app can paste it into the search box and be brought here.
+			ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
 				ui.Button(c, "在浏览器打开原帖").OnClick(func() {
 					c.OpenURL(cmp.Or(state.profile.URL, mod.Page()))
 				})
+				ui.Button(c, "复制分享链接").
+					Label("复制 " + name + " 的分享链接").
+					OnClick(func() {
+						c.WriteClipboard(mod.Page())
+						s.copiedShare = mod.Slug()
+						s.app.invalidate()
+					})
+				if s.copiedShare == mod.Slug() {
+					ui.Text(c, "已复制，粘贴到搜索框即可打开").
+						FontSize(12).TextColor(t.TextMuted)
+				}
 			})
 
 			task, hasTask := s.app.transfers.latestFor(mod.Slug())
