@@ -125,14 +125,6 @@ func (p Profile) Replace(id string, files []File) (enabled bool, err error) {
 	}
 	wasEnabled := entry.Enabled
 
-	// Where the old files are depends on whether the mod is on, as it does for
-	// removing one.
-	dir, oldNames := p.Dir, entry.DisabledVpks
-	if entry.Enabled {
-		dir = p.ShardDir(entry.Shard)
-		oldNames = entry.CurrentVpks
-	}
-
 	// The old files are kept together out of the way until the manifest names
 	// the new ones, rather than deleted: an author who replaced a file with a
 	// broken one must not cost the user the version that worked.
@@ -142,21 +134,47 @@ func (p Profile) Replace(id string, files []File) (enabled bool, err error) {
 	}
 	defer os.RemoveAll(backup)
 
-	moved := make([]move, 0, len(oldNames))
+	moved := make([]move, 0, len(entry.CurrentVpks)+len(entry.DisabledVpks))
 	restore := func() { renameBack(moved) }
-	for i, name := range oldNames {
-		from := filepath.Join(dir, name)
-		if _, statErr := os.Stat(from); errors.Is(statErr, os.ErrNotExist) {
-			// A file the manifest names but the disk does not have is already
-			// as good as gone.
-			continue
+
+	// An enabled mod's files are in its shard. A disabled mod's are all in the
+	// profile directory, and the scan below takes them along with the ones a
+	// selection left out of the manifest.
+	if entry.Enabled {
+		for i, name := range entry.CurrentVpks {
+			from := filepath.Join(p.ShardDir(entry.Shard), name)
+			if _, statErr := os.Stat(from); errors.Is(statErr, os.ErrNotExist) {
+				// A file the manifest names but the disk does not have is
+				// already as good as gone.
+				continue
+			}
+			to := filepath.Join(backup, strconv.Itoa(i))
+			if err := os.Rename(from, to); err != nil {
+				restore()
+				return false, fmt.Errorf("moving %s aside: %w", name, err)
+			}
+			moved = append(moved, move{from: from, to: to})
 		}
-		to := filepath.Join(backup, strconv.Itoa(i))
+	}
+
+	// Every prefixed file of the mod goes aside too, whether the manifest names
+	// it or a per-file selection left it out: the new version very often uses
+	// the same names, and a copy cannot write over one that is still there.
+	prefixed, err := p.prefixedFiles(id)
+	if err != nil {
+		restore()
+		return false, err
+	}
+	i := 0
+	for name := range prefixed {
+		from := filepath.Join(p.Dir, id+"_"+name)
+		to := filepath.Join(backup, "prefixed-"+strconv.Itoa(i))
 		if err := os.Rename(from, to); err != nil {
 			restore()
 			return false, fmt.Errorf("moving %s aside: %w", name, err)
 		}
 		moved = append(moved, move{from: from, to: to})
+		i++
 	}
 
 	names := make([]string, len(files))
@@ -228,6 +246,18 @@ func (p Profile) Remove(id string) error {
 	var failed []error
 	for _, name := range names {
 		if err := os.Remove(filepath.Join(dir, name)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			failed = append(failed, err)
+		}
+	}
+	// A file a per-file selection left out is still the mod's, and going away
+	// with it is what removing the mod means.
+	prefixed, err := p.prefixedFiles(id)
+	if err != nil {
+		failed = append(failed, err)
+	}
+	for name := range prefixed {
+		path := filepath.Join(p.Dir, id+"_"+name)
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 			failed = append(failed, err)
 		}
 	}

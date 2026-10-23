@@ -400,7 +400,7 @@ func TestChooseShard(t *testing.T) {
 		{"starts at the first", New(), 0, 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := p.chooseShard(tc.of, tc.current, 1)
+			got, err := p.chooseShard(tc.of, "", tc.current, 1)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -424,7 +424,7 @@ func TestChooseShardRefusesWhenEveryShardIsFull(t *testing.T) {
 			CurrentVpks: make([]string, ShardCapacity),
 		}
 	}
-	if _, err := p.chooseShard(m, 0, 1); err == nil {
+	if _, err := p.chooseShard(m, "", 0, 1); err == nil {
 		t.Error("chooseShard found room in a profile with every shard full")
 	}
 }

@@ -253,7 +253,7 @@ func TestAssigningAHeroRemembersIt(t *testing.T) {
 	}
 	tt.Frame()
 	if !tt.HasText("指定角色") {
-		t.Fatalf("clicking 角色… did not open the dialog: %q", tt.Texts())
+		t.Fatalf("clicking 角色分类 did not open the dialog: %q", tt.Texts())
 	}
 
 	// The control writes what it was given before its notice runs, which is

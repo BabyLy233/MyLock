@@ -449,7 +449,7 @@ func TestTheModsPageShowsTheProfileAndOpensTheManager(t *testing.T) {
 	if !tt.HasText("配置档：默认配置") {
 		t.Errorf("the mods page does not name the profile in use: %q", tt.Texts())
 	}
-	if err := tt.Click("切换 / 管理…"); err != nil {
+	if err := tt.Click("配置档管理"); err != nil {
 		t.Fatal(err)
 	}
 	tt.Frame()
@@ -467,7 +467,7 @@ func TestTheModsPageKeepsItsHeaderAtTheTop(t *testing.T) {
 	a, install, def, _ := profileApp(t)
 	tt := show(t, a, install, def)
 
-	control, ok := tt.Find("切换 / 管理…")
+	control, ok := tt.Find("配置档管理")
 	if !ok {
 		t.Fatal("the mods page does not show the profile control")
 	}
@@ -488,7 +488,7 @@ func TestTheManagerCreatesAProfile(t *testing.T) {
 	a, install, def, _ := profileApp(t)
 	tt := show(t, a, install, def)
 
-	if err := tt.Click("切换 / 管理…"); err != nil {
+	if err := tt.Click("配置档管理"); err != nil {
 		t.Fatal(err)
 	}
 	tt.Frame()
@@ -521,7 +521,7 @@ func TestDeletingAProfileAsksFirst(t *testing.T) {
 	a.profiles = []config.Profile{{Folder: folder, Name: "测试服"}}
 	tt := show(t, a, install, def)
 
-	if err := tt.Click("切换 / 管理…"); err != nil {
+	if err := tt.Click("配置档管理"); err != nil {
 		t.Fatal(err)
 	}
 	tt.Frame()

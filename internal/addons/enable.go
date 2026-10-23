@@ -59,11 +59,14 @@ func (p Profile) enable(entry Entry, id string, m *Manifest) (Entry, []move, err
 		return entry, nil, fmt.Errorf("%q has no files to enable", id)
 	}
 
-	shard, err := p.chooseShard(m, entry.Shard, count)
+	shard, err := p.chooseShard(m, id, entry.Shard, count)
 	if err != nil {
 		return entry, nil, err
 	}
 	dir := p.ShardDir(shard)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return entry, nil, fmt.Errorf("creating %s: %w", dir, err)
+	}
 	names, err := allocateNames(dir, count)
 	if err != nil {
 		return entry, nil, err
@@ -119,11 +122,14 @@ func (p Profile) disable(entry Entry, id string) (Entry, []move, error) {
 // already filed under is preferred, and failing that the last shard in use:
 // taking the first shard with room instead would move mods that are already
 // loaded before it, changing what wins where two of them touch one file.
-func (p Profile) chooseShard(m *Manifest, current uint32, count int) (uint32, error) {
+//
+// id is the mod whose files are being placed, and it is left out of the count:
+// a mod that is changing what it has enabled frees its own slots first.
+func (p Profile) chooseShard(m *Manifest, id string, current uint32, count int) (uint32, error) {
 	used := make(map[uint32]int, MaxShards)
 	last := uint32(FirstShard)
-	for _, entry := range m.Mods {
-		if !entry.Enabled {
+	for modID, entry := range m.Mods {
+		if !entry.Enabled || modID == id {
 			continue
 		}
 		shard := entry.Shard

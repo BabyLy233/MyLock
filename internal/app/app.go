@@ -61,6 +61,16 @@ type app struct {
 	heroAsk    string
 	heroChoice string
 	heroOpen   bool
+	// filesAsk is the mod whose installed-file dialog is open, empty when it is
+	// closed. files is what the profile says the mod has, filesPicked which of
+	// them the user has checked, and filesBusy, filesApplying and filesErr the
+	// state of reading or applying them. Only the main thread touches them.
+	filesAsk      string
+	files         []addons.InstalledFile
+	filesPicked   map[string]bool
+	filesBusy     bool
+	filesApplying bool
+	filesErr      string
 	// skins is the skins page's state.
 	skins *skinsPage
 	// profilesOpen is whether the profile manager is open, newProfileOpen the
@@ -426,6 +436,7 @@ func (a *app) modsPage(c *ui.Context) {
 	a.newProfileDialog(c)
 	a.profileDeleteDialog(c)
 	a.heroDialog(c)
+	a.filesDialog(c)
 
 	ui.Column(c).Fill().Padding(24).Gap(12).Children(func() {
 		ui.Row(c).FillWidth().Gap(12).AlignItems(ui.Center).Children(func() {
@@ -438,7 +449,7 @@ func (a *app) modsPage(c *ui.Context) {
 				Disabled(s.install == nil || s.looking || len(mods.list) == 0 ||
 					ups.checking || a.transfers.activeOfKind(transferUpdate) > 0).
 				OnClick(func() { a.checkUpdates(true) })
-			ui.Button(c, "切换 / 管理…").
+			ui.Button(c, "配置档管理").
 				Disabled(s.install == nil || s.looking).
 				OnClick(a.openProfiles)
 		})
@@ -580,7 +591,14 @@ func (a *app) modRow(c *ui.Context, r ui.ListRow, mod addons.Mod, info config.Mo
 					Disabled(reading || updating).
 					OnClick(func() { a.updateMod(mod.ID) })
 			}
-			ui.Button(c, "角色…").
+			// A mod can ship several files and the game need not load them
+			// all: this is where one variant is turned off without turning the
+			// whole mod off.
+			ui.Button(c, "文件选择").
+				Label("选择 " + mod.ID + " 的文件").
+				Disabled(reading).
+				OnClick(func() { a.openFiles(mod.ID) })
+			ui.Button(c, "角色分类").
 				Label("指定 " + mod.ID + " 的角色").
 				Disabled(reading).
 				OnClick(func() { a.openHeroDialog(mod.ID) })
@@ -985,7 +1003,7 @@ func (a *app) pathSection(c *ui.Context, s state) {
 				Fill().
 				Placeholder("包含 game/citadel 的目录").
 				OnSubmit(a.usePath)
-			ui.Button(c, "浏览…").Disabled(s.browsing).OnClick(func() {
+			ui.Button(c, "选择目录").Disabled(s.browsing).OnClick(func() {
 				a.browse(a.pathInput)
 			})
 		})
@@ -1205,7 +1223,7 @@ func (a *app) start(cfg config.Config, cfgErr error) {
 func (a *app) usePath() {
 	path := strings.TrimSpace(a.pathInput)
 	if path == "" {
-		a.fail("先填一个目录，或者用「浏览…」选一个。")
+		a.fail("先填一个目录，或者用「选择目录」选一个。")
 		return
 	}
 	a.look(path, true, nil)
