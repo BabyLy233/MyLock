@@ -42,14 +42,6 @@ type updatesState struct {
 	checkedAt time.Time
 	checking  bool
 	checkErr  string
-	// updating is the mod whose files are being replaced, empty when none is,
-	// with which of its downloads is on its way out of how many.
-	updating   string
-	index      int
-	fileCount  int
-	progress   download.Progress
-	updateErr  string
-	updateDone string
 }
 
 // updateState reads what the last check left, in one lock.
@@ -57,16 +49,10 @@ func (a *app) updateState() updatesState {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return updatesState{
-		snapshots:  maps.Clone(a.updates),
-		checkedAt:  a.checkedAt,
-		checking:   a.checking,
-		checkErr:   a.checkErr,
-		updating:   a.updating,
-		index:      a.updateIndex,
-		fileCount:  a.updateFileCount,
-		progress:   a.updateProgress,
-		updateErr:  a.updateErr,
-		updateDone: a.updateDone,
+		snapshots: maps.Clone(a.updates),
+		checkedAt: a.checkedAt,
+		checking:  a.checking,
+		checkErr:  a.checkErr,
 	}
 }
 
@@ -198,14 +184,17 @@ func (a *app) checkUpdates(force bool) {
 	a.mu.Lock()
 	install, folder := a.install, a.profileFolder
 	mods := slices.Clone(a.mods)
-	busy := a.checking || a.updating != "" || install == nil || len(mods) == 0
+	// An update in flight is what a check has to wait for; a store install on
+	// its way does not change what is installed yet, so the check can run
+	// beside it.
+	busy := a.checking || a.transfers.activeOfKind(transferUpdate) > 0 ||
+		install == nil || len(mods) == 0
 	fresh := !a.checkedAt.IsZero() && time.Since(a.checkedAt) < updateCheckInterval
 	if busy || (!force && fresh) {
 		a.mu.Unlock()
 		return
 	}
 	a.checking, a.checkErr = true, ""
-	a.updateErr, a.updateDone = "", ""
 	a.mu.Unlock()
 	a.invalidate()
 
@@ -299,8 +288,6 @@ func (a *app) fetchUpdates(mods []addons.Mod) (map[string]gb.UpdateSnapshot, err
 
 // updateOutcome is what an update left behind.
 type updateOutcome struct {
-	// name is what to call the mod in the message about it.
-	name string
 	// mods is the profile as it reads afterwards, and modsErr why it could not
 	// be read.
 	mods    []addons.Mod
@@ -316,35 +303,33 @@ type updateOutcome struct {
 // updateMod downloads a mod's newest file and puts it in place of the one that
 // is installed, keeping the mod on or off as it was. It reads and writes the
 // disk and the network, so it runs off the main thread like an install does.
+//
+// Updates and installs share the transfer queue: a mod can be updated while
+// another is being downloaded, and only the step that writes a profile is
+// serialized.
 func (a *app) updateMod(id string) {
 	a.mu.Lock()
 	install, folder := a.install, a.profileFolder
 	info := a.library[id]
-	busy := install == nil || a.reading || a.checking || a.updating != ""
-	if !busy {
-		a.reading = true
-		a.updating = id
-		a.updateIndex, a.updateFileCount = 0, 0
-		a.updateProgress = download.Progress{}
-		a.updateErr, a.updateDone = "", ""
-	}
+	busy := install == nil || a.reading || a.checking || a.transfers.activeFor(id)
 	a.mu.Unlock()
 	if busy {
 		return
 	}
+
+	name := info.Name
+	if name == "" {
+		name = id
+	}
+	task := a.transfers.start(transferUpdate, "更新 "+name, id, nil)
 	a.invalidate()
 
 	go func() {
-		outcome := a.runUpdate(install, profileFor(install, folder), id, info)
+		outcome := a.runUpdate(task, install, profileFor(install, folder), id, info)
+		task.finish(outcome.err)
 		a.publish(func() {
 			a.mu.Lock()
-			a.reading = false
-			a.updating = ""
-			a.updateIndex, a.updateFileCount = 0, 0
-			if outcome.err != nil {
-				a.updateErr = outcome.err.Error()
-			} else {
-				a.updateDone = outcome.name + " 已更新。"
+			if outcome.err == nil {
 				// What the check said is no longer about what is installed; the
 				// next check asks again rather than marking it as out of date
 				// against a file it was just given.
@@ -363,11 +348,8 @@ func (a *app) updateMod(id string) {
 
 // runUpdate is the update itself: fetch the mod's page again, pick the file to
 // install, and replace what is there with it.
-func (a *app) runUpdate(install *game.Install, profile addons.Profile, id string, info config.ModInfo) updateOutcome {
-	outcome := updateOutcome{name: info.Name}
-	if outcome.name == "" {
-		outcome.name = id
-	}
+func (a *app) runUpdate(task *transfer, install *game.Install, profile addons.Profile, id string, info config.ModInfo) updateOutcome {
+	outcome := updateOutcome{}
 	finish := func(err error) updateOutcome {
 		outcome.err = err
 		// The list shows the disk after this either way.
@@ -385,6 +367,7 @@ func (a *app) runUpdate(install *game.Install, profile addons.Profile, id string
 	}
 	// The page is read again rather than trusting the check's copy: an author
 	// who replaced a file leaves the old address pointing at nothing.
+	task.setPhase("读取页面中")
 	mod, err := a.catalogue.Profile(context.Background(), kind, number)
 	if err != nil {
 		return finish(fmt.Errorf("读取模组页面失败：%w", err))
@@ -402,54 +385,44 @@ func (a *app) runUpdate(install *game.Install, profile addons.Profile, id string
 	}
 	defer os.RemoveAll(work)
 
-	// The bar counts the whole update rather than starting over on each file,
-	// and only when every size is known: a total that is short of what is left
-	// to fetch would fill the bar before the download did.
-	var total int64
-	known := true
-	for _, file := range downloads {
-		if file.Size <= 0 {
-			known = false
-			continue
-		}
-		total += file.Size
-	}
-	if !known {
-		total = 0
-	}
+	// What is being fetched is only known now, so the transfer learns its files
+	// here; until then its window says what it is reading.
+	task.setFiles(downloads)
 
 	var done int64
 	archives := make([]addons.Archive, 0, len(downloads))
 	for i, file := range downloads {
+		// A pause that landed between files holds here, before the next one is
+		// started, rather than being swallowed by the unpacking.
+		if err := task.waitReady(); err != nil {
+			return finish(err)
+		}
 		dir := filepath.Join(work, "archive", fmt.Sprint(i))
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return finish(err)
 		}
 		archivePath := filepath.Join(dir, filepath.Base(file.Name))
 		base := done
-		progress := func(p download.Progress) {
-			a.mu.Lock()
-			a.updateIndex, a.updateFileCount = i+1, len(downloads)
-			a.updateProgress = download.Progress{Done: base + p.Done, Total: total}
-			a.mu.Unlock()
-			a.invalidate()
-		}
-		// Said before the first byte, so that the panel names the file that is
-		// on its way as soon as there is more than one.
-		progress(download.Progress{})
-		err = a.downloads.Get(context.Background(), download.Request{
+		task.beginFile(i)
+		err = task.fetch(a.downloads, download.Request{
 			URL:  a.downloadURL(context.Background(), kind, file),
 			Dest: archivePath,
 			Size: file.Size,
 			MD5:  file.MD5,
-		}, progress)
+		}, func(p download.Progress) { task.report(i, base, p) })
 		if err != nil {
 			return finish(fmt.Errorf("下载 %s 失败：%w", file.Name, err))
 		}
 		if written, statErr := os.Stat(archivePath); statErr == nil {
+			task.fileWritten(i, written.Size())
 			done = base + written.Size()
 		}
 
+		// The file arrived before the pause did; the pause still holds here.
+		if err := task.waitReady(); err != nil {
+			return finish(err)
+		}
+		task.setPhase("解压中")
 		unpacked := filepath.Join(work, "unpacked", fmt.Sprint(i))
 		if err := archive.Extract(archivePath, unpacked); err != nil {
 			return finish(fmt.Errorf("解压 %s 失败：%w", file.Name, err))
@@ -465,16 +438,41 @@ func (a *app) runUpdate(install *game.Install, profile addons.Profile, id string
 		return finish(fmt.Errorf("下载的文件里没有 VPK 文件，可能不是 Deadlock 的模组。"))
 	}
 
+	if err := a.commitUpdate(task, install, profile, id, mod.Submission, downloads, files, &outcome); err != nil {
+		return finish(err)
+	}
+	return finish(nil)
+}
+
+// commitUpdate replaces the files in the profile with what was just fetched.
+// Like an install's last step it is serialized: two updates, or an update and
+// an install, must not write the same manifest at once.
+func (a *app) commitUpdate(task *transfer, install *game.Install, profile addons.Profile, id string, mod gb.Submission, downloads []gb.File, files []addons.File, outcome *updateOutcome) error {
+	// A pause asked for while the archive was unpacking holds here, before
+	// anything is written into the profile.
+	if err := task.waitReady(); err != nil {
+		return err
+	}
+	task.setPhase("更新中")
+	a.profileWriteMu.Lock()
+	defer a.profileWriteMu.Unlock()
+
+	// Canceled while the last file was unpacking: the profile has not been
+	// touched yet, so stopping here leaves the installed mod as it was.
+	if task.ctx.Err() != nil {
+		return errTransferCanceled
+	}
+
 	// Checked again here, after the download: the game can have been started
 	// while the archive was being fetched, and this is the point where files it
 	// holds are moved.
 	if a.isGameRunning() {
-		return finish(fmt.Errorf("游戏正在运行，先退出游戏再更新模组。"))
+		return fmt.Errorf("游戏正在运行，先退出游戏再更新模组。")
 	}
 
 	wasEnabled, err := profile.Replace(id, files)
 	if err != nil {
-		return finish(err)
+		return err
 	}
 	// The name and picture may have changed with the version, and the files the
 	// mod is installed from are what the next check compares against. Every one
@@ -483,11 +481,11 @@ func (a *app) runUpdate(install *game.Install, profile addons.Profile, id string
 	for i, download := range downloads {
 		fileIDs[i] = download.ID
 	}
-	a.rememberMod(mod.Submission, fileIDs...)
+	a.rememberMod(mod, fileIDs...)
 
 	if wasEnabled {
 		if err := profile.SetEnabled(id, true); err != nil {
-			return finish(err)
+			return err
 		}
 		info, infoErr := a.patchGameInfo(install, profile)
 		outcome.patched = true
@@ -496,7 +494,7 @@ func (a *app) runUpdate(install *game.Install, profile addons.Profile, id string
 			outcome.gameInfoErr = infoErr.Error()
 		}
 	}
-	return finish(nil)
+	return nil
 }
 
 // updateCount is how many of the installed mods have an update, and pairs each
@@ -511,44 +509,12 @@ func updateCount(mods []addons.Mod, infos map[string]config.ModInfo, snapshots m
 	return n
 }
 
-// updatePanel says what the check and any update are doing, above the list.
-func (a *app) updatePanel(c *ui.Context, ups updatesState, infos map[string]config.ModInfo, count int, gameRunning bool) {
+// updatePanel says what the check found and what is updating, above the list.
+// The download's own progress is in the sidebar and the download window, so
+// this only says that there is something to wait for.
+func (a *app) updatePanel(c *ui.Context, ups updatesState, count int, gameRunning bool) {
 	t := c.Theme()
 	switch {
-	case ups.updating != "":
-		name := infos[ups.updating].Name
-		if name == "" {
-			name = ups.updating
-		}
-		ui.Column(c).FillWidth().Gap(4).Children(func() {
-			ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-				ui.Spinner(c)
-				title := "正在更新 " + name
-				if ups.fileCount > 1 && ups.index > 0 {
-					title += fmt.Sprintf("（第 %d/%d 个文件）", ups.index, ups.fileCount)
-				}
-				ui.Text(c, title+"…").Bold()
-			})
-			value := float64(-1)
-			if ups.progress.Total > 0 {
-				value = float64(ups.progress.Done) / float64(ups.progress.Total)
-			}
-			ui.Progress(c, value).WidthPercent(100)
-			if ups.progress.Total > 0 {
-				ui.Text(c, fmt.Sprintf("%s / %s",
-					humanSize(ups.progress.Done), humanSize(ups.progress.Total))).
-					FontSize(12).TextColor(t.TextMuted)
-			} else if ups.progress.Done > 0 {
-				ui.Text(c, humanSize(ups.progress.Done)).FontSize(12).TextColor(t.TextMuted)
-			}
-		})
-	case ups.updateErr != "":
-		// The message says what failed -- the download, the unpacking, the
-		// files being busy -- so it is shown as it is rather than behind a
-		// second layer of "update failed".
-		ui.Text(c, ups.updateErr).FontSize(12).TextColor(t.Danger)
-	case ups.updateDone != "":
-		ui.Text(c, ups.updateDone).FontSize(12).TextColor(t.Success)
 	case ups.checking:
 		ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
 			ui.Spinner(c)
@@ -561,6 +527,10 @@ func (a *app) updatePanel(c *ui.Context, ups updatesState, infos map[string]conf
 	case !ups.checkedAt.IsZero():
 		ui.Text(c, "所有模组都是最新的。").FontSize(12).TextColor(t.TextMuted)
 	}
+	if active := a.transfers.activeOfKind(transferUpdate); active > 0 {
+		ui.Text(c, fmt.Sprintf("正在更新 %d 个模组，进度可以在左侧「下载」里看。", active)).
+			FontSize(12).TextColor(t.TextMuted)
+	}
 	if gameRunning && count > 0 {
 		ui.Text(c, "游戏正在运行，先退出游戏再更新模组。").FontSize(12).TextColor(t.Danger)
 	}
@@ -568,12 +538,15 @@ func (a *app) updatePanel(c *ui.Context, ups updatesState, infos map[string]conf
 
 // updateLine is what a card says about an update: when it was published, or
 // that it is being installed right now.
-func updateLine(update availableUpdate, updating bool) string {
-	if updating {
+func updateLine(update availableUpdate, updating, paused bool) string {
+	switch {
+	case paused:
+		return "更新已暂停"
+	case updating:
 		return "正在更新…"
-	}
-	if update.When.IsZero() {
+	case update.When.IsZero():
 		return "有新版本"
+	default:
+		return "有新版本 · " + update.When.Format("2006-01-02")
 	}
-	return "有新版本 · " + update.When.Format("2006-01-02")
 }

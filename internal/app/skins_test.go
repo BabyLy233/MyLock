@@ -343,8 +343,8 @@ func TestInstallingASkinAsksAboutTheOneAlreadyWorn(t *testing.T) {
 	if len(a.store.conflict.wearers) != 1 || a.store.conflict.wearers[0] != "Old Skin" {
 		t.Errorf("the question names %v, want Old Skin", a.store.conflict.wearers)
 	}
-	if got := a.store.shown().installing; got != "" {
-		t.Errorf("the install started before the question was answered: %q", got)
+	if a.transfers.activeFor(mod.Slug()) {
+		t.Error("the install started before the question was answered")
 	}
 }
 
@@ -377,8 +377,8 @@ func TestCancelingTheSkinConflictStopsTheInstall(t *testing.T) {
 	if a.store.conflict != nil {
 		t.Error("the question is still open after 取消")
 	}
-	if got := a.store.shown().installing; got != "" {
-		t.Errorf("the install started after 取消: %q", got)
+	if a.transfers.activeFor(mod.Slug()) {
+		t.Error("the install started after 取消")
 	}
 }
 

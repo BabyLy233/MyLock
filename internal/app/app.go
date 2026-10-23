@@ -85,6 +85,9 @@ type app struct {
 	imageCache *imagecache.Cache
 	// store is the mod store page's state.
 	store *store
+	// transfers are the installs and updates in flight, with the window that
+	// shows every file of them.
+	transfers *transferManager
 
 	// mu guards what the lookups publish for the view to read, and the
 	// appearance, which a save reads from a goroutine.
@@ -103,7 +106,12 @@ type app struct {
 	// both do it, and the paths the later write puts down must be the profile
 	// as it is then.
 	gameinfoMu sync.Mutex
-	theme      mygo.ThemeSource
+	// profileWriteMu keeps one change to a profile's files and manifest at a
+	// time. Installs and updates run together now, so two of them finishing at
+	// once must not write the same .dmm.json; a switch, a deletion and an
+	// install are serialized by it as well.
+	profileWriteMu sync.Mutex
+	theme          mygo.ThemeSource
 	// fileservers is the GameBanana download servers last read, with the ones
 	// that are up first. fileserversBusy and fileserversErr are the state of
 	// the read, and fileserversTried says one has been started, so that the
@@ -149,18 +157,6 @@ type app struct {
 	checkedAt time.Time
 	checking  bool
 	checkErr  string
-	// The update in flight, if there is one: which mod, how far the download
-	// has got, and what the last one left behind.
-	updating string
-	// updateIndex is which of the mod's downloads is being fetched, counting
-	// from one, and updateFileCount how many there are. A mod made of several
-	// downloads says so, so that a progress bar that starts over reads as the
-	// next file rather than as a download that went backwards.
-	updateIndex     int
-	updateFileCount int
-	updateProgress  download.Progress
-	updateErr       string
-	updateDone      string
 
 	gameInfo    game.GameInfo
 	gameInfoErr string
@@ -308,6 +304,7 @@ func newApp() *app {
 	}
 	a.store = newStore(a)
 	a.skins = newSkinsPage(a)
+	a.transfers = newTransferManager(a)
 	return a
 }
 
@@ -315,11 +312,10 @@ func (a *app) view(c *ui.Context) {
 	a.paint(c)
 	ui.Row(c).Fill().AlignItems(ui.Stretch).Children(func() {
 		a.sidebar(c)
-		// The install in flight stands above the page rather than inside it:
-		// it belongs to the store, but a download takes long enough that the
-		// user can be anywhere by the time it is done.
+		// What a download is doing stays in the sidebar rather than above the
+		// page: it outlasts the page it was started from, and the sidebar is
+		// where the user looks for it. The window it opens carries the rest.
 		ui.Column(c).Grow(1).Children(func() {
-			a.progressBanner(c)
 			a.router.View(c, func(r *ui.Route) {
 				switch {
 				case r.Match("/mods"):
@@ -357,6 +353,7 @@ func (a *app) sidebar(c *ui.Context) {
 		}).FillWidth().Grow(1).OnChange(func() {
 			a.router.Push(page)
 		})
+		a.transfersPanel(c)
 		a.sidebarFooter(c)
 	})
 }
@@ -422,6 +419,7 @@ func (a *app) modsPage(c *ui.Context) {
 	infos := a.modInfos()
 	ups := a.updateState()
 	updates := updateCount(mods.list, infos, ups.snapshots)
+	active := a.transfers.activeByMod()
 
 	a.deleteDialog(c)
 	a.profilesDialog(c)
@@ -438,7 +436,7 @@ func (a *app) modsPage(c *ui.Context) {
 			ui.Button(c, "检查更新").
 				Label("检查模组更新").
 				Disabled(s.install == nil || s.looking || len(mods.list) == 0 ||
-					ups.checking || ups.updating != "").
+					ups.checking || a.transfers.activeOfKind(transferUpdate) > 0).
 				OnClick(func() { a.checkUpdates(true) })
 			ui.Button(c, "切换 / 管理…").
 				Disabled(s.install == nil || s.looking).
@@ -448,7 +446,7 @@ func (a *app) modsPage(c *ui.Context) {
 		// page is for, and it is the one thing here that is about the game
 		// rather than about one of the mods.
 		a.launchRow(c, s)
-		a.updatePanel(c, ups, infos, updates, s.gameRunning)
+		a.updatePanel(c, ups, updates, s.gameRunning)
 		switch {
 		case s.install == nil:
 			ui.Text(c, "还没有找到游戏目录，先到设置里指定。").TextColor(t.TextMuted)
@@ -495,8 +493,21 @@ func (a *app) modsPage(c *ui.Context) {
 				mod := mods.list[r.Index]
 				info := infos[mod.ID]
 				update, hasUpdate := updateFor(ups.snapshots[mod.ID], info, mod)
+				task, busy := active[mod.ID]
+				// A store install of a mod that is already installed is on
+				// this list too; it is busy, but it is not the update line's.
+				updating := busy && task.Kind == transferUpdate
+				// A failed update is the one thing the sidebar cannot show any
+				// more, since it is no longer downloading: it stays on the mod's
+				// own row until the transfer is cleared from the window.
+				updateErr := ""
+				if latest, ok := a.transfers.latestFor(mod.ID); ok &&
+					latest.Kind == transferUpdate && latest.Status == transferFailed {
+					updateErr = latest.Err
+				}
 				a.modRow(c, r, mod, info, update, hasUpdate,
-					ups.updating == mod.ID, mods.reading || s.gameRunning || ups.updating != "")
+					updating, task.Status == transferPaused, updateErr,
+					mods.reading || s.gameRunning || busy)
 			})
 	})
 }
@@ -511,7 +522,7 @@ var modPicture = box{W: 160, H: 90}
 // id and no picture. A mod the last check found an update for offers the way to
 // install it here.
 func (a *app) modRow(c *ui.Context, r ui.ListRow, mod addons.Mod, info config.ModInfo,
-	update availableUpdate, hasUpdate, updating, reading bool) {
+	update availableUpdate, hasUpdate, updating, paused bool, updateErr string, reading bool) {
 	t := c.Theme()
 	// A local copy, because the switch binds to a value the view rebuilds every
 	// pass. OnChange runs once the bound switch has written the new state into
@@ -551,7 +562,11 @@ func (a *app) modRow(c *ui.Context, r ui.ListRow, mod addons.Mod, info config.Mo
 				if updating {
 					color = t.TextMuted
 				}
-				ui.Text(c, updateLine(update, updating)).FontSize(12).TextColor(color)
+				ui.Text(c, updateLine(update, updating, paused)).FontSize(12).TextColor(color)
+			}
+			if updateErr != "" {
+				ui.Text(c, "更新失败："+updateErr).FontSize(12).TextColor(t.Danger).
+					MaxLines(2).Ellipsis("…")
 			}
 			if len(mod.Missing) > 0 {
 				ui.Text(c, fmt.Sprintf("缺少 %d 个文件，游戏可能读不到它", len(mod.Missing))).
@@ -670,6 +685,9 @@ func (a *app) setEnabled(id string, on bool) {
 			return
 		}
 
+		// The same one-writer rule an install's last step follows: a switch and
+		// an install finishing together both write the manifest.
+		a.profileWriteMu.Lock()
 		profile := profileFor(install, folder)
 		switchErr := profile.SetEnabled(id, on)
 		// Read back whatever the profile holds now, whether the switch worked
@@ -683,6 +701,7 @@ func (a *app) setEnabled(id string, on bool) {
 		if switchErr == nil {
 			info, infoErr = a.patchGameInfo(install, profile)
 		}
+		a.profileWriteMu.Unlock()
 
 		var message string
 		if err := errors.Join(switchErr, readErr); err != nil {
@@ -744,6 +763,7 @@ func (a *app) removeMod(id string) {
 			return
 		}
 
+		a.profileWriteMu.Lock()
 		profile := profileFor(install, folder)
 		removeErr := profile.Remove(id)
 		// The list shows the disk after this either way: a deletion that
@@ -757,6 +777,7 @@ func (a *app) removeMod(id string) {
 		if removeErr == nil {
 			info, infoErr = a.patchGameInfo(install, profile)
 		}
+		a.profileWriteMu.Unlock()
 
 		var message string
 		if err := errors.Join(removeErr, readErr); err != nil {
@@ -1506,10 +1527,14 @@ func (a *app) publish(fn func()) {
 }
 
 // invalidate asks for a redraw, which is safe from any goroutine. Before the
-// window exists there is nothing to redraw.
+// window exists there is nothing to redraw. The transfers window is redrawn
+// too: a download's progress belongs to both.
 func (a *app) invalidate() {
 	if a.win != nil {
 		a.win.Invalidate()
+	}
+	if win := a.transfers.window(); win != nil && !win.IsDestroyed() {
+		win.Invalidate()
 	}
 }
 

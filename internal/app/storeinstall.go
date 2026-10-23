@@ -3,6 +3,7 @@ package app
 import (
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"os"
@@ -53,19 +54,20 @@ func (s *store) detail(c *ui.Context, state shown) {
 				})
 			})
 
-			if state.installing != "" || state.installErr != "" || state.installed != "" {
+			task, hasTask := s.app.transfers.latestFor(mod.Slug())
+			if hasTask || state.installErr != "" || state.installed != "" {
 				ui.Divider(c)
 			}
 			switch {
-			case state.installing != "":
-				s.installingPanel(c, state)
+			case hasTask:
+				s.transferPanel(c, task)
 			case state.installErr != "":
 				ui.Text(c, state.installErr).TextColor(t.Danger)
 			case state.installed != "":
 				ui.Text(c, state.installed).TextColor(t.Success)
 			}
 
-			s.files(c, mod, state)
+			s.files(c, mod, state, hasTask && task.Active)
 		})
 	})
 
@@ -141,7 +143,9 @@ func (s *store) writeUpSection(c *ui.Context, state shown) {
 }
 
 // files offers what can be installed, or says why there is nothing to offer.
-func (s *store) files(c *ui.Context, mod gb.Submission, state shown) {
+// active says a transfer for this mod is already running, which its own panel
+// above the files is showing.
+func (s *store) files(c *ui.Context, mod gb.Submission, state shown, active bool) {
 	t := c.Theme()
 	switch {
 	case state.profileBusy:
@@ -167,7 +171,7 @@ func (s *store) files(c *ui.Context, mod gb.Submission, state shown) {
 		if state.gameRunning {
 			ui.Text(c, "游戏正在运行，先退出游戏再安装模组。").FontSize(12).TextColor(t.Danger)
 		}
-		busy := state.installing != "" || state.gameRunning
+		busy := active || state.gameRunning
 		for _, file := range offered {
 			s.fileRow(c, file, state.picked[file.ID], busy)
 		}
@@ -234,24 +238,46 @@ func (s *store) pick(id int, picked bool) {
 	s.app.invalidate()
 }
 
-// installingPanel is what the download is doing, while it is doing it.
-func (s *store) installingPanel(c *ui.Context, state shown) {
+// transferPanel is what this mod's download is doing, while it is doing it.
+// The controls are here as well as in the download window, because this is
+// where the user started it.
+func (s *store) transferPanel(c *ui.Context, view transferView) {
 	t := c.Theme()
 	ui.Column(c).FillWidth().Gap(6).Children(func() {
-		ui.Text(c, "正在安装 "+state.installing).Bold()
+		ui.Row(c).FillWidth().Gap(10).AlignItems(ui.Center).Children(func() {
+			ui.Text(c, view.Label).Bold().Grow(1).MaxLines(1).Ellipsis("…")
+			ui.Text(c, view.StatusText).FontSize(12).TextColor(statusColor(t, view))
+			if view.CanPause {
+				if view.Status == transferPaused {
+					ui.Button(c, "继续").
+						Label("继续下载 " + view.Label).
+						OnClick(func() { s.app.transferAction(view.ID, (*transfer).Resume) })
+				} else {
+					ui.Button(c, "暂停").
+						Label("暂停下载 " + view.Label).
+						OnClick(func() { s.app.transferAction(view.ID, (*transfer).Pause) })
+				}
+			}
+			if view.Active {
+				ui.Button(c, "取消").
+					Label("取消 " + view.Label).
+					OnClick(func() { s.app.transferAction(view.ID, (*transfer).Cancel) })
+			}
+		})
+
 		// A bar of unknown length until the server says how big the file is,
 		// which some file servers do not.
-		value := float64(-1)
-		if state.progress.Total > 0 {
-			value = float64(state.progress.Done) / float64(state.progress.Total)
+		ui.Progress(c, progressValue(view.Done, view.Total)).WidthPercent(100)
+		if line := transferLine(view); line != "" {
+			ui.Text(c, line).FontSize(12).TextColor(t.TextMuted)
 		}
-		ui.Progress(c, value).WidthPercent(100)
-		if state.progress.Total > 0 {
-			ui.Text(c, fmt.Sprintf("%s / %s",
-				humanSize(state.progress.Done), humanSize(state.progress.Total))).
-				FontSize(12).TextColor(t.TextMuted)
-		} else if state.progress.Done > 0 {
-			ui.Text(c, humanSize(state.progress.Done)).FontSize(12).TextColor(t.TextMuted)
+		if len(view.Files) > 1 && view.Current >= 0 && view.Current < len(view.Files) {
+			ui.Text(c, fmt.Sprintf("第 %d/%d 个文件：%s",
+				view.Current+1, len(view.Files), view.Files[view.Current].Name)).
+				FontSize(12).TextColor(t.TextMuted).MaxLines(1).Ellipsis("…")
+		}
+		if view.Err != "" {
+			ui.Text(c, view.Err).FontSize(12).TextColor(t.Danger)
 		}
 	})
 }
@@ -350,11 +376,11 @@ func (s *store) install(mod gb.Submission, files []gb.File) {
 	install, running := a.install, a.gameRunning
 	a.mu.Unlock()
 	if install == nil {
-		s.failed("先到设置里指定游戏目录，再安装模组。")
+		s.failed(mod.Slug(), "先到设置里指定游戏目录，再安装模组。")
 		return
 	}
 	if running {
-		s.failed("游戏正在运行，先退出游戏再安装模组。")
+		s.failed(mod.Slug(), "游戏正在运行，先退出游戏再安装模组。")
 		return
 	}
 
@@ -465,37 +491,40 @@ func (s *store) beginInstall(mod gb.Submission, files []gb.File, hero string, sw
 	install, folder, running := a.install, a.profileFolder, a.gameRunning
 	a.mu.Unlock()
 	if install == nil {
-		s.failed("先到设置里指定游戏目录，再安装模组。")
+		s.failed(mod.Slug(), "先到设置里指定游戏目录，再安装模组。")
 		return
 	}
 	if running {
-		s.failed("游戏正在运行，先退出游戏再安装模组。")
+		s.failed(mod.Slug(), "游戏正在运行，先退出游戏再安装模组。")
 		return
 	}
 
-	s.mu.Lock()
-	if s.installing != "" {
-		// One install at a time: two of them would race over the same manifest.
-		s.mu.Unlock()
+	// One install of a mod at a time: the same mod being fetched twice would
+	// write the same files twice. Other mods are free to start while this one
+	// runs; only the last step, writing the profile, is serialized.
+	if s.app.transfers.activeFor(mod.Slug()) {
 		return
 	}
-	s.installing = files[0].Name
-	if len(files) > 1 {
-		s.installing = fmt.Sprintf("%s 的 %d 个文件", mod.Name, len(files))
-	}
-	s.installErr, s.installed = "", ""
-	s.progress = download.Progress{}
+	s.mu.Lock()
+	delete(s.installErr, mod.Slug())
+	delete(s.installed, mod.Slug())
 	s.mu.Unlock()
+
+	task := a.transfers.start(transferInstall, "安装 "+mod.Name, mod.Slug(), files)
 	a.invalidate()
 
 	go func() {
-		err := s.fetch(a, install, profileFor(install, folder), mod, files, hero, swap)
+		err := s.fetch(a, task, install, profileFor(install, folder), mod, files, hero, swap)
+		task.finish(err)
+
 		s.mu.Lock()
-		s.installing = ""
-		if err != nil {
-			s.installErr = err.Error()
-		} else {
-			s.installed = mod.Name + " 已安装并启用。"
+		switch {
+		case errors.Is(err, errTransferCanceled):
+			// The transfer says it was canceled; the page need not repeat it.
+		case err != nil:
+			s.installErr[mod.Slug()] = err.Error()
+		default:
+			s.installed[mod.Slug()] = mod.Name + " 已安装并启用。"
 		}
 		s.mu.Unlock()
 		a.invalidate()
@@ -530,8 +559,10 @@ func (s *store) disableWearers(profile addons.Profile, keep, hero string) error 
 }
 
 // fetch is the install itself, from the download to the game being told where
-// the mods are.
-func (s *store) fetch(a *app, install *game.Install, profile addons.Profile, mod gb.Submission, downloads []gb.File, hero string, swap bool) error {
+// the mods are. The transfer reports what it is fetching and waits while it is
+// paused; the last step, writing the profile, is serialized with every other
+// install and update that is finishing at the same time.
+func (s *store) fetch(a *app, task *transfer, install *game.Install, profile addons.Profile, mod gb.Submission, downloads []gb.File, hero string, swap bool) error {
 	// Everything the download and the unpacking write goes in a directory of
 	// its own, which is thrown away whatever happens: an archive is a stranger's
 	// and nothing it holds outlives the install.
@@ -541,25 +572,14 @@ func (s *store) fetch(a *app, install *game.Install, profile addons.Profile, mod
 	}
 	defer os.RemoveAll(work)
 
-	// The bar counts the whole install rather than starting over on each file,
-	// and only when every size is known: a total short of what is left to fetch
-	// would fill the bar before the download did.
-	var total int64
-	known := true
-	for _, file := range downloads {
-		if file.Size <= 0 {
-			known = false
-			continue
-		}
-		total += file.Size
-	}
-	if !known {
-		total = 0
-	}
-
 	var done int64
 	archives := make([]addons.Archive, 0, len(downloads))
 	for i, file := range downloads {
+		// A pause that landed between files holds here, before the next one is
+		// started, rather than being swallowed by the unpacking.
+		if err := task.waitReady(); err != nil {
+			return err
+		}
 		// Each download is written and unpacked in a directory of its own: two
 		// of them can carry the same archive name.
 		dir := filepath.Join(work, "archive", fmt.Sprint(i))
@@ -570,25 +590,26 @@ func (s *store) fetch(a *app, install *game.Install, profile addons.Profile, mod
 		// which is what says which format it is in.
 		archivePath := filepath.Join(dir, filepath.Base(file.Name))
 		base := done
-		progress := func(p download.Progress) {
-			s.mu.Lock()
-			s.progress = download.Progress{Done: base + p.Done, Total: total}
-			s.mu.Unlock()
-			a.invalidate()
-		}
-		err = a.downloads.Get(context.Background(), download.Request{
+		task.beginFile(i)
+		err = task.fetch(a.downloads, download.Request{
 			URL:  a.downloadURL(context.Background(), mod.Kind, file),
 			Dest: archivePath,
 			Size: file.Size,
 			MD5:  file.MD5,
-		}, progress)
+		}, func(p download.Progress) { task.report(i, base, p) })
 		if err != nil {
 			return fmt.Errorf("下载 %s 失败：%w", file.Name, err)
 		}
 		if written, statErr := os.Stat(archivePath); statErr == nil {
+			task.fileWritten(i, written.Size())
 			done = base + written.Size()
 		}
 
+		// The file arrived before the pause did; the pause still holds here.
+		if err := task.waitReady(); err != nil {
+			return err
+		}
+		task.setPhase("解压中")
 		unpacked := filepath.Join(work, "unpacked", fmt.Sprint(i))
 		if err := archive.Extract(archivePath, unpacked); err != nil {
 			return fmt.Errorf("解压 %s 失败：%w", file.Name, err)
@@ -602,6 +623,29 @@ func (s *store) fetch(a *app, install *game.Install, profile addons.Profile, mod
 	}
 	if len(files) == 0 {
 		return fmt.Errorf("下载的文件里没有 VPK 文件，可能不是 Deadlock 的模组。")
+	}
+
+	return s.commitInstall(a, task, install, profile, mod, downloads, files, hero, swap)
+}
+
+// commitInstall is the last step of an install: the files are in place, and
+// the profile's manifest and the game's configuration follow. It is the only
+// part of an install that touches files two installs share, so it runs one at a
+// time.
+func (s *store) commitInstall(a *app, task *transfer, install *game.Install, profile addons.Profile, mod gb.Submission, downloads []gb.File, files []addons.File, hero string, swap bool) error {
+	// A pause asked for while the archive was unpacking holds here, before
+	// anything is written into the profile.
+	if err := task.waitReady(); err != nil {
+		return err
+	}
+	task.setPhase("安装中")
+	a.profileWriteMu.Lock()
+	defer a.profileWriteMu.Unlock()
+
+	// Canceled while the last file was unpacking: nothing has been written into
+	// the profile yet, so stopping here leaves the game as it was.
+	if task.ctx.Err() != nil {
+		return errTransferCanceled
 	}
 
 	// Checked again here, after the download: the game can have been started
@@ -681,9 +725,10 @@ func (s *store) fetch(a *app, install *game.Install, profile addons.Profile, mod
 }
 
 // failed reports why an install could not be started.
-func (s *store) failed(message string) {
+func (s *store) failed(slug, message string) {
 	s.mu.Lock()
-	s.installErr, s.installed = message, ""
+	s.installErr[slug] = message
+	delete(s.installed, slug)
 	s.mu.Unlock()
 	s.app.invalidate()
 }

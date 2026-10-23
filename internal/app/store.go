@@ -11,7 +11,6 @@ import (
 	"github.com/egoist/mygo/ui"
 	"github.com/egoist/mygo/ui/richtext"
 
-	"github.com/BabyLy233/mylock/internal/download"
 	"github.com/BabyLy233/mylock/internal/gb"
 )
 
@@ -121,16 +120,22 @@ type store struct {
 	// viewer is the screenshot the user opened out of the row of them, if any.
 	viewer viewer
 
-	// The install in flight, if there is one: the file being fetched, how far
-	// it has got, and what the last one left behind.
-	installing string
-	progress   download.Progress
-	installErr string
-	installed  string
+	// installErr and installed are what the last install started from here left
+	// for a mod, by slug. One mod's outcome is not another's: some mods can be
+	// installing while others are already done.
+	installErr map[string]string
+	installed  map[string]string
 }
 
 func newStore(a *app) *store {
-	return &store{app: a, chosen: -1, page: 1, subsCache: make(map[int][]gb.Category)}
+	return &store{
+		app:        a,
+		chosen:     -1,
+		page:       1,
+		subsCache:  make(map[int][]gb.Category),
+		installErr: make(map[string]string),
+		installed:  make(map[string]string),
+	}
 }
 
 // pageFilter is what narrowed the page that is up. A listing is narrowed by
@@ -168,8 +173,6 @@ type shown struct {
 	writeUp     string
 	picked      map[int]bool
 
-	installing string
-	progress   download.Progress
 	installErr string
 	installed  string
 	// gameRunning is whether Deadlock is running, in which case nothing may be
@@ -789,7 +792,6 @@ func (s *store) open(item int) {
 	s.profile, s.profileErr, s.writeUp = gb.Profile{}, "", ""
 	s.picked = nil
 	s.profileBusy = true
-	s.installErr, s.installed = "", ""
 	s.mu.Unlock()
 	s.app.invalidate()
 
@@ -862,6 +864,10 @@ func (s *store) shown() shown {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	slug := ""
+	if s.chosen >= 0 && s.chosen < len(s.items) {
+		slug = s.items[s.chosen].Slug()
+	}
 	return shown{
 		loading:     s.loading,
 		err:         s.err,
@@ -874,10 +880,8 @@ func (s *store) shown() shown {
 		profileErr:  s.profileErr,
 		writeUp:     s.writeUp,
 		picked:      maps.Clone(s.picked),
-		installing:  s.installing,
-		progress:    s.progress,
-		installErr:  s.installErr,
-		installed:   s.installed,
+		installErr:  s.installErr[slug],
+		installed:   s.installed[slug],
 		gameRunning: running,
 
 		category:          s.category,
