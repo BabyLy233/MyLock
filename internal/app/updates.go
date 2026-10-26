@@ -21,10 +21,6 @@ import (
 )
 
 const (
-	// updateCheckInterval is how long a check stands for. Opening the mods
-	// page asks again once it has passed; the button asks whenever the user
-	// does.
-	updateCheckInterval = 10 * time.Minute
 	// updatesPerRequest is how many submissions one update request may ask
 	// about, which is the API's own limit.
 	updatesPerRequest = 50
@@ -37,8 +33,7 @@ type updatesState struct {
 	// asked, by mod id.
 	snapshots map[string]gb.UpdateSnapshot
 	// checkedAt is when a check last finished, whether it worked or not, and is
-	// the zero time before one has. It is what keeps a failing catalogue from
-	// being asked again on every frame.
+	// the zero time before one has. It is what the page says its answer from.
 	checkedAt time.Time
 	checking  bool
 	checkErr  string
@@ -154,28 +149,23 @@ func newestOffered(files []gb.File) (gb.File, bool) {
 	return newestFile(offered), true
 }
 
-// updateFiles picks what an update downloads. Every file the mod was installed
-// from that is still offered is taken again, so a mod made of several downloads
-// stays made of them rather than being cut down to one. When none of those
-// files is left -- the author replaced all of them -- the current downloads are
-// taken together, which is the mod as its author publishes it now.
-func updateFiles(files []gb.File, info config.ModInfo) []gb.File {
+// updateFiles picks what an update downloads: the files the user chose, in the
+// order the page offers them. A file the author archived is an older version of
+// one that replaced it, and does not come back by being chosen; the update says
+// the page changed rather than quietly installing a different set.
+func updateFiles(files []gb.File, ids []int) []gb.File {
 	if len(files) == 0 {
 		return nil
 	}
 	offered := offeredFiles(files)
-	matched := slices.DeleteFunc(slices.Clone(offered), func(file gb.File) bool {
-		return !slices.Contains(info.FileIDs, file.ID)
+	return slices.DeleteFunc(slices.Clone(offered), func(file gb.File) bool {
+		return !slices.Contains(ids, file.ID)
 	})
-	if len(matched) > 0 {
-		return matched
-	}
-	return offered
 }
 
 // checkUpdates asks the catalogue about the installed mods and records what it
-// says. force makes it ask even when the last check has not stood for its time
-// yet, which is what the button does.
+// says. force makes it ask even when the page has already made its own check,
+// which is what the button does.
 //
 // It only asks about mods whose id reads back into the catalogue; a mod put
 // there by hand has nothing to ask about. The request runs off the main thread,
@@ -189,11 +179,14 @@ func (a *app) checkUpdates(force bool) {
 	// beside it.
 	busy := a.checking || a.transfers.activeOfKind(transferUpdate) > 0 ||
 		install == nil || len(mods) == 0
-	fresh := !a.checkedAt.IsZero() && time.Since(a.checkedAt) < updateCheckInterval
-	if busy || (!force && fresh) {
+	// The mods page checks once by itself and the button checks whenever the
+	// user asks. A check that failed still counts: asking a catalogue that
+	// cannot be reached again on every frame is not what a retry means.
+	if busy || (!force && a.autoChecked) {
 		a.mu.Unlock()
 		return
 	}
+	a.autoChecked = true
 	a.checking, a.checkErr = true, ""
 	a.mu.Unlock()
 	a.invalidate()
@@ -240,9 +233,10 @@ func (a *app) checkUpdates(force bool) {
 	}()
 }
 
-// maybeCheckUpdates starts a check when the mods page is shown and the last one
-// has stood for its time. The check itself decides whether there is anything to
-// ask about, so the page can call this on every frame it builds.
+// maybeCheckUpdates starts the one check the mods page makes by itself, the
+// first time it is shown. The check itself decides whether there is anything
+// to ask about, so the page can call this on every frame it builds; after the
+// first check, updates are looked for only when the user asks for them.
 func (a *app) maybeCheckUpdates() {
 	// Before the window exists there is nobody to show a check to, and a test
 	// builds the page without one; a test that wants a check asks for it.
@@ -300,17 +294,35 @@ type updateOutcome struct {
 	err         error
 }
 
-// updateMod downloads a mod's newest file and puts it in place of the one that
-// is installed, keeping the mod on or off as it was. It reads and writes the
-// disk and the network, so it runs off the main thread like an install does.
-//
-// Updates and installs share the transfer queue: a mod can be updated while
-// another is being downloaded, and only the step that writes a profile is
-// serialized.
+// updateMod is the update button. A mod of several files first asks which of
+// them to fetch: an author who replaced the installed files leaves nothing to
+// match them against, and downloading every variant is not what the user
+// installed. One file has nothing to choose between.
 func (a *app) updateMod(id string) {
 	a.mu.Lock()
-	install, folder := a.install, a.profileFolder
+	busy := a.install == nil || a.reading || a.checking || a.transfers.activeFor(id)
 	info := a.library[id]
+	snapshot := a.updates[id]
+	a.mu.Unlock()
+	if busy {
+		return
+	}
+
+	offered := offeredFiles(snapshot.Files)
+	switch {
+	case len(offered) > 1:
+		a.openUpdateFiles(id, offered, info)
+	case len(offered) == 1:
+		a.startUpdate(id, info, []int{offered[0].ID})
+	}
+}
+
+// startUpdate begins the update of a mod with the files the user chose. The
+// files are matched against the page again when it is read, so a choice that
+// has gone stale fails rather than installing something else.
+func (a *app) startUpdate(id string, info config.ModInfo, fileIDs []int) {
+	a.mu.Lock()
+	install, folder := a.install, a.profileFolder
 	busy := install == nil || a.reading || a.checking || a.transfers.activeFor(id)
 	a.mu.Unlock()
 	if busy {
@@ -325,7 +337,7 @@ func (a *app) updateMod(id string) {
 	a.invalidate()
 
 	go func() {
-		outcome := a.runUpdate(task, install, profileFor(install, folder), id, info)
+		outcome := a.runUpdate(task, install, profileFor(install, folder), id, fileIDs)
 		task.finish(outcome.err)
 		a.publish(func() {
 			a.mu.Lock()
@@ -346,9 +358,179 @@ func (a *app) updateMod(id string) {
 	}()
 }
 
-// runUpdate is the update itself: fetch the mod's page again, pick the file to
-// install, and replace what is there with it.
-func (a *app) runUpdate(task *transfer, install *game.Install, profile addons.Profile, id string, info config.ModInfo) updateOutcome {
+// updateFilesState is what the update-file dialog reads, taken in one lock.
+type updateFilesState struct {
+	ask    string
+	files  []gb.File
+	picked map[int]bool
+	err    string
+}
+
+func (a *app) updateFilesState() updateFilesState {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return updateFilesState{
+		ask:    a.updateAsk,
+		files:  slices.Clone(a.updateOffered),
+		picked: maps.Clone(a.updatePicked),
+		err:    a.updateErr,
+	}
+}
+
+// openUpdateFiles asks which of a mod's files its update should fetch. The
+// list is what the last check found, and the files the mod was installed from
+// are checked to begin with; with none of those left -- the author replaced
+// them -- the newest is, which is what a mod's page starts with too.
+func (a *app) openUpdateFiles(id string, files []gb.File, info config.ModInfo) {
+	a.mu.Lock()
+	a.updateAsk = id
+	a.updateOffered = files
+	a.updatePicked = defaultPicked(files, info.FileIDs)
+	a.updateErr = ""
+	a.mu.Unlock()
+	a.invalidate()
+}
+
+// pickUpdateFile records whether one file of the update dialog is checked.
+func (a *app) pickUpdateFile(id int, picked bool) {
+	a.mu.Lock()
+	if a.updatePicked == nil {
+		a.updatePicked = make(map[int]bool)
+	}
+	if picked {
+		a.updatePicked[id] = true
+	} else {
+		delete(a.updatePicked, id)
+	}
+	a.updateErr = ""
+	a.mu.Unlock()
+	a.invalidate()
+}
+
+// closeUpdateFiles closes the update-file dialog and forgets what it showed.
+func (a *app) closeUpdateFiles() {
+	a.mu.Lock()
+	a.resetUpdateFilesLocked()
+	a.mu.Unlock()
+	a.invalidate()
+}
+
+func (a *app) resetUpdateFilesLocked() {
+	a.updateAsk = ""
+	a.updateOffered = nil
+	a.updatePicked = nil
+	a.updateErr = ""
+}
+
+// applyUpdateFiles starts the update with the checked files. The checks are
+// made again here, because the dialog can stand open while the game starts or
+// a check runs.
+func (a *app) applyUpdateFiles() {
+	a.mu.Lock()
+	id := a.updateAsk
+	if id == "" {
+		a.mu.Unlock()
+		return
+	}
+	info := a.library[id]
+	running := a.gameRunning
+	busy := a.install == nil || a.reading || a.checking || a.transfers.activeFor(id)
+
+	selected := make([]int, 0, len(a.updatePicked))
+	for _, file := range a.updateOffered {
+		if a.updatePicked[file.ID] {
+			selected = append(selected, file.ID)
+		}
+	}
+	var refuse string
+	switch {
+	case len(selected) == 0:
+		refuse = "至少选择一个文件。"
+	case a.install == nil:
+		refuse = "先到设置里指定游戏目录，再更新模组。"
+	case running:
+		refuse = "游戏正在运行，先退出游戏再更新模组。"
+	case busy:
+		refuse = "正在读取或检查更新，稍后再试。"
+	}
+	if refuse != "" {
+		a.updateErr = refuse
+		a.mu.Unlock()
+		a.invalidate()
+		return
+	}
+	a.resetUpdateFilesLocked()
+	a.mu.Unlock()
+	a.invalidate()
+	a.startUpdate(id, info, selected)
+}
+
+// updateFilesDialog is the list of files an update can fetch, with a box for
+// each. A mod may publish variants the user never installed, and an author who
+// replaced the files leaves nothing to match them against, so which of them an
+// update installs is the user's choice rather than all of them.
+func (a *app) updateFilesDialog(c *ui.Context) {
+	state := a.updateFilesState()
+	if state.ask == "" {
+		return
+	}
+	t := c.Theme()
+	name := a.modInfo(state.ask).Name
+	if name == "" {
+		name = state.ask
+	}
+
+	open := true
+	ui.Modal(c, &open, func() {
+		ui.Column(c).Width(460).Gap(10).Children(func() {
+			ui.Text(c, "选择更新文件").FontSize(18).Bold()
+			ui.Text(c, name+"（#"+state.ask+"）").FontSize(12).TextColor(t.TextMuted)
+			ui.Text(c, "作者提供了多个文件。更新会下载勾选的文件，并用它们替换已安装的文件。").
+				FontSize(12).TextColor(t.TextMuted)
+
+			// A mod can publish more files than fit, so the list scrolls rather
+			// than growing the dialog past the window.
+			height := float32(len(state.files)*46 + 4)
+			if height > 340 {
+				height = 340
+			}
+			ui.Scroll(c).WidthPercent(100).Height(height).Children(func() {
+				ui.Column(c).FillWidth().Gap(6).Children(func() {
+					for _, file := range state.files {
+						file := file
+						picked := state.picked[file.ID]
+						ui.Column(c).FillWidth().Gap(2).Children(func() {
+							ui.Checkbox(c, &picked, file.Name).
+								OnChange(func() { a.pickUpdateFile(file.ID, picked) })
+							if line := describeFile(file); line != "" {
+								ui.Text(c, line).FontSize(11).TextColor(t.TextMuted).
+									MaxLines(1).Ellipsis("…")
+							}
+						})
+					}
+				})
+			})
+
+			if state.err != "" {
+				ui.Text(c, state.err).FontSize(12).TextColor(t.Danger)
+			}
+			ui.Row(c).Gap(8).Justify(ui.End).Children(func() {
+				ui.Button(c, "取消").OnClick(a.closeUpdateFiles)
+				ui.PrimaryButton(c, "更新").
+					Label("更新选中的文件").
+					Disabled(len(state.files) == 0 || len(state.picked) == 0).
+					OnClick(a.applyUpdateFiles)
+			})
+		})
+	})
+	if !open {
+		a.closeUpdateFiles()
+	}
+}
+
+// runUpdate is the update itself: fetch the mod's page again, match the files
+// the user chose against it, and replace what is there with them.
+func (a *app) runUpdate(task *transfer, install *game.Install, profile addons.Profile, id string, fileIDs []int) updateOutcome {
 	outcome := updateOutcome{}
 	finish := func(err error) updateOutcome {
 		outcome.err = err
@@ -366,15 +548,21 @@ func (a *app) runUpdate(task *transfer, install *game.Install, profile addons.Pr
 		return finish(fmt.Errorf("%s 在商店里没有对应的条目，不能更新。", id))
 	}
 	// The page is read again rather than trusting the check's copy: an author
-	// who replaced a file leaves the old address pointing at nothing.
+	// who replaced a file leaves the old address pointing at nothing, and the
+	// choice was made against the copy the check brought.
 	task.setPhase("读取页面中")
 	mod, err := a.catalogue.Profile(context.Background(), kind, number)
 	if err != nil {
 		return finish(fmt.Errorf("读取模组页面失败：%w", err))
 	}
-	downloads := updateFiles(mod.Files, info)
-	if len(downloads) == 0 {
+	downloads := updateFiles(mod.Files, fileIDs)
+	switch {
+	case len(mod.Files) == 0:
 		return finish(fmt.Errorf("这个模组现在没有可以下载的文件。"))
+	case len(downloads) != len(fileIDs):
+		// A chosen file was withdrawn or replaced while the dialog stood open.
+		// Installing the rest would be a different mod than the one chosen.
+		return finish(fmt.Errorf("作者刚刚改了文件列表，请重新检查更新后再试。"))
 	}
 
 	// Everything the download and the unpacking write goes in a directory of

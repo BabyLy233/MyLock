@@ -683,14 +683,25 @@ func (a *app) openTransfers() {
 }
 
 // closeTransfers closes the transfer window, if there is one.
+//
+// The button that calls this runs inside the window's own event on the main
+// thread, and destroying the native window there leaves GTK dispatching the
+// event to a widget that is gone. The title bar's close does not have that
+// problem because it arrives between events, so this is queued behind the
+// event instead of run in it.
 func (a *app) closeTransfers() {
 	m := a.transfers
 	m.mu.Lock()
 	win := m.win
 	m.mu.Unlock()
-	if win != nil && !win.IsDestroyed() {
-		win.Close()
+	if win == nil || win.IsDestroyed() {
+		return
 	}
+	win.Update(func() {
+		if !win.IsDestroyed() {
+			win.Close()
+		}
+	})
 }
 
 // transfersWindow is the content of the window that shows every file of every
@@ -909,13 +920,15 @@ func humanRate(bytes float64) string {
 // the sidebar above the build. A download outlasts the page it was started
 // from, so this is where it stays in sight; the button opens the window with
 // every file and the controls.
+//
+// The entry is there even when nothing is downloading: the window is also where
+// a finished or failed transfer is looked at after the fact, and an entry that
+// only appears while something runs is one the user cannot find when they need
+// it.
 func (a *app) transfersPanel(c *ui.Context) {
 	// A failure is kept in sight until it is cleared from the window: unlike a
 	// finished download it is something the user may have to act on.
 	views := a.transfers.panelViews()
-	if len(views) == 0 {
-		return
-	}
 	t := c.Theme()
 	// The sidebar is narrow, so only the first few are listed; the window has
 	// all of them.
@@ -940,17 +953,20 @@ func (a *app) transfersPanel(c *ui.Context) {
 			if running {
 				ui.Spinner(c)
 			}
-			title := fmt.Sprintf("下载中 · %d", activeCount)
-			switch {
-			case !running && activeCount > 0:
-				title = fmt.Sprintf("已暂停 · %d", activeCount)
-			case activeCount == 0:
-				title = fmt.Sprintf("下载失败 · %d", len(views))
-			case activeCount < len(views):
-				title = fmt.Sprintf("下载 · %d", len(views))
+			title, action := "下载管理", "打开"
+			if len(views) > 0 {
+				title, action = fmt.Sprintf("下载中 · %d", activeCount), "查看"
+				switch {
+				case !running && activeCount > 0:
+					title = fmt.Sprintf("已暂停 · %d", activeCount)
+				case activeCount == 0:
+					title = fmt.Sprintf("下载失败 · %d", len(views))
+				case activeCount < len(views):
+					title = fmt.Sprintf("下载 · %d", len(views))
+				}
 			}
 			ui.Text(c, title).FontSize(12).Bold().Grow(1)
-			ui.Button(c, "查看").
+			ui.Button(c, action).
 				Label("打开下载管理").
 				OnClick(a.openTransfers)
 		})

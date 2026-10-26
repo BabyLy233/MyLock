@@ -44,11 +44,36 @@ func TestInstallProgressStaysVisibleInTheSidebar(t *testing.T) {
 		}
 	}
 
-	// Once the transfer is over there is nothing left to show in the sidebar.
+	// Once the transfer is over it leaves the sidebar; the way into the window
+	// stays.
 	task.finish(nil)
 	tt = ui.NewTester(a.view, 1280, 800)
 	if tt.HasText("安装 Bikinidicta") {
 		t.Errorf("the sidebar still shows the install after it finished: %q", tt.Texts())
+	}
+	if !tt.HasText("下载管理") {
+		t.Errorf("the sidebar lost the way into the download window: %q", tt.Texts())
+	}
+}
+
+// The way into the download window is in the sidebar whether or not there is
+// anything to watch: the window is also where a finished or failed transfer is
+// looked at after the fact.
+func TestTheDownloadManagerEntryIsAlwaysInTheSidebar(t *testing.T) {
+	a := newApp()
+	a.router.Push("/settings")
+	tt := ui.NewTester(a.view, 1280, 800)
+
+	if !tt.HasText("下载管理") {
+		t.Fatalf("the sidebar does not offer the download manager: %q", tt.Texts())
+	}
+	if err := tt.Click("打开下载管理"); err != nil {
+		t.Fatalf("the entry cannot be clicked: %v", err)
+	}
+
+	window := ui.NewTester(a.transfersWindow, 640, 620)
+	if !window.HasText("没有下载任务。") {
+		t.Errorf("the empty download window does not say it is empty: %q", window.Texts())
 	}
 }
 

@@ -3,7 +3,10 @@ package app
 import (
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -121,53 +124,71 @@ func TestUpdateFor(t *testing.T) {
 	}
 }
 
-// An update installs the files the mod came from, not whichever variant an
-// author uploaded last, and every one of them: a mod made of a base file and
-// an extra would lose the extra if only one were taken.
-func TestUpdateFilesKeepsTheInstalledOnes(t *testing.T) {
+// An update downloads the files the user chose, and not every variant an
+// author publishes. They are kept in the page's order, so one selection is
+// always named the same way.
+func TestUpdateFilesTakesTheChosenOnes(t *testing.T) {
 	older := installedAt.Add(-time.Hour)
 	newer := installedAt.Add(time.Hour)
 	files := []gb.File{
-		{ID: 7, Name: "installed.zip", Added: older},
-		{ID: 8, Name: "other-variant.zip", Added: newer},
+		{ID: 7, Name: "base.zip", Added: older},
+		{ID: 8, Name: "variant.zip", Added: newer},
 		{ID: 9, Name: "extra.zip", Added: older},
 	}
-	got := updateFiles(files, config.ModInfo{FileIDs: []int{7, 9}})
+	got := updateFiles(files, []int{7, 9})
 	if len(got) != 2 || got[0].ID != 7 || got[1].ID != 9 {
-		t.Errorf("updateFiles = %+v, want both installed files", got)
+		t.Errorf("updateFiles = %+v, want the chosen files in page order", got)
+	}
+
+	// A variant the user did not choose is left out even though it is newer.
+	got = updateFiles(files, []int{7})
+	if len(got) != 1 || got[0].ID != 7 {
+		t.Errorf("updateFiles = %+v, want only the chosen file", got)
 	}
 
 	// A file the author archived is an older version of one that replaced it,
-	// and does not come back just because it was recorded once.
+	// and does not come back just because it was chosen.
 	gone := updateFiles([]gb.File{
 		{ID: 10, Name: "replacement.zip", Added: newer},
 		{ID: 7, Name: "installed.zip", Added: older, Archived: true},
-	}, config.ModInfo{FileIDs: []int{7}})
-	if len(gone) != 1 || gone[0].ID != 10 {
-		t.Errorf("updateFiles = %+v, want the replacement when every recorded file is gone", gone)
-	}
-}
-
-// A mod with no recorded files -- installed by the Tauri build, or by hand --
-// is updated with the current files, and archived ones only when there is
-// nothing else.
-func TestUpdateFilesFallsBackToTheCurrentOnes(t *testing.T) {
-	newer := installedAt.Add(time.Hour)
-	current := []gb.File{
-		{ID: 8, Name: "new.zip", Added: newer},
-		{ID: 9, Name: "old.zip", Added: installedAt, Archived: true},
-	}
-	if got := updateFiles(current, config.ModInfo{}); len(got) != 1 || got[0].ID != 8 {
-		t.Errorf("updateFiles = %+v, want the current file", got)
+	}, []int{7})
+	if len(gone) != 0 {
+		t.Errorf("updateFiles = %+v, want an archived file left out", gone)
 	}
 
-	archived := []gb.File{{ID: 9, Name: "old.zip", Added: installedAt, Archived: true}}
-	if got := updateFiles(archived, config.ModInfo{}); len(got) != 1 || got[0].ID != 9 {
+	// An author who archived everything leaves only those files to choose, and
+	// the update takes one when it is all there is.
+	archived := []gb.File{{ID: 9, Name: "old.zip", Added: older, Archived: true}}
+	if got := updateFiles(archived, []int{9}); len(got) != 1 || got[0].ID != 9 {
 		t.Errorf("updateFiles = %+v, want the archived file when it is all there is", got)
 	}
 
-	if got := updateFiles(nil, config.ModInfo{}); got != nil {
+	if got := updateFiles(nil, []int{7}); got != nil {
 		t.Errorf("updateFiles of no files = %+v, want none", got)
+	}
+}
+
+// The update dialog starts with the files the mod was installed from, and with
+// the newest one when the author replaced them all: the user chooses the rest.
+func TestUpdateDefaultsToTheInstalledFiles(t *testing.T) {
+	older := installedAt.Add(-time.Hour)
+	newer := installedAt.Add(time.Hour)
+	files := []gb.File{
+		{ID: 7, Name: "base.zip", Added: older},
+		{ID: 8, Name: "variant.zip", Added: newer},
+		{ID: 9, Name: "extra.zip", Added: older},
+	}
+
+	picked := defaultPicked(files, []int{7, 9})
+	if len(picked) != 2 || !picked[7] || !picked[9] {
+		t.Errorf("the dialog starts with %v, want the installed files", picked)
+	}
+
+	// None of the recorded files is offered any more; the newest is what the
+	// page would start a fresh install with.
+	picked = defaultPicked(files, []int{1, 2})
+	if len(picked) != 1 || !picked[8] {
+		t.Errorf("the dialog starts with %v, want the newest file", picked)
 	}
 }
 
@@ -194,6 +215,96 @@ func TestModsPageMarksAModWithAnUpdate(t *testing.T) {
 		if !tt.HasText(want) {
 			t.Errorf("the mods page does not show %q: %q", want, tt.Texts())
 		}
+	}
+}
+
+// updateProfileReply is a mod of several files, as its page reads when an
+// update asks again. The addresses are not the catalogue's, so a download fails
+// as soon as it starts; a test of the choice does not need one to finish.
+const updateProfileReply = `{
+	"_idRow": 42,
+	"_sName": "Yamato skin",
+	"_sProfileUrl": "https://gamebanana.com/mods/42",
+	"_aFiles": [
+		{"_idRow": 7, "_sFile": "base.zip", "_nFilesize": 1024,
+		 "_sDownloadUrl": "https://example.invalid/dl/7"},
+		{"_idRow": 8, "_sFile": "variant.zip", "_nFilesize": 2048,
+		 "_sDownloadUrl": "https://example.invalid/dl/8"},
+		{"_idRow": 9, "_sFile": "extra.zip", "_nFilesize": 4096,
+		 "_sDownloadUrl": "https://example.invalid/dl/9"}
+	]
+}`
+
+// Updating a mod of several files asks which ones to fetch, starting with the
+// ones it was installed from, and the update fetches only the chosen ones.
+func TestUpdatingAModOfSeveralFilesAsksWhichOnes(t *testing.T) {
+	a := newApp()
+	install, profile := fakeGame(t)
+	addMod(t, profile, "42", "skin.vpk")
+	mods, err := profile.Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.install, a.mods = install, mods
+	a.library = map[string]config.ModInfo{
+		"42": {Name: "Yamato skin", Installed: installedAt, FileIDs: []int{7}},
+	}
+	older := installedAt.Add(-time.Hour)
+	newer := installedAt.Add(time.Hour)
+	a.updates = map[string]gb.UpdateSnapshot{
+		"42": {Files: []gb.File{
+			{ID: 7, Name: "base.zip", Added: newer},
+			{ID: 8, Name: "variant.zip", Added: newer.Add(time.Hour)},
+			{ID: 9, Name: "extra.zip", Added: older},
+		}},
+	}
+	fakeCatalogue(t, a, func(path string, _ url.Values) (int, string) {
+		if strings.HasSuffix(path, "/ProfilePage") {
+			return http.StatusOK, updateProfileReply
+		}
+		return http.StatusNotFound, ""
+	})
+
+	tt := ui.NewTester(a.view, 1280, 800)
+	if err := tt.Click("更新 42"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+
+	if !tt.HasText("选择更新文件") {
+		t.Fatalf("clicking 更新 did not ask which files: %q", tt.Texts())
+	}
+	state := a.updateFilesState()
+	if !state.picked[7] || state.picked[8] || state.picked[9] {
+		t.Fatalf("the dialog starts with %v, want only the installed file", state.picked)
+	}
+	if a.transfers.activeFor("42") {
+		t.Fatal("the update started before the files were chosen")
+	}
+
+	// Choose the variant the user did not have, and let go of the installed one.
+	if err := tt.Click("variant.zip"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if err := tt.Click("base.zip"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if err := tt.Click("更新选中的文件"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the update to fetch the chosen file", func() bool {
+		view, ok := a.transfers.latestFor("42")
+		return ok && len(view.Files) == 1
+	})
+
+	view, _ := a.transfers.latestFor("42")
+	if view.Files[0].Name != "variant.zip" {
+		t.Errorf("the update is fetching %+v, want only variant.zip", view.Files)
+	}
+	if got := a.updateFilesState().ask; got != "" {
+		t.Errorf("the dialog is still open after 更新选中的文件: %q", got)
 	}
 }
 
@@ -281,5 +392,50 @@ func TestCheckingUpdatesSaysEverythingIsCurrent(t *testing.T) {
 
 	if !tt.HasText("所有模组都是最新的。") {
 		t.Errorf("the mods page does not say the mods are current: %q", tt.Texts())
+	}
+}
+
+// The page checks once by itself; after that only the button asks again. A
+// catalogue is not asked about every mod on every frame the page draws.
+func TestUpdatesAreCheckedOnceUntilTheButtonAsks(t *testing.T) {
+	a := newApp()
+	install, profile := fakeGame(t)
+	addMod(t, profile, "42", "skin.vpk")
+	mods, err := profile.Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.install, a.mods = install, mods
+	a.library = map[string]config.ModInfo{
+		"42": {Name: "Yamato skin", Installed: installedAt, FileIDs: []int{7}},
+	}
+
+	var asked atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		asked.Add(1)
+		fmt.Fprint(w, `["https://gamebanana.com/mods/42", 0, []]`)
+	}))
+	t.Cleanup(srv.Close)
+	a.catalogue.LegacyBase = srv.URL + "/"
+
+	a.checkUpdates(false)
+	waitFor(t, "the page's own check", func() bool { return !a.updateState().checking })
+	if got := asked.Load(); got != 1 {
+		t.Fatalf("the page asked %d times, want once", got)
+	}
+
+	// The page's check has been made, so its next draws do not ask again.
+	a.checkUpdates(false)
+	if got := asked.Load(); got != 1 {
+		t.Errorf("the page asked again by itself: %d requests", got)
+	}
+
+	// The button still asks whenever the user presses it.
+	a.checkUpdates(true)
+	waitFor(t, "the button's check", func() bool {
+		return !a.updateState().checking && asked.Load() == 2
+	})
+	if got := asked.Load(); got != 2 {
+		t.Errorf("the button did not ask again: %d requests", got)
 	}
 }

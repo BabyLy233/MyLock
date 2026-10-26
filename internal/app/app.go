@@ -71,6 +71,15 @@ type app struct {
 	filesBusy     bool
 	filesApplying bool
 	filesErr      string
+	// updateAsk is the mod whose update-file dialog is open, empty when it is
+	// closed. updateOffered is what the last check found the author offering,
+	// updatePicked which of them the user has checked, and updateErr why the
+	// choice could not be taken. Guarded by mu like the file dialog's state,
+	// because a test reads it from another goroutine.
+	updateAsk     string
+	updateOffered []gb.File
+	updatePicked  map[int]bool
+	updateErr     string
 	// skins is the skins page's state.
 	skins *skinsPage
 	// profilesOpen is whether the profile manager is open, newProfileOpen the
@@ -162,11 +171,13 @@ type app struct {
 
 	// The update check: what the catalogue last said about the installed mods,
 	// when it was last asked, and what that request left behind. updates is
-	// keyed by mod id, the way the manifest and the library are.
-	updates   map[string]gb.UpdateSnapshot
-	checkedAt time.Time
-	checking  bool
-	checkErr  string
+	// keyed by mod id, the way the manifest and the library are. autoChecked
+	// says the one check the mods page makes by itself has been made.
+	updates     map[string]gb.UpdateSnapshot
+	checkedAt   time.Time
+	autoChecked bool
+	checking    bool
+	checkErr    string
 
 	gameInfo    game.GameInfo
 	gameInfoErr string
@@ -437,6 +448,7 @@ func (a *app) modsPage(c *ui.Context) {
 	a.profileDeleteDialog(c)
 	a.heroDialog(c)
 	a.filesDialog(c)
+	a.updateFilesDialog(c)
 
 	ui.Column(c).Fill().Padding(24).Gap(12).Children(func() {
 		ui.Row(c).FillWidth().Gap(12).AlignItems(ui.Center).Children(func() {
@@ -1362,8 +1374,10 @@ func (a *app) look(pinned string, remember bool, warn error) {
 			if a.profileFolder == folder {
 				a.mods, a.modsErr = mods, modsErr
 				// A different directory or profile can hold another set of
-				// mods, so the last check no longer stands for what is shown.
+				// mods, so the last check no longer stands for what is shown,
+				// and the new set gets the page's own check again.
 				a.checkedAt = time.Time{}
+				a.autoChecked = false
 			}
 			a.gameInfo, a.gameInfoErr = info, infoErr
 			if lookErr != nil {
