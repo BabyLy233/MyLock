@@ -32,6 +32,7 @@ import (
 	"github.com/BabyLy233/mylock/internal/game"
 	"github.com/BabyLy233/mylock/internal/gb"
 	"github.com/BabyLy233/mylock/internal/imagecache"
+	"github.com/BabyLy233/mylock/internal/proxy"
 )
 
 // app is the state the window shows. The view builds the interface from it on
@@ -145,15 +146,30 @@ type app struct {
 	fileserverPreference string
 	fileserverLatency    map[string]int64
 	probingFileservers   bool
-	looking              bool
-	browsing             bool
-	reading              bool
-	patching             bool
-	pinned               string
-	install              *game.Install
-	lookErr              string
-	mods                 []addons.Mod
-	modsErr              string
+	// proxyConfig is the saved proxy every network request goes through. The
+	// proxy* fields below it are the settings page's draft, which is saved as
+	// one; only the main thread touches those.
+	proxyConfig   proxy.Config
+	proxyEnabled  bool
+	proxyProtocol string
+	proxyHost     string
+	proxyPort     string
+	proxyAuth     bool
+	proxyUsername string
+	proxyPassword string
+	proxyNoProxy  string
+	proxyTesting  bool
+	proxyNotice   string
+	proxyErr      string
+	looking       bool
+	browsing      bool
+	reading       bool
+	patching      bool
+	pinned        string
+	install       *game.Install
+	lookErr       string
+	mods          []addons.Mod
+	modsErr       string
 	// profiles are the named profiles beside the default one, and
 	// profileFolder is the one in use, empty for the default profile.
 	// profilePresent is which folders the last scan found on disk, so a
@@ -326,6 +342,10 @@ func newApp() *app {
 	a.store = newStore(a)
 	a.skins = newSkinsPage(a)
 	a.transfers = newTransferManager(a)
+	// The proxy editor starts out with the values a first run shows. start
+	// replaces them with what the settings file holds.
+	a.proxyProtocol = proxy.HTTP
+	a.proxyPort = "8080"
 	return a
 }
 
@@ -926,6 +946,7 @@ func (a *app) settingsPage(c *ui.Context) {
 			a.pathSection(c, s)
 			a.themeSection(c, s)
 			a.fileserverSection(c, s)
+			a.proxySection(c)
 			a.cacheSection(c, s)
 			a.skinsSection(c, s)
 			a.appUpdateSection(c)
@@ -1198,6 +1219,14 @@ func (a *app) start(cfg config.Config, cfgErr error) {
 	if a.fileserverLatency == nil {
 		a.fileserverLatency = map[string]int64{}
 	}
+	// The proxy is in effect before the first request this run makes. A
+	// setting that cannot be used is kept as it is and shown on the settings
+	// page; the environment's proxy is used until it is fixed.
+	a.proxyConfig = cfg.Proxy.Normalized()
+	a.resetProxyDraft()
+	if err := a.useProxy(a.proxyConfig); err != nil {
+		a.proxyErr = "代理没有生效：" + err.Error()
+	}
 	// The named profiles are read before the lookup starts, so that the first
 	// frame already names the profile in use.
 	if path := config.ProfilesPath(a.configPath); path != "" {
@@ -1427,6 +1456,7 @@ func (a *app) saveSettingsFor(pinned, folder string) error {
 		VanillaSeen:             a.vanillaSeen,
 		AllowMultipleSkins:      a.allowMultipleSkins,
 		SkipSkinConflictWarning: a.skipSkinConflictWarning,
+		Proxy:                   a.proxyConfig,
 	}
 	a.mu.Unlock()
 	return cfg.Save(a.configPath)

@@ -29,6 +29,7 @@ import (
 	"golang.org/x/time/rate"
 
 	"github.com/BabyLy233/mylock/internal/about"
+	"github.com/BabyLy233/mylock/internal/proxy"
 )
 
 // Game is Deadlock's id on GameBanana. Every request here filters by it: the
@@ -82,7 +83,10 @@ type Client struct {
 	// test points both at the same server.
 	LegacyBase string
 	http       *http.Client
-	limit      *rate.Limiter
+	// proxy is the proxy setting the transport reads on every request, so that
+	// saving one takes effect without rebuilding the client.
+	proxy *proxy.Source
+	limit *rate.Limiter
 
 	// sleep pauses before a retry. Tests replace it so that a backoff does not
 	// make them slow.
@@ -98,12 +102,22 @@ type Client struct {
 
 // New returns a client reading the live catalogue.
 func New() *Client {
+	p := &proxy.Source{}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.Proxy = p.Proxy
 	return &Client{
 		Base:       api,
 		LegacyBase: legacyAPI,
-		http:       &http.Client{Timeout: 30 * time.Second},
+		http:       &http.Client{Timeout: 30 * time.Second, Transport: transport},
+		proxy:      p,
 		limit:      rate.NewLimiter(perSecond, burst),
 	}
+}
+
+// SetProxy makes the client use cfg for the requests it makes from now on. A
+// setting that cannot be used is refused and leaves the previous one in place.
+func (c *Client) SetProxy(cfg proxy.Config) error {
+	return c.proxy.Set(cfg)
 }
 
 // ErrNotFound is a submission or a file that is not there: taken down, made

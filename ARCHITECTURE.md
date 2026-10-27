@@ -21,20 +21,23 @@ internal/
   gb/                    GameBanana API 客户端
   heroes/                角色名归一化、别名表与分类 / 名字解析
   imagecache/            图片的磁盘缓存
+  proxy/                 代理设置与每个请求走的代理函数
   vdf/                   Valve KeyValues 解析
   about/                 版本号与 User-Agent
 ```
 
-依赖只有一个方向：`app` 依赖所有领域包，领域包之间只有三处依赖，其余互不
-相识。
+依赖只有一个方向：`app` 依赖所有领域包，领域包之间只有下面这些依赖，其余
+互不相识。
 
 ```text
-main ──> app ──> addons, archive, config, download, game, gb, imagecache
+main ──> app ──> addons, archive, config, download, game, gb, imagecache, proxy
 
 领域包之间：
-download ──> about
-gb       ──> about
+download ──> about, proxy
+gb       ──> about, proxy
 game     ──> vdf
+config   ──> proxy
+proxy    ──> about
 ```
 
 | 包 | 职责 | 不做什么 |
@@ -48,6 +51,7 @@ game     ──> vdf
 | `gb` | 目录、搜索、分类、详情、批量更新查询、文件服务器列表 | 不下载文件正文，不画界面 |
 | `heroes` | 把名字、别名和 Skins 分类归一成角色 | 不读 API，不决定有哪些角色 |
 | `imagecache` | 图片字节的磁盘 LRU | 不解码图片 |
+| `proxy` | 代理设置的校验、`NoProxy` 匹配和每个请求的代理函数 | 不发起业务请求 |
 | `vdf` | KeyValues 文本解析 | 不解释 Steam 的语义 |
 | `about` | 版本、提交号、UA | — |
 
@@ -118,7 +122,7 @@ Mygo 的界面在主线程上构建，`app.view` 会在每次需要新帧时、�
 | `/mods` | 模组管理 | 模组列表、开关、按文件选择、角色指定、配置档、删除确认、更新面板 |
 | `/store` | 模组商店 | 目录、搜索、分类、详情、分享链接、文件选择、这个模组的下载进度、皮肤冲突确认 |
 | `/skins` | 角色皮肤 | 角色列表、搜索、选中角色、皮肤网格、删除确认 |
-| `/settings` | 设置 | 游戏目录、检测、主题、皮肤互斥、图片缓存、应用更新、版本信息 |
+| `/settings` | 设置 | 游戏目录、检测、主题、下载路由、网络代理、图片缓存、应用更新、版本信息 |
 
 商店页内部还有一层状态：条目种类（模组 / 音效 / 制作中）、排序、分类与英雄
 筛选、页码、搜索词、隐藏 NSFW、详情面板、截图查看器。它们都在 `store` 结构
@@ -193,6 +197,23 @@ ProfilePage；列表里没有它也能打开详情。详情面板因此还可能
   API 的 `_sFile`。挑不到、列表读失败、或者服务器已不在列表里时，回到 API
   给的地址，安装不会因此失败。
 - 安装和更新两条下载路径都经过它；偏好和延迟记在 `config.json`。
+
+### 网络代理
+
+设置页的「网络代理」是全局的：商店请求（`gb`）、图片（`app.images`）和模组
+下载（`download`）都用同一个设置，因为能连上 GameBanana 的代理才让这三者都
+能用。
+
+- 每个客户端持有一个 `proxy.Source`，它把当前代理函数存在原子指针里；
+  `http.Transport.Proxy` 指向 `Source.Proxy`，所以保存设置后下一个请求就生效，
+  不必重建客户端。正在进行的请求保持原来的连接。
+- `proxy.Config` 支持 HTTP、HTTPS、SOCKS5，可选用户名 / 密码和 `NoProxy`
+  列表。`NoProxy` 用 `golang.org/x/net/http/httpproxy` 的匹配规则，域名、IP
+  和 CIDR 都认。
+- 关闭代理时用 `http.ProxyFromEnvironment`，跟随系统的环境变量；配置无效时
+  保留上一个能用的设置，并在设置页说明原因。
+- 「测试连接」用草稿里的设置在后台请求 GameBanana，不保存设置；应用自带的
+  更新器使用 Mygo 自己的网络栈，不经过这里。
 
 ### 启用、禁用与 shard
 
@@ -305,7 +326,7 @@ ProfilePage；列表里没有它也能打开详情。详情面板因此还可能
 
 | 文件 | 位置 | 内容 |
 | --- | --- | --- |
-| `config.json` | 平台配置目录下的 `mylock/` | 游戏目录、当前配置档、主题、原版启动状态 |
+| `config.json` | 平台配置目录下的 `mylock/` | 游戏目录、当前配置档、主题、下载路由、网络代理、原版启动状态 |
 | `profiles.json` | 同上 | 具名配置档的列表 |
 | `library.json` | 同上 | 按模组 ID 记录的商店信息、安装时间、安装文件与手动角色覆盖 |
 | `images/` | 平台缓存目录下的 `mylock/` | 图片字节，可随时删除 |
@@ -352,6 +373,7 @@ ProfilePage；列表里没有它也能打开详情。详情面板因此还可能
 - **下载地址受限**：只从 `gamebanana.com` 和 `deadlockmods.app`（含跳转）
   取文件；跳转逐跳检查。文件服务器的子域名来自 API，但只有字母、数字和 `-`
   的记录会被采用，再固定拼上 `.gamebanana.com`，所以列表本身指不到别处。
+  用户配置的代理只改变连接怎么走，不改变允许的地址。
 - **完整性校验**：API 给了大小和 MD5 就校验；不符会删除半成品，续传也救不
   回来。
 - **可回滚的文件操作**：安装和更新先记录已写文件，任何一步失败都撤掉；清单

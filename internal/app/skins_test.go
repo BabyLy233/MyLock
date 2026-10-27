@@ -478,6 +478,7 @@ func TestSkinsSettingsAreRemembered(t *testing.T) {
 	a.router.Push("/settings")
 	tt := ui.NewTester(a.view, 1280, 800)
 
+	scrollSettingsTo(t, tt, "允许同一角色同时启用多套皮肤")
 	if err := tt.Click("允许同一角色同时启用多套皮肤"); err != nil {
 		t.Fatal(err)
 	}
@@ -490,6 +491,7 @@ func TestSkinsSettingsAreRemembered(t *testing.T) {
 		t.Error("the settings file does not allow several skins")
 	}
 
+	scrollSettingsTo(t, tt, "安装时提醒角色冲突")
 	if err := tt.Click("安装时提醒角色冲突"); err != nil {
 		t.Fatal(err)
 	}

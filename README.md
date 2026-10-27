@@ -118,6 +118,7 @@ curl -fsSL https://github.com/BabyLy233/MyLock/releases/latest/download/install.
 - 图片按显示尺寸解码，原始字节缓存在磁盘；128 MiB 上限，LRU 淘汰，设置页可查看和清除
 - 设置页可切换浅色 / 深色 / 跟随系统
 - 下载可走 GameBanana 的文件服务器：设置页可选默认、自动或指定一台，支持刷新列表和测速
+- 网络代理：设置页可填 HTTP、HTTPS 或 SOCKS5 代理，支持认证与不走代理的地址，并可测试连接；商店请求、图片和模组下载都走它
 - 只写游戏的 `addons` 目录和 `gameinfo.gi`，不改游戏本体
 
 ## 构建

@@ -20,6 +20,7 @@ import (
 
 	"github.com/BabyLy233/mylock/internal/about"
 	"github.com/BabyLy233/mylock/internal/imagecache"
+	"github.com/BabyLy233/mylock/internal/proxy"
 )
 
 // box is the room a picture is wanted for, in DIPs: it is scaled to cover it.
@@ -51,6 +52,9 @@ type picture struct {
 // they come.
 type images struct {
 	client *http.Client
+	// proxy is the proxy setting the client's transport reads on every
+	// request, so that saving one takes effect without rebuilding the client.
+	proxy *proxy.Source
 	// disk keeps the bytes of the pictures between runs, so that one seen in
 	// one session is not fetched again in the next. It is nil when the platform
 	// has no cache directory, in which case pictures are only kept in memory.
@@ -111,12 +115,22 @@ const (
 var imageHosts = []string{"gamebanana.com", "deadlockmods.app"}
 
 func newImages() *images {
+	p := &proxy.Source{}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.Proxy = p.Proxy
 	return &images{
-		client:   &http.Client{Timeout: 30 * time.Second},
+		client:   &http.Client{Timeout: 30 * time.Second, Transport: transport},
+		proxy:    p,
 		fetching: make(chan struct{}, imageFetches),
 		loaded:   map[picture]*ui.Bitmap{},
 		asked:    map[picture]bool{},
 	}
+}
+
+// setProxy makes the client use cfg for the pictures it fetches from now on. A
+// setting that cannot be used is refused and leaves the previous one in place.
+func (im *images) setProxy(cfg proxy.Config) error {
+	return im.proxy.Set(cfg)
 }
 
 // get returns the picture at address, scaled to cover the room at, and starts

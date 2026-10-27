@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/BabyLy233/mylock/internal/proxy"
 )
 
 const (
@@ -55,6 +57,10 @@ type Config struct {
 	// installed for a hero that is already wearing one. Off means the question
 	// is asked, which is what a first run gets.
 	SkipSkinConflictWarning bool `json:"skipSkinConflictWarning,omitempty"`
+	// Proxy is the proxy server every request goes through. A zero value
+	// follows the environment's proxy settings, which is what a first run
+	// gets.
+	Proxy proxy.Config `json:"proxyConfig,omitzero"`
 }
 
 // Path returns the file the app keeps its settings in: ~/.config on Linux,

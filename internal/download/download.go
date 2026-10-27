@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/BabyLy233/mylock/internal/about"
+	"github.com/BabyLy233/mylock/internal/proxy"
 )
 
 const (
@@ -87,6 +88,9 @@ type Progress struct {
 // goroutines.
 type Client struct {
 	http *http.Client
+	// proxy is the proxy setting the transport reads on every request, so that
+	// saving one takes effect without rebuilding the client.
+	proxy *proxy.Source
 	// domains are the only addresses a mod may be fetched from. A redirect
 	// that leaves them is not followed, so a wrong or tampered-with address
 	// cannot point the app at the rest of the network.
@@ -95,10 +99,11 @@ type Client struct {
 
 // New returns a client that fetches from GameBanana and its file servers.
 func New() *Client {
+	p := &proxy.Source{}
 	return &Client{
 		http: &http.Client{
 			Transport: &http.Transport{
-				Proxy: http.ProxyFromEnvironment,
+				Proxy: p.Proxy,
 				// Nothing is timed as a whole: an archive takes as long as it
 				// takes, and the watchdog in Get is what notices one that has
 				// stopped.
@@ -110,8 +115,15 @@ func New() *Client {
 				return http.ErrUseLastResponse
 			},
 		},
+		proxy:   p,
 		domains: []string{"gamebanana.com", "deadlockmods.app"},
 	}
+}
+
+// SetProxy makes the client use cfg for the requests it makes from now on. A
+// setting that cannot be used is refused and leaves the previous one in place.
+func (c *Client) SetProxy(cfg proxy.Config) error {
+	return c.proxy.Set(cfg)
 }
 
 // Probe asks address for its headers, to say how long a file server takes to

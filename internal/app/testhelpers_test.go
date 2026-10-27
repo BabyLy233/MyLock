@@ -64,6 +64,21 @@ func settingsPath(t *testing.T, a *app) string {
 	return a.configPath
 }
 
+// scrollSettingsTo scrolls the settings page until text is inside the window.
+// The page scrolls, and a test clicks as a user would, so a section below the
+// fold has to be brought up first.
+func scrollSettingsTo(t *testing.T, tt *ui.Tester, text string) {
+	t.Helper()
+	for range 10 {
+		tt.Frame()
+		if r, ok := tt.Find(text); ok && r.Y >= 0 && r.Y+r.H <= 800 {
+			return
+		}
+		tt.Scroll(640, 400, 0, 200)
+	}
+	t.Fatalf("%q could not be scrolled into view", text)
+}
+
 // startApp starts the app the way main does: the settings are read, the
 // appearance they name is recorded, and the game is looked for. Telling Mygo
 // about the appearance is left out, as it is a call that needs the app to be
@@ -825,6 +840,7 @@ func TestClearingThePictureCacheEmptiesIt(t *testing.T) {
 	a.router.Push("/settings")
 	tt := ui.NewTester(a.view, 1280, 800)
 
+	scrollSettingsTo(t, tt, "清除缓存")
 	if err := tt.Click("清除缓存"); err != nil {
 		t.Fatal(err)
 	}
