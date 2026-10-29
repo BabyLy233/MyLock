@@ -1,7 +1,7 @@
 {
   "name": "MyLock",
   "identifier": "dev.babyly233.mylock",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "out": "build",
   "updates": {
     "publicKey": "dNVy26D9tIh3KhxmniDx6yPdv3hPy/E5PLQkYtxG7b4=",
