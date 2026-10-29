@@ -78,9 +78,10 @@ type store struct {
 	hiddenNSFW int
 	// chosen is the item the detail panel is showing, -1 for none.
 	chosen int
-	// shared is the submission a pasted share link opened. It is shown instead
-	// of one of items, because the listing may not hold it: the link names a
-	// mod of its own, and the listing behind it is read for the link's kind.
+	// shared is the submission a share link, or the skins page, opened. It is
+	// shown instead of one of items, because the listing may not hold it: the
+	// link names a mod of its own, and the listing behind it is read for the
+	// link's kind.
 	// Only the main thread touches it.
 	shared gb.Submission
 	// copiedShare is the slug of the mod whose share link was just copied, so
@@ -395,17 +396,18 @@ func (s *store) openHero(hero string) {
 func (s *store) applySearch() {
 	s.pendingHeroSearch = false
 	if kind, id, ok := parseShare(s.query, kinds[s.kind]); ok {
-		s.openShared(kind, id)
+		s.openSubmission(kind, id)
 		return
 	}
 	s.search()
 }
 
-// openShared shows the mod one share link names, whether or not the listing
-// that is up holds it. The tab moves to the link's kind and the listing behind
-// the page is read again for that kind, so that 返回 leaves the user where the
-// mod lives rather than in the tab they pasted the link from.
-func (s *store) openShared(kind gb.Kind, id int) {
+// openSubmission shows the mod a share link, or the skins page, names, whether
+// or not the listing that is up holds it. The tab moves to the submission's
+// kind and the listing behind the page is read again for that kind, so that
+// 返回 leaves the user where the mod lives rather than in the tab they came
+// from.
+func (s *store) openSubmission(kind gb.Kind, id int) {
 	s.started = true
 	if index := slices.Index(kinds, kind); index >= 0 {
 		s.kind = index
@@ -489,7 +491,7 @@ func (s *store) setHideNSFW(hide bool) {
 	s.hideNSFW = hide
 	s.filterLocked()
 	// What was open was an item of the list that just changed. A page opened
-	// from a share link is not one of the list's, and stays as it is.
+	// from outside the listing is not one of the list's, and stays as it is.
 	if s.chosen >= 0 {
 		s.chosen = -1
 		s.profile, s.profileErr, s.writeUp = gb.Profile{}, "", ""

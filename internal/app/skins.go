@@ -265,8 +265,10 @@ func (s *skinsPage) skinCard(c *ui.Context, row heroRow, entry skinEntry, readin
 				Label("删除 " + entry.mod.ID).
 				Disabled(disabled).
 				OnClick(func() { s.deleteAsk = entry.mod.ID })
-			if entry.info.Page != "" {
-				ui.Button(c, "原帖").OnClick(func() { c.OpenURL(entry.info.Page) })
+			if kind, id, ok := submissionOf(entry); ok {
+				ui.Button(c, "原帖").
+					Label("在商店中打开 " + entry.name + " 的原帖").
+					OnClick(func() { s.openInStore(kind, id) })
 			}
 		})
 	})
@@ -299,6 +301,25 @@ func (s *skinsPage) deleteDialog(c *ui.Context) {
 func (s *skinsPage) browse(hero string) {
 	s.app.store.openHero(hero)
 	s.app.router.Push("/store")
+}
+
+// openInStore shows a skin's own page in the store: what its author wrote, its
+// pictures, and the files it was published with. The store shows all of it
+// without leaving the app, which opening the site in a browser does not.
+func (s *skinsPage) openInStore(kind gb.Kind, id int) {
+	s.app.store.openSubmission(kind, id)
+	s.app.router.Push("/store")
+}
+
+// submissionOf is which catalogue submission a skin is, for opening its page in
+// the store. The id the manifest keys the mod by names it; a mod whose id is
+// not one the catalogue understands may still have a page the library knows,
+// which is the other way to find it.
+func submissionOf(entry skinEntry) (gb.Kind, int, bool) {
+	if kind, id, ok := parseShare(entry.mod.ID, gb.Mod); ok {
+		return kind, id, true
+	}
+	return parseShare(entry.info.Page, gb.Mod)
 }
 
 // skinEntries turns the profile's mods into the skins the page groups. A mod

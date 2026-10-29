@@ -130,10 +130,11 @@ Mygo 的界面在主线程上构建，`app.view` 会在每次需要新帧时、�
 
 详情页的分享按钮把条目的 GameBanana 页面地址写进剪贴板。这个地址（以及
 `snd-` / `wip-` 前缀的 slug、单独的数字）粘贴进搜索框时，`parseShare` 认出它，
-`openShared` 切到对应种类的标签、在后台重读该种类的列表，并直接请求这个条目的
+`openSubmission` 切到对应种类的标签、在后台重读该种类的列表，并直接请求这个条目的
 ProfilePage；列表里没有它也能打开详情。详情面板因此还可能显示一个不在
 `items` 里的条目，`store.shared` 保存它，`shown` 用 `opened` / `mod` 把两种情况
-统一交给 `detail`。
+统一交给 `detail`。角色皮肤页皮肤卡片上的「原帖」也走这条路：它用同样的
+`parseShare` 认出模组，切到 `/store` 打开详情，而不是把用户送去浏览器。
 
 ## 核心流程
 

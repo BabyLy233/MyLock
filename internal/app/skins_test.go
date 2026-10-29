@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -583,5 +584,58 @@ func TestHeroNamesFallBackToTheRoster(t *testing.T) {
 	}
 	if len(state.names) != len(heroes.Names) {
 		t.Errorf("the fallback holds %d names, want the roster's %d", len(state.names), len(heroes.Names))
+	}
+}
+
+// A skin's 原帖 opens the mod's page in the store, where the author's write-up
+// and files are, rather than sending the user to a browser.
+func TestASkinsOriginalOpensInTheStore(t *testing.T) {
+	a := newApp()
+	install, profile := fakeGame(t)
+	addMod(t, profile, "599927", "yamato.vpk")
+	a.library = map[string]config.ModInfo{
+		"599927": {Name: "Yamato Cyber", Category: "Skins", Subcategory: "Yamato"},
+	}
+	withHeroes(a, "Yamato")
+	fakeCatalogue(t, a, func(path string, query url.Values) (int, string) {
+		if strings.HasSuffix(path, "/ProfilePage") {
+			return http.StatusOK, `{
+				"_idRow": 599927,
+				"_sName": "Yamato Cyber",
+				"_sText": "A new look for Yamato",
+				"_sProfileUrl": "https://gamebanana.com/mods/599927",
+				"_aSuperCategory": {"_sName": "Skins"},
+				"_aCategory": {"_sName": "Yamato"},
+				"_aFiles": [
+					{"_idRow": 7, "_sFile": "yamato_cyber.zip", "_nFilesize": 1024, "_sDownloadUrl": "https://gamebanana.com/dl/7"}
+				]
+			}`
+		}
+		return http.StatusOK, `{"_aMetadata": {"_nRecordCount": 0, "_nPerpage": 50}, "_aRecords": []}`
+	})
+	a.router.Push("/skins")
+	tt := show(t, a, install, profile)
+
+	if err := tt.Click("原帖"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the skin's page to be read", func() bool {
+		state := a.store.shown()
+		return state.opened && !state.profileBusy && state.mod.ID == 599927
+	})
+	tt.Frame()
+
+	if got := a.router.Path(); got != "/store" {
+		t.Fatalf("the router is at %q after clicking 原帖, want /store", got)
+	}
+	if urls := tt.OpenedURLs(); len(urls) > 0 {
+		t.Errorf("原帖 opened %v in a browser", urls)
+	}
+	for _, want := range []string{
+		"Yamato Cyber", "A new look for Yamato", "yamato_cyber.zip", "返回",
+	} {
+		if !tt.HasText(want) {
+			t.Errorf("the skin's page does not show %q: %q", want, tt.Texts())
+		}
 	}
 }
