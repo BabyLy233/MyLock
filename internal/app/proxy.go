@@ -20,9 +20,16 @@ var (
 	proxyProtocolLabels = []string{"HTTP", "HTTPS", "SOCKS5"}
 )
 
+// defaultProxyHost is what the server field holds before anything was saved. A
+// proxy on this machine is the common case, so a first run shows its address
+// rather than an empty field; clearing it still means no host, and saving a
+// proxy that is on without one is refused.
+const defaultProxyHost = "127.0.0.1"
+
 // resetProxyDraft fills the settings page's editor from what was saved. A
 // protocol this build does not know is shown as HTTP rather than as no choice
-// at all; saving then replaces it.
+// at all; saving then replaces it. A host that was never saved is shown as the
+// local address, so that turning the proxy on needs only a port.
 func (a *app) resetProxyDraft() {
 	c := a.proxyConfig.Normalized()
 	a.proxyEnabled = c.Enabled
@@ -31,6 +38,9 @@ func (a *app) resetProxyDraft() {
 		a.proxyProtocol = proxy.HTTP
 	}
 	a.proxyHost = c.Host
+	if a.proxyHost == "" {
+		a.proxyHost = defaultProxyHost
+	}
 	a.proxyPort = strconv.Itoa(c.Port)
 	a.proxyAuth = c.AuthEnabled
 	a.proxyUsername = c.Username

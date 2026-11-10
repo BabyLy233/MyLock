@@ -79,6 +79,43 @@ func TestStartUsesTheSavedProxy(t *testing.T) {
 	}
 }
 
+// A proxy on this machine is the common case, so a first run shows the local
+// address rather than an empty server field.
+func TestTheProxyEditorStartsWithTheLocalAddress(t *testing.T) {
+	a := newApp()
+	settingsPath(t, a)
+	startApp(t, a)
+
+	if a.proxyHost != "127.0.0.1" {
+		t.Errorf("the server field holds %q, want 127.0.0.1", a.proxyHost)
+	}
+	if a.proxyPort != "8080" {
+		t.Errorf("the port field holds %q, want 8080", a.proxyPort)
+	}
+}
+
+// Turning the proxy on with what a first run shows is enough: the local
+// address and the default port are what get saved.
+func TestSavingAFreshProxyUsesTheLocalAddress(t *testing.T) {
+	a := newApp()
+	path := settingsPath(t, a)
+	startApp(t, a)
+
+	a.proxyEnabled = true
+	a.saveProxy()
+
+	if a.proxyErr != "" {
+		t.Fatalf("saving the default proxy failed: %s", a.proxyErr)
+	}
+	waitFor(t, "the default proxy to be saved", func() bool {
+		cfg, err := config.Load(path)
+		return err == nil &&
+			cfg.Proxy.Enabled &&
+			cfg.Proxy.Host == "127.0.0.1" &&
+			cfg.Proxy.Port == 8080
+	})
+}
+
 func TestSaveProxyCanTurnItOff(t *testing.T) {
 	a := newApp()
 	path := settingsPath(t, a)

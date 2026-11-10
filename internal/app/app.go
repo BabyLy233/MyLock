@@ -345,6 +345,7 @@ func newApp() *app {
 	// The proxy editor starts out with the values a first run shows. start
 	// replaces them with what the settings file holds.
 	a.proxyProtocol = proxy.HTTP
+	a.proxyHost = defaultProxyHost
 	a.proxyPort = "8080"
 	return a
 }
