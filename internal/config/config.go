@@ -35,6 +35,9 @@ type Config struct {
 	// Theme is the appearance to run in: "system", "light" or "dark". Empty is
 	// the system's, which is what a first run gets.
 	Theme string `json:"theme,omitempty"`
+	// ModsLayout is how the mods page shows the installed mods: "list" or
+	// "grid". Empty is the list, which is what a first run gets.
+	ModsLayout string `json:"modsLayout,omitempty"`
 	// FileserverPreference is the GameBanana download route chosen in the
 	// settings: "default", "auto", or a file server's id. Empty is the
 	// default, which is also what a first run gets.

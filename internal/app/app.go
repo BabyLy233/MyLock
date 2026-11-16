@@ -53,6 +53,9 @@ type app struct {
 	// list keeps the mod list's place and its keyboard focus across the
 	// rebuilds that a switch being flipped causes.
 	list ui.ListState
+	// modsGrid does the same for the grid layout, which has a place of its
+	// own, so that switching between the two does not lose either.
+	modsGrid ui.GridState
 	// deleteAsk is the mod the confirmation dialog is open for, empty when it
 	// is closed. Only the main thread touches it.
 	deleteAsk string
@@ -132,6 +135,9 @@ type app struct {
 	// install are serialized by it as well.
 	profileWriteMu sync.Mutex
 	theme          mygo.ThemeSource
+	// modsLayout is how the mods page shows the installed mods: "list" or
+	// "grid". It is kept in config.json beside the appearance.
+	modsLayout string
 	// fileservers is the GameBanana download servers last read, with the ones
 	// that are up first. fileserversBusy and fileserversErr are the state of
 	// the read, and fileserversTried says one has been started, so that the
@@ -287,6 +293,9 @@ type state struct {
 	// theme is the appearance in effect, which the settings page shows as the
 	// chosen segment.
 	theme mygo.ThemeSource
+	// modsLayout is how the mods page shows the installed mods, "list" or
+	// "grid", which its segmented control shows as the chosen segment.
+	modsLayout string
 	// fileservers are the download servers last read, the preference downloads
 	// use, the last latency measured to each server, and whether a read or a
 	// measurement is running.
@@ -309,6 +318,28 @@ var (
 	themeSources = []mygo.ThemeSource{mygo.ThemeSystem, mygo.ThemeLight, mygo.ThemeDark}
 	themeLabels  = []string{"跟随系统", "浅色", "深色"}
 )
+
+// The ways the mods page can show the installed mods. The list gives each mod
+// a row of text and the actions beside it; the grid shows their pictures, which
+// puts more of them in view at once.
+const (
+	modsLayoutList = "list"
+	modsLayoutGrid = "grid"
+)
+
+// modsLayouts are those ways in the order the page's segmented control offers
+// them, and modsLayoutLabels names them.
+var (
+	modsLayouts      = []string{modsLayoutList, modsLayoutGrid}
+	modsLayoutLabels = []string{"列表", "网格"}
+)
+
+// modsLayoutIndex reads a saved layout into the segment chosen. A value the
+// page does not know -- a file edited by hand, or one left by a version that
+// spelled it differently -- shows the list, which is what a first run gets.
+func modsLayoutIndex(saved string) int {
+	return max(slices.Index(modsLayouts, saved), 0)
+}
 
 // themeSource reads the appearance to run in out of what was saved. A value
 // that is not one of them -- a file edited by hand, or one left by a version
@@ -477,6 +508,13 @@ func (a *app) modsPage(c *ui.Context) {
 			ui.Spacer(c)
 			ui.Text(c, "配置档："+profileDisplayName(profiles.folder, profiles.profiles)).
 				FontSize(12).TextColor(t.TextMuted)
+			// A local copy, which the control writes the chosen index into
+			// before its notice runs: what was chosen is what the control left
+			// here, not what the app held when the frame was built.
+			layout := modsLayoutIndex(s.modsLayout)
+			ui.Segmented(c, &layout, modsLayoutLabels...).
+				Label("模组显示方式").
+				OnChange(func() { a.setModsLayout(modsLayouts[layout]) })
 			ui.Button(c, "检查更新").
 				Label("检查模组更新").
 				Disabled(s.install == nil || s.looking || len(mods.list) == 0 ||
@@ -526,6 +564,23 @@ func (a *app) modsPage(c *ui.Context) {
 				"游戏没有在加载模组目录，这 %d 个已启用的模组不会生效。到设置里点一下「应用模组路径」。",
 				enabled)).FontSize(12).TextColor(t.Danger)
 		}
+		// Both layouts show the same mods and leave the same actions on each
+		// one. The list puts a row's worth of text beside the actions; the
+		// grid trades that width for pictures, which is what shows more mods
+		// at once.
+		if s.modsLayout == modsLayoutGrid {
+			// The grid is keyed by mod id as well, so a mod changing place
+			// keeps its cell instead of becoming whatever moved into it.
+			a.modsGrid.Key = func(i int) any { return mods.list[i].ID }
+			ui.GridView(c, &a.modsGrid, len(mods.list), modCardMinWidth, modCardHeight,
+				func(i int) {
+					mod := mods.list[i]
+					info := infos[mod.ID]
+					work := a.modWorkFor(mod, info, ups.snapshots, active)
+					a.modCard(c, mod, info, work, mods.reading || s.gameRunning || work.busy)
+				}).Grow(1)
+			return
+		}
 		// The list is keyed by mod id rather than by row number, so that a mod
 		// changing place as it is enabled takes its focus and its place in the
 		// scroll with it instead of handing them to whatever moved up.
@@ -536,24 +591,47 @@ func (a *app) modsPage(c *ui.Context) {
 			Rows(func(r ui.ListRow) {
 				mod := mods.list[r.Index]
 				info := infos[mod.ID]
-				update, hasUpdate := updateFor(ups.snapshots[mod.ID], info, mod)
-				task, busy := active[mod.ID]
-				// A store install of a mod that is already installed is on
-				// this list too; it is busy, but it is not the update line's.
-				updating := busy && task.Kind == transferUpdate
-				// A failed update is the one thing the sidebar cannot show any
-				// more, since it is no longer downloading: it stays on the mod's
-				// own row until the transfer is cleared from the window.
-				updateErr := ""
-				if latest, ok := a.transfers.latestFor(mod.ID); ok &&
-					latest.Kind == transferUpdate && latest.Status == transferFailed {
-					updateErr = latest.Err
-				}
-				a.modRow(c, r, mod, info, update, hasUpdate,
-					updating, task.Status == transferPaused, updateErr,
-					mods.reading || s.gameRunning || busy)
+				work := a.modWorkFor(mod, info, ups.snapshots, active)
+				a.modRow(c, r, mod, info, work,
+					mods.reading || s.gameRunning || work.busy)
 			})
 	})
+}
+
+// modWork is what one installed mod's card says about the work around it: the
+// update the last check found, the transfer working on it, and why the last
+// update failed. Both layouts read it the same way, so they cannot disagree.
+type modWork struct {
+	update    availableUpdate
+	hasUpdate bool
+	// busy reports that a transfer owns this mod, which is why its actions are
+	// held back even when the switch would otherwise be usable.
+	busy      bool
+	updating  bool
+	paused    bool
+	updateErr string
+}
+
+// modWorkFor reads a mod's update and transfer state out of the snapshots the
+// page already took.
+func (a *app) modWorkFor(mod addons.Mod, info config.ModInfo,
+	snapshots map[string]gb.UpdateSnapshot, active map[string]transferView) modWork {
+	var work modWork
+	work.update, work.hasUpdate = updateFor(snapshots[mod.ID], info, mod)
+	task, busy := active[mod.ID]
+	work.busy = busy
+	// A store install of a mod that is already installed is on this page too;
+	// it is busy, but it is not the update line's.
+	work.updating = busy && task.Kind == transferUpdate
+	work.paused = task.Status == transferPaused
+	// A failed update is the one thing the sidebar cannot show any more,
+	// since it is no longer downloading: it stays on the mod's own card until
+	// the transfer is cleared from the window.
+	if latest, ok := a.transfers.latestFor(mod.ID); ok &&
+		latest.Kind == transferUpdate && latest.Status == transferFailed {
+		work.updateErr = latest.Err
+	}
+	return work
 }
 
 // modPicture is the room an installed mod's thumbnail is shown in, which is
@@ -566,7 +644,7 @@ var modPicture = box{W: 160, H: 90}
 // id and no picture. A mod the last check found an update for offers the way to
 // install it here.
 func (a *app) modRow(c *ui.Context, r ui.ListRow, mod addons.Mod, info config.ModInfo,
-	update availableUpdate, hasUpdate, updating, paused bool, updateErr string, reading bool) {
+	work modWork, reading bool) {
 	t := c.Theme()
 	// A local copy, because the switch binds to a value the view rebuilds every
 	// pass. OnChange runs once the bound switch has written the new state into
@@ -601,15 +679,16 @@ func (a *app) modRow(c *ui.Context, r ui.ListRow, mod addons.Mod, info config.Mo
 				MaxLines(1).Ellipsis("…")
 			ui.Text(c, "角色："+heroLabel(heroFor(mod.ID, info))).FontSize(12).TextColor(t.TextMuted)
 			ui.Text(c, modSummary(mod)).FontSize(12).TextColor(t.TextMuted)
-			if hasUpdate {
+			if work.hasUpdate {
 				color := t.Accent
-				if updating {
+				if work.updating {
 					color = t.TextMuted
 				}
-				ui.Text(c, updateLine(update, updating, paused)).FontSize(12).TextColor(color)
+				ui.Text(c, updateLine(work.update, work.updating, work.paused)).
+					FontSize(12).TextColor(color)
 			}
-			if updateErr != "" {
-				ui.Text(c, "更新失败："+updateErr).FontSize(12).TextColor(t.Danger).
+			if work.updateErr != "" {
+				ui.Text(c, "更新失败："+work.updateErr).FontSize(12).TextColor(t.Danger).
 					MaxLines(2).Ellipsis("…")
 			}
 			if len(mod.Missing) > 0 {
@@ -618,10 +697,10 @@ func (a *app) modRow(c *ui.Context, r ui.ListRow, mod addons.Mod, info config.Mo
 			}
 		})
 		ui.Row(c).Shrink(0).Gap(10).AlignItems(ui.Center).Children(func() {
-			if hasUpdate {
+			if work.hasUpdate {
 				ui.Button(c, "更新").
 					Label("更新 " + mod.ID).
-					Disabled(reading || updating).
+					Disabled(reading || work.updating).
 					OnClick(func() { a.updateMod(mod.ID) })
 			}
 			// A mod can ship several files and the game need not load them
@@ -635,6 +714,7 @@ func (a *app) modRow(c *ui.Context, r ui.ListRow, mod addons.Mod, info config.Mo
 				Label("指定 " + mod.ID + " 的角色").
 				Disabled(reading).
 				OnClick(func() { a.openHeroDialog(mod.ID) })
+			a.storeButton(c, mod, info, name)
 			ui.Switch(c, &enabled).
 				// The switch shows no text of its own, so it is named for
 				// assistive technology rather than left as an unnamed
@@ -651,6 +731,110 @@ func (a *app) modRow(c *ui.Context, r ui.ListRow, mod addons.Mod, info config.Mo
 				Label("删除 " + mod.ID).
 				Disabled(reading).
 				OnClick(func() { a.deleteAsk = mod.ID })
+		})
+	})
+}
+
+// storeButton opens an installed mod's own page in the store, where its
+// write-up, pictures and files are. A mod whose manifest id is not one the
+// catalogue understands may still have a page the library knows; a mod with
+// neither has no page to open.
+func (a *app) storeButton(c *ui.Context, mod addons.Mod, info config.ModInfo, name string) {
+	kind, id, ok := submissionOf(mod, info)
+	if !ok {
+		return
+	}
+	ui.Button(c, "商店").
+		Label("在商店中查看 " + name).
+		Tooltip("在商店中查看 " + name).
+		OnClick(func() { a.openInStore(kind, id) })
+}
+
+// The grid layout's cells: the narrowest a card may be, and the room each row
+// takes. Cards share the width the window leaves, so a wider window fits more
+// of them rather than making each one wider; the height leaves room for the
+// picture, five lines of text and the actions under them.
+const (
+	modCardMinWidth = 240
+	modCardHeight   = 300
+)
+
+// modCardPicture is the room a grid card's picture is shown in, which is also
+// what it is fetched for.
+var modCardPicture = box{W: 240, H: 130}
+
+// modCard is one mod in the grid: its picture, the same summary the list shows,
+// and the actions that fit under it. The actions beyond the switch, the update
+// and the way into the store are in 更多, so that a card stays a summary at the
+// width the grid gives it.
+func (a *app) modCard(c *ui.Context, mod addons.Mod, info config.ModInfo,
+	work modWork, reading bool) {
+	t := c.Theme()
+	enabled := mod.Enabled
+	name := info.Name
+	if name == "" {
+		name = mod.ID
+	}
+
+	ui.Column(c).Fill().Padding(10).Gap(4).
+		Background(t.Surface).Radius(8).Children(func() {
+		ui.Row(c).WidthPercent(100).Height(float32(modCardPicture.H)).
+			Background(t.Background).Radius(6).Clip().
+			Justify(ui.Center).AlignItems(ui.Center).Children(func() {
+			if bitmap := a.thumbnails.get(info.Thumb, modCardPicture, a.invalidate); bitmap != nil {
+				ui.Image(c, bitmap).Fit(ui.Cover).Fill()
+			} else if info.Thumb == "" {
+				ui.Text(c, "无预览图").FontSize(11).TextColor(t.TextMuted)
+			}
+		})
+		ui.Text(c, name).Bold().FontSize(15).MaxLines(1).Ellipsis("…")
+		ui.Text(c, modMeta(mod.ID, info)).FontSize(12).TextColor(t.TextMuted).
+			MaxLines(1).Ellipsis("…")
+		ui.Text(c, "角色："+heroLabel(heroFor(mod.ID, info))).FontSize(12).
+			TextColor(t.TextMuted).MaxLines(1).Ellipsis("…")
+		ui.Text(c, modSummary(mod)).FontSize(12).TextColor(t.TextMuted).
+			MaxLines(1).Ellipsis("…")
+		// One line of state at most: the card has a fixed height, and an
+		// update that failed is the thing the user has to act on.
+		switch {
+		case work.updateErr != "":
+			ui.Text(c, "更新失败："+work.updateErr).FontSize(12).TextColor(t.Danger).
+				MaxLines(1).Ellipsis("…")
+		case work.hasUpdate:
+			color := t.Accent
+			if work.updating {
+				color = t.TextMuted
+			}
+			ui.Text(c, updateLine(work.update, work.updating, work.paused)).
+				FontSize(12).TextColor(color).MaxLines(1).Ellipsis("…")
+		case len(mod.Missing) > 0:
+			ui.Text(c, fmt.Sprintf("缺少 %d 个文件，游戏可能读不到它", len(mod.Missing))).
+				FontSize(12).TextColor(t.Danger).MaxLines(1).Ellipsis("…")
+		}
+		ui.Spacer(c)
+		ui.Row(c).FillWidth().Gap(4).AlignItems(ui.Center).Children(func() {
+			ui.Switch(c, &enabled).
+				Label("启用 " + mod.ID).
+				Disabled(reading).
+				OnChange(func() { a.setEnabled(mod.ID, enabled) })
+			if work.hasUpdate {
+				ui.Button(c, "更新").
+					Label("更新 " + mod.ID).
+					Disabled(reading || work.updating).
+					OnClick(func() { a.updateMod(mod.ID) })
+			}
+			a.storeButton(c, mod, info, name)
+			ui.PopoverMenuButton(c, "更多", func(m *ui.Menu) {
+				if m.Item("文件选择").Chosen() {
+					a.openFiles(mod.ID)
+				}
+				if m.Item("角色分类").Chosen() {
+					a.openHeroDialog(mod.ID)
+				}
+				if m.Item("删除").Danger().Chosen() {
+					a.deleteAsk = mod.ID
+				}
+			}).Label("更多操作 " + name).Disabled(reading)
 		})
 	})
 }
@@ -1194,6 +1378,7 @@ func (a *app) state() state {
 		cacheBusy:               a.cacheBusy,
 		cacheErr:                a.cacheErr,
 		theme:                   a.theme,
+		modsLayout:              a.modsLayout,
 		fileservers:             slices.Clone(a.fileservers),
 		fileserversBusy:         a.fileserversBusy,
 		fileserversErr:          a.fileserversErr,
@@ -1215,6 +1400,7 @@ func (a *app) start(cfg config.Config, cfgErr error) {
 	a.profileFolder = cfg.ProfileFolder
 	a.allowMultipleSkins = cfg.AllowMultipleSkins
 	a.skipSkinConflictWarning = cfg.SkipSkinConflictWarning
+	a.modsLayout = cfg.ModsLayout
 	a.fileserverPreference = fileserverPreference(cfg.FileserverPreference)
 	a.fileserverLatency = cfg.FileserverLatencyMs
 	if a.fileserverLatency == nil {
@@ -1451,6 +1637,7 @@ func (a *app) saveSettingsFor(pinned, folder string) error {
 		GamePath:                pinned,
 		ProfileFolder:           folder,
 		Theme:                   string(a.theme),
+		ModsLayout:              a.modsLayout,
 		FileserverPreference:    a.fileserverPreference,
 		FileserverLatencyMs:     maps.Clone(a.fileserverLatency),
 		VanillaPending:          a.vanillaPending,
@@ -1569,6 +1756,27 @@ func (a *app) setTheme(source mygo.ThemeSource) {
 	if err := a.saveSettings(pinned); err != nil {
 		a.fail(err.Error())
 	}
+}
+
+// setModsLayout records how the mods page shows the installed mods, which is
+// remembered for the next run. It writes the settings file, so the save runs
+// off the main thread, as the download route's does.
+func (a *app) setModsLayout(layout string) {
+	a.mu.Lock()
+	if a.modsLayout == layout {
+		a.mu.Unlock()
+		return
+	}
+	a.modsLayout = layout
+	pinned := a.pinned
+	a.mu.Unlock()
+	a.invalidate()
+
+	go func() {
+		if err := a.saveSettings(pinned); err != nil {
+			log.Printf("saving the mods layout: %v", err)
+		}
+	}()
 }
 
 // fail shows a message in place of the game directory.

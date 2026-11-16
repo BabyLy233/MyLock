@@ -166,6 +166,17 @@ func (a *app) fillModInfo(mods []addons.Mod) {
 	}()
 }
 
+// submissionOf is which catalogue submission an installed mod is, for opening
+// its page in the store. The id the manifest keys the mod by names it; a mod
+// whose id is not one the catalogue understands may still have a page the
+// library knows, which is the other way to find it.
+func submissionOf(mod addons.Mod, info config.ModInfo) (gb.Kind, int, bool) {
+	if kind, id, ok := parseShare(mod.ID, gb.Mod); ok {
+		return kind, id, true
+	}
+	return parseShare(info.Page, gb.Mod)
+}
+
 // modMeta is the line under a card's name: who made it, where it is filed, its
 // version, and the id the manifest uses. The id is always there, so a mod the
 // catalogue did not answer for is still identifiable.

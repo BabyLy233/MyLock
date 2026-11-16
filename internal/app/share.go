@@ -8,6 +8,15 @@ import (
 	"github.com/BabyLy233/mylock/internal/gb"
 )
 
+// openInStore shows a submission's own page in the store: what its author
+// wrote, its pictures, and the files it was published with. The skins page's
+// 原帖 and a mod's 商店 both come here, so the user stays in the app rather
+// than being sent to a browser.
+func (a *app) openInStore(kind gb.Kind, id int) {
+	a.store.openSubmission(kind, id)
+	a.router.Push("/store")
+}
+
 // parseShare reads the submission a piece of text names. What the detail page
 // copies is the submission's page on GameBanana, which is an address a user can
 // paste anywhere; the app opens the same submission when that address is pasted
