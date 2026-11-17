@@ -38,6 +38,9 @@ type Config struct {
 	// ModsLayout is how the mods page shows the installed mods: "list" or
 	// "grid". Empty is the list, which is what a first run gets.
 	ModsLayout string `json:"modsLayout,omitempty"`
+	// ModsSort is the order the mods page shows the installed mods in: "name"
+	// or "installed". Empty is the name, which is what a first run gets.
+	ModsSort string `json:"modsSort,omitempty"`
 	// FileserverPreference is the GameBanana download route chosen in the
 	// settings: "default", "auto", or a file server's id. Empty is the
 	// default, which is also what a first run gets.

@@ -16,6 +16,7 @@ import (
 	"maps"
 	"runtime"
 	"slices"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -138,6 +139,9 @@ type app struct {
 	// modsLayout is how the mods page shows the installed mods: "list" or
 	// "grid". It is kept in config.json beside the appearance.
 	modsLayout string
+	// modsSort is the order the mods page shows the installed mods in: "name"
+	// or "installed". It is kept in config.json beside the layout.
+	modsSort string
 	// fileservers is the GameBanana download servers last read, with the ones
 	// that are up first. fileserversBusy and fileserversErr are the state of
 	// the read, and fileserversTried says one has been started, so that the
@@ -296,6 +300,10 @@ type state struct {
 	// modsLayout is how the mods page shows the installed mods, "list" or
 	// "grid", which its segmented control shows as the chosen segment.
 	modsLayout string
+	// modsSort is the order the mods page shows the installed mods in,
+	// "name" or "installed", which its segmented control shows as the chosen
+	// segment.
+	modsSort string
 	// fileservers are the download servers last read, the preference downloads
 	// use, the last latency measured to each server, and whether a read or a
 	// measurement is running.
@@ -341,6 +349,67 @@ func modsLayoutIndex(saved string) int {
 	return max(slices.Index(modsLayouts, saved), 0)
 }
 
+// The orders the mods page can show the installed mods in. The name is the
+// default because it depends on nothing but the mod's title: turning a mod on
+// or off cannot move it, so a click that was aimed at one row cannot land on
+// another. The install time is for finding what was added last.
+const (
+	modsSortName      = "name"
+	modsSortInstalled = "installed"
+)
+
+// modsSorts are those orders in the order the page's segmented control offers
+// them, and modsSortLabels names them.
+var (
+	modsSorts      = []string{modsSortName, modsSortInstalled}
+	modsSortLabels = []string{"按名称", "按安装时间"}
+)
+
+// modsSortIndex reads a saved order into the segment chosen. A value the page
+// does not know -- a file edited by hand, or one left by a version that
+// spelled it differently -- shows the name, which is what a first run gets.
+func modsSortIndex(saved string) int {
+	return max(slices.Index(modsSorts, saved), 0)
+}
+
+// sortedMods returns the mods in the order the page shows them. Neither order
+// looks at whether a mod is enabled or where it falls in the game's load
+// order, which is what kept a flip of a switch from moving the row it was on.
+func sortedMods(mods []addons.Mod, infos map[string]config.ModInfo, mode string) []addons.Mod {
+	list := slices.Clone(mods)
+	sort.SliceStable(list, func(i, j int) bool {
+		a, b := list[i], list[j]
+		if mode == modsSortInstalled && !a.Modified.Equal(b.Modified) {
+			// Newest first. A mod with no files on disk has no install time,
+			// so it goes last rather than first.
+			if a.Modified.IsZero() {
+				return false
+			}
+			if b.Modified.IsZero() {
+				return true
+			}
+			return a.Modified.After(b.Modified)
+		}
+		an, bn := strings.ToLower(modName(a.ID, infos[a.ID])), strings.ToLower(modName(b.ID, infos[b.ID]))
+		if an != bn {
+			return an < bn
+		}
+		// Two mods of one name keep a fixed order, and so do the reads that
+		// follow a switch.
+		return a.ID < b.ID
+	})
+	return list
+}
+
+// modName is the name the page shows a mod by: what the library calls it, or
+// its id when the library does not know it.
+func modName(id string, info config.ModInfo) string {
+	if info.Name != "" {
+		return info.Name
+	}
+	return id
+}
+
 // themeSource reads the appearance to run in out of what was saved. A value
 // that is not one of them -- a file edited by hand, or one left by a version
 // that spelled it differently -- follows the system rather than failing.
@@ -354,7 +423,9 @@ func themeSource(saved string) mygo.ThemeSource {
 // modsState is what the view reads about the mods of the profile, taken in one
 // lock.
 type modsState struct {
-	// list holds the mods, the enabled ones in the order the game loads them.
+	// list holds the mods in the profile's own order, the enabled ones in the
+	// order the game loads them. The page sorts it for display rather than
+	// showing this order, so that a switch cannot move the row it is on.
 	list []addons.Mod
 	// err is why the profile could not be read, empty when it could.
 	err string
@@ -478,8 +549,10 @@ func (a *app) githubButton(c *ui.Context) {
 	})
 }
 
-// modsPage lists the mods installed in the game, in the order the game loads
-// them, with a switch on each to turn it on or off.
+// modsPage lists the mods installed in the game in an order of the page's own
+// -- by name unless the user chose the install time -- with a switch on each to
+// turn it on or off. The order deliberately does not follow the game's load
+// order, which moves a mod the moment its switch is flipped.
 func (a *app) modsPage(c *ui.Context) {
 	t := c.Theme()
 	// Asking here rather than only when the button is pressed is what keeps the
@@ -490,6 +563,10 @@ func (a *app) modsPage(c *ui.Context) {
 	mods := a.installed()
 	profiles := a.profileStateNow()
 	infos := a.modInfos()
+	// The page orders the mods itself rather than showing the game's load
+	// order: an order that changes with a switch is one a click can land in
+	// the wrong row of.
+	list := sortedMods(mods.list, infos, s.modsSort)
 	ups := a.updateState()
 	updates := updateCount(mods.list, infos, ups.snapshots)
 	active := a.transfers.activeByMod()
@@ -515,6 +592,10 @@ func (a *app) modsPage(c *ui.Context) {
 			ui.Segmented(c, &layout, modsLayoutLabels...).
 				Label("模组显示方式").
 				OnChange(func() { a.setModsLayout(modsLayouts[layout]) })
+			order := modsSortIndex(s.modsSort)
+			ui.Segmented(c, &order, modsSortLabels...).
+				Label("模组排序方式").
+				OnChange(func() { a.setModsSort(modsSorts[order]) })
 			ui.Button(c, "检查更新").
 				Label("检查模组更新").
 				Disabled(s.install == nil || s.looking || len(mods.list) == 0 ||
@@ -571,10 +652,10 @@ func (a *app) modsPage(c *ui.Context) {
 		if s.modsLayout == modsLayoutGrid {
 			// The grid is keyed by mod id as well, so a mod changing place
 			// keeps its cell instead of becoming whatever moved into it.
-			a.modsGrid.Key = func(i int) any { return mods.list[i].ID }
-			ui.GridView(c, &a.modsGrid, len(mods.list), modCardMinWidth, modCardHeight,
+			a.modsGrid.Key = func(i int) any { return list[i].ID }
+			ui.GridView(c, &a.modsGrid, len(list), modCardMinWidth, modCardHeight,
 				func(i int) {
-					mod := mods.list[i]
+					mod := list[i]
 					info := infos[mod.ID]
 					work := a.modWorkFor(mod, info, ups.snapshots, active)
 					a.modCard(c, mod, info, work, mods.reading || s.gameRunning || work.busy)
@@ -582,14 +663,15 @@ func (a *app) modsPage(c *ui.Context) {
 			return
 		}
 		// The list is keyed by mod id rather than by row number, so that a mod
-		// changing place as it is enabled takes its focus and its place in the
+		// that changes place -- because the order was switched, or because the
+		// library learned its name -- takes its focus and its place in the
 		// scroll with it instead of handing them to whatever moved up.
-		ui.List(c, &a.list, len(mods.list)).
-			ItemKey(func(i int) any { return mods.list[i].ID }).
+		ui.List(c, &a.list, len(list)).
+			ItemKey(func(i int) any { return list[i].ID }).
 			Fill().
 			Gap(8).
 			Rows(func(r ui.ListRow) {
-				mod := mods.list[r.Index]
+				mod := list[r.Index]
 				info := infos[mod.ID]
 				work := a.modWorkFor(mod, info, ups.snapshots, active)
 				a.modRow(c, r, mod, info, work,
@@ -650,10 +732,7 @@ func (a *app) modRow(c *ui.Context, r ui.ListRow, mod addons.Mod, info config.Mo
 	// pass. OnChange runs once the bound switch has written the new state into
 	// it, which is why the value is read there and not here.
 	enabled := mod.Enabled
-	name := info.Name
-	if name == "" {
-		name = mod.ID
-	}
+	name := modName(mod.ID, info)
 
 	ui.Row(c).Fill().Padding(10).Gap(14).AlignItems(ui.Center).
 		Background(t.Surface).Radius(8).Children(func() {
@@ -771,10 +850,7 @@ func (a *app) modCard(c *ui.Context, mod addons.Mod, info config.ModInfo,
 	work modWork, reading bool) {
 	t := c.Theme()
 	enabled := mod.Enabled
-	name := info.Name
-	if name == "" {
-		name = mod.ID
-	}
+	name := modName(mod.ID, info)
 
 	ui.Column(c).Fill().Padding(10).Gap(4).
 		Background(t.Surface).Radius(8).Children(func() {
@@ -1379,6 +1455,7 @@ func (a *app) state() state {
 		cacheErr:                a.cacheErr,
 		theme:                   a.theme,
 		modsLayout:              a.modsLayout,
+		modsSort:                a.modsSort,
 		fileservers:             slices.Clone(a.fileservers),
 		fileserversBusy:         a.fileserversBusy,
 		fileserversErr:          a.fileserversErr,
@@ -1401,6 +1478,7 @@ func (a *app) start(cfg config.Config, cfgErr error) {
 	a.allowMultipleSkins = cfg.AllowMultipleSkins
 	a.skipSkinConflictWarning = cfg.SkipSkinConflictWarning
 	a.modsLayout = cfg.ModsLayout
+	a.modsSort = cfg.ModsSort
 	a.fileserverPreference = fileserverPreference(cfg.FileserverPreference)
 	a.fileserverLatency = cfg.FileserverLatencyMs
 	if a.fileserverLatency == nil {
@@ -1638,6 +1716,7 @@ func (a *app) saveSettingsFor(pinned, folder string) error {
 		ProfileFolder:           folder,
 		Theme:                   string(a.theme),
 		ModsLayout:              a.modsLayout,
+		ModsSort:                a.modsSort,
 		FileserverPreference:    a.fileserverPreference,
 		FileserverLatencyMs:     maps.Clone(a.fileserverLatency),
 		VanillaPending:          a.vanillaPending,
@@ -1775,6 +1854,27 @@ func (a *app) setModsLayout(layout string) {
 	go func() {
 		if err := a.saveSettings(pinned); err != nil {
 			log.Printf("saving the mods layout: %v", err)
+		}
+	}()
+}
+
+// setModsSort records the order the mods page shows the installed mods in,
+// which is remembered for the next run. It writes the settings file, so the
+// save runs off the main thread, as the layout's does.
+func (a *app) setModsSort(mode string) {
+	a.mu.Lock()
+	if a.modsSort == mode {
+		a.mu.Unlock()
+		return
+	}
+	a.modsSort = mode
+	pinned := a.pinned
+	a.mu.Unlock()
+	a.invalidate()
+
+	go func() {
+		if err := a.saveSettings(pinned); err != nil {
+			log.Printf("saving the mods sort: %v", err)
 		}
 	}()
 }
