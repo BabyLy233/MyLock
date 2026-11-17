@@ -10,13 +10,13 @@
 package app
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"log"
 	"maps"
 	"runtime"
 	"slices"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -32,6 +32,7 @@ import (
 	"github.com/BabyLy233/mylock/internal/download"
 	"github.com/BabyLy233/mylock/internal/game"
 	"github.com/BabyLy233/mylock/internal/gb"
+	"github.com/BabyLy233/mylock/internal/heroart"
 	"github.com/BabyLy233/mylock/internal/imagecache"
 	"github.com/BabyLy233/mylock/internal/proxy"
 )
@@ -98,6 +99,9 @@ type app struct {
 
 	// catalogue reads GameBanana, which is where the store's mods come from.
 	catalogue *gb.Client
+	// heroArt reads the game's asset API for the portraits the skins page shows
+	// beside each hero.
+	heroArt *heroart.Client
 	// downloads fetches a mod's archive, checking it against what the API says
 	// it should be.
 	downloads *download.Client
@@ -251,6 +255,14 @@ type app struct {
 	heroNamesBusy  bool
 	heroNamesErr   string
 	heroNamesTried bool
+	// heroArts maps a hero's canonical name to the address of its portrait,
+	// read from the game's asset API. heroArtsBusy and heroArtsTried are the
+	// state of that read. It is decoration: a hero the assets do not know, or
+	// a read that failed, leaves the name's initials where the portrait would
+	// be.
+	heroArts      map[string]string
+	heroArtsBusy  bool
+	heroArtsTried bool
 }
 
 // state is what the view reads about the game directory, taken in one lock.
@@ -377,26 +389,22 @@ func modsSortIndex(saved string) int {
 // order, which is what kept a flip of a switch from moving the row it was on.
 func sortedMods(mods []addons.Mod, infos map[string]config.ModInfo, mode string) []addons.Mod {
 	list := slices.Clone(mods)
-	sort.SliceStable(list, func(i, j int) bool {
-		a, b := list[i], list[j]
+	slices.SortStableFunc(list, func(a, b addons.Mod) int {
 		if mode == modsSortInstalled && !a.Modified.Equal(b.Modified) {
 			// Newest first. A mod with no files on disk has no install time,
 			// so it goes last rather than first.
-			if a.Modified.IsZero() {
-				return false
+			switch {
+			case a.Modified.IsZero():
+				return 1
+			case b.Modified.IsZero():
+				return -1
 			}
-			if b.Modified.IsZero() {
-				return true
-			}
-			return a.Modified.After(b.Modified)
+			return b.Modified.Compare(a.Modified)
 		}
 		an, bn := strings.ToLower(modName(a.ID, infos[a.ID])), strings.ToLower(modName(b.ID, infos[b.ID]))
-		if an != bn {
-			return an < bn
-		}
 		// Two mods of one name keep a fixed order, and so do the reads that
 		// follow a switch.
-		return a.ID < b.ID
+		return cmp.Or(cmp.Compare(an, bn), cmp.Compare(a.ID, b.ID))
 	})
 	return list
 }
@@ -437,6 +445,7 @@ func newApp() *app {
 	a := &app{
 		router:     ui.NewRouter("/mods"),
 		catalogue:  gb.New(),
+		heroArt:    heroart.New(),
 		downloads:  download.New(),
 		thumbnails: newImages(),
 		running:    game.Running,

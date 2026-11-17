@@ -17,6 +17,7 @@ import (
 
 	"github.com/egoist/mygo/ui"
 	"golang.org/x/image/draw"
+	_ "golang.org/x/image/webp" // and the hero portraits, which the assets publish as WebP
 
 	"github.com/BabyLy233/mylock/internal/about"
 	"github.com/BabyLy233/mylock/internal/imagecache"
@@ -111,8 +112,9 @@ const (
 // imageHosts are the only addresses a picture may be fetched from. The
 // addresses come from the API rather than from the user, but a reply is still
 // something a server chose, and a picture is not worth fetching from anywhere
-// else.
-var imageHosts = []string{"gamebanana.com", "deadlockmods.app"}
+// else. deadlock-api.com is the game's asset API, which the hero portraits come
+// from.
+var imageHosts = []string{"gamebanana.com", "deadlockmods.app", "deadlock-api.com"}
 
 func newImages() *images {
 	p := &proxy.Source{}

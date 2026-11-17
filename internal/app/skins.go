@@ -74,14 +74,18 @@ func (s *skinsPage) view(c *ui.Context) {
 	a := s.app
 	t := c.Theme()
 	// Read as soon as the page opens, so that the hero list is the catalogue's
-	// rather than the built-in roster by the time it is looked at.
+	// rather than the built-in roster by the time it is looked at. The portraits
+	// come from the game's asset API, and a read that fails leaves the initials
+	// the avatars already show.
 	a.loadHeroNames(false)
+	a.loadHeroArts(false)
 
 	a.deleteDialog(c)
 
 	mods := a.installed()
 	infos := a.modInfos()
 	catalog := a.heroNamesState()
+	arts := a.heroArtsState()
 	rows := heroRowsFor(catalog.names, skinEntries(mods.list, infos), a.allowMultipleSkinsNow())
 	rows = filterHeroRows(rows, s.query)
 
@@ -97,7 +101,10 @@ func (s *skinsPage) view(c *ui.Context) {
 			ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
 				ui.Text(c, "读不到角色列表，用的是内置名单："+catalog.err).
 					FontSize(12).TextColor(t.Danger)
-				ui.Button(c, "重试").OnClick(func() { a.loadHeroNames(true) })
+				ui.Button(c, "重试").OnClick(func() {
+					a.loadHeroNames(true)
+					a.loadHeroArts(true)
+				})
 			})
 		}
 		switch {
@@ -122,15 +129,16 @@ func (s *skinsPage) view(c *ui.Context) {
 		}
 
 		ui.Row(c).Fill().Grow(1).Gap(16).AlignItems(ui.Stretch).Children(func() {
-			s.heroList(c, rows)
+			s.heroList(c, rows, arts)
 			s.heroSkins(c, rows, mods.reading)
 		})
 	})
 }
 
 // heroList is the left column: every hero the catalogue lists, the ones with
-// skins first, and a search box over them.
-func (s *skinsPage) heroList(c *ui.Context, rows []heroRow) {
+// skins first, and a search box over them. Each row shows the hero's portrait
+// when the assets have one, and its initials when they do not.
+func (s *skinsPage) heroList(c *ui.Context, rows []heroRow, arts map[string]string) {
 	t := c.Theme()
 	ui.Column(c).Width(240).Shrink(0).Gap(4).Children(func() {
 		ui.Scroll(c).FillWidth().Grow(1).Gap(2).Children(func() {
@@ -145,7 +153,14 @@ func (s *skinsPage) heroList(c *ui.Context, rows []heroRow) {
 					Radius(8).Background(background).
 					OnClick(func() { s.selected = row.hero }).
 					Children(func() {
-						ui.Avatar(c, row.label, nil).Shrink(0)
+						portrait := s.app.thumbnails.get(
+							heroPortrait(arts, row.hero), heroPicture, s.app.invalidate)
+						avatar := ui.Avatar(c, row.label, portrait).Shrink(0)
+						if len(row.skins) == 0 {
+							// The same cue the Tauri app gives: a hero with no
+							// skins is dimmed, so the ones with skins stand out.
+							avatar.Opacity(0.5)
+						}
 						ui.Column(c).Grow(1).Gap(1).Children(func() {
 							ui.Text(c, row.label).Bold().MaxLines(1).Ellipsis("…")
 							ui.Text(c, rowStatus(row)).FontSize(12).
@@ -232,6 +247,11 @@ func (s *skinsPage) heroSkins(c *ui.Context, rows []heroRow, reading bool) {
 // skinPicture is the room a skin card's picture is shown in, which is also what
 // it is fetched for.
 var skinPicture = box{W: 200, H: 130}
+
+// heroPicture is the room a hero's portrait is fetched for: the circle an
+// avatar draws it in, a little wider than the avatar itself so that the edges
+// stay sharp.
+var heroPicture = box{W: 36, H: 36}
 
 // skinCard is one skin: its picture, its state, and what can be done to it.
 func (s *skinsPage) skinCard(c *ui.Context, row heroRow, entry skinEntry, reading bool) {
@@ -509,6 +529,75 @@ func (a *app) fetchHeroNames() ([]string, error) {
 		return nil, fmt.Errorf("%s 下没有角色", heroes.SkinsCategory)
 	}
 	return names, nil
+}
+
+// heroArtsState returns the portraits the asset API was read for, in one lock.
+// It is nil until the read lands.
+func (a *app) heroArtsState() map[string]string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return maps.Clone(a.heroArts)
+}
+
+// loadHeroArts reads the portraits of the heroes from the game's asset API.
+// force asks again after a failed read. The request runs off the main thread,
+// and nothing is shown while it is on its way or if it fails: a portrait is
+// decoration, and the avatar's initials stand in for it.
+func (a *app) loadHeroArts(force bool) {
+	a.mu.Lock()
+	if a.heroArtsBusy || (a.heroArtsTried && !force) {
+		a.mu.Unlock()
+		return
+	}
+	a.heroArtsBusy, a.heroArtsTried = true, true
+	a.mu.Unlock()
+	a.invalidate()
+
+	go func() {
+		found, err := a.heroArt.Heroes(context.Background())
+		var arts map[string]string
+		if err == nil {
+			// Keyed by the roster's spelling, because that is what a row's hero
+			// is, whatever the asset API calls it.
+			arts = make(map[string]string, len(found))
+			for _, art := range found {
+				if art.Icon == "" {
+					continue
+				}
+				name := art.Name
+				if canonical, ok := heroes.Normalize(name); ok {
+					name = canonical
+				}
+				arts[name] = art.Icon
+			}
+		}
+		a.publish(func() {
+			a.mu.Lock()
+			a.heroArtsBusy = false
+			// A failed read leaves the portraits the page already has; the
+			// next ask is the retry button's.
+			if err == nil {
+				a.heroArts = arts
+			}
+			a.mu.Unlock()
+			a.invalidate()
+		})
+	}()
+}
+
+// heroPortrait is the address of a hero's portrait in arts, empty when the
+// assets do not have one. A row's name may be a catalogue spelling of a hero
+// the roster knows by another, so the canonical name is tried first.
+func heroPortrait(arts map[string]string, hero string) string {
+	if hero == "" {
+		return ""
+	}
+	if canonical, ok := heroes.Normalize(hero); ok {
+		if address := arts[canonical]; address != "" {
+			return address
+		}
+	}
+	return arts[hero]
 }
 
 // heroLabel is how the window names a hero, including the one row that is not

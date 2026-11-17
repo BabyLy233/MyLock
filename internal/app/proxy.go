@@ -61,6 +61,9 @@ func (a *app) useProxy(cfg proxy.Config) error {
 	if err := a.catalogue.SetProxy(cfg); err != nil {
 		return err
 	}
+	if err := a.heroArt.SetProxy(cfg); err != nil {
+		return err
+	}
 	return a.thumbnails.setProxy(cfg)
 }
 

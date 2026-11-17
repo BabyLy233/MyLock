@@ -19,6 +19,7 @@ internal/
   download/              模组压缩包下载（断点续传、校验）
   game/                  游戏安装检测、Steam、gameinfo.gi、启动、进程
   gb/                    GameBanana API 客户端
+  heroart/               英雄头像地址（Deadlock 资产 API）
   heroes/                角色名归一化、别名表与分类 / 名字解析
   imagecache/            图片的磁盘缓存
   proxy/                 代理设置与每个请求走的代理函数
@@ -30,11 +31,12 @@ internal/
 互不相识。
 
 ```text
-main ──> app ──> addons, archive, config, download, game, gb, imagecache, proxy
+main ──> app ──> addons, archive, config, download, game, gb, heroart, imagecache, proxy
 
 领域包之间：
 download ──> about, proxy
 gb       ──> about, proxy
+heroart  ──> about, proxy
 game     ──> vdf
 config   ──> proxy
 proxy    ──> about
@@ -49,6 +51,7 @@ proxy    ──> about
 | `download` | 下载、续传、大小 / MD5 校验 | 不解包，不安装 |
 | `game` | 找游戏、读 Steam VDF、改 `gameinfo.gi`、交给 Steam 启动、查进程 | 不读写模组清单 |
 | `gb` | 目录、搜索、分类、详情、批量更新查询、文件服务器列表 | 不下载文件正文，不画界面 |
+| `heroart` | 从 Deadlock 资产 API 读英雄名字和头像地址 | 不解码图片，不画界面 |
 | `heroes` | 把名字、别名和 Skins 分类归一成角色 | 不读 API，不决定有哪些角色 |
 | `imagecache` | 图片字节的磁盘 LRU | 不解码图片 |
 | `proxy` | 代理设置的校验、`NoProxy` 匹配和每个请求的代理函数 | 不发起业务请求 |

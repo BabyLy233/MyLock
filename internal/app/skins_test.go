@@ -19,10 +19,12 @@ import (
 )
 
 // withHeroes gives the app a hero list of its own, so that a test does not ask
-// the catalogue.
+// the catalogue. The portraits are marked as read for the same reason: a test
+// never reaches the asset API.
 func withHeroes(a *app, names ...string) {
 	a.heroNames = names
 	a.heroNamesTried = true
+	a.heroArtsTried = true
 }
 
 // The skins page groups what is installed by the hero it belongs to, and a mod
@@ -637,5 +639,64 @@ func TestASkinsOriginalOpensInTheStore(t *testing.T) {
 		if !tt.HasText(want) {
 			t.Errorf("the skin's page does not show %q: %q", want, tt.Texts())
 		}
+	}
+}
+
+// The asset API's portraits are keyed by the roster's spelling, so a row the
+// catalogue spells another way -- "The Doorman" for "Doorman" -- still finds
+// the hero's portrait.
+func TestHeroPortraitsAreKeyedByTheRostersName(t *testing.T) {
+	a := newApp()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `[
+			{"name": "Infernus", "images": {"icon_image_small_webp": "https://example.com/inferno.webp"}},
+			{"name": "The Doorman", "images": {"icon_image_small": "https://example.com/doorman.png"}},
+			{"name": "No Art", "images": {}}
+		]`)
+	}))
+	defer srv.Close()
+	a.heroArt.Base = srv.URL
+
+	a.loadHeroArts(true)
+	waitFor(t, "the portraits to be read", func() bool {
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		return !a.heroArtsBusy
+	})
+	arts := a.heroArtsState()
+
+	for _, test := range []struct{ hero, want string }{
+		{hero: "Infernus", want: "https://example.com/inferno.webp"},
+		{hero: "The Doorman", want: "https://example.com/doorman.png"},
+		{hero: "Doorman", want: "https://example.com/doorman.png"},
+		{hero: "No Art"},
+		{hero: "Wrecker"},
+		{hero: ""},
+	} {
+		if got := heroPortrait(arts, test.hero); got != test.want {
+			t.Errorf("the portrait of %q is %q, want %q", test.hero, got, test.want)
+		}
+	}
+}
+
+// A read that fails leaves the portraits the page already has rather than
+// emptying the list.
+func TestAFailedPortraitReadKeepsTheOnesItHad(t *testing.T) {
+	a := newApp()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+	}))
+	defer srv.Close()
+	a.heroArt.Base = srv.URL
+	a.heroArts = map[string]string{"Infernus": "https://example.com/inferno.webp"}
+
+	a.loadHeroArts(true)
+	waitFor(t, "the failed read", func() bool {
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		return !a.heroArtsBusy
+	})
+	if got := heroPortrait(a.heroArtsState(), "Infernus"); got != "https://example.com/inferno.webp" {
+		t.Errorf("the failed read left the portrait as %q, want the one it had", got)
 	}
 }
