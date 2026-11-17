@@ -195,7 +195,7 @@ workflow。
 | 用途 | Linux | Windows | macOS |
 | --- | --- | --- | --- |
 | 设置 | `~/.config/mylock/config.json` | `%AppData%\mylock\config.json` | `~/Library/Application Support/mylock/config.json` |
-| 配置档与模组库 | 同目录的 `profiles.json`、`library.json` | 同左 | 同左 |
+| 配置档、模组库与兼容性缓存 | 同目录的 `profiles.json`、`library.json`、`mod-health.json` | 同左 | 同左 |
 | 图片缓存 | `~/.cache/mylock/images` | `%LocalAppData%\mylock\images` | `~/Library/Caches/mylock/images` |
 
 从改名前版本升级时，第一次启动会把旧的 `deadlock-mod-manager/config.json` 复制到新位置，旧文件保留不动。旧的图片缓存不会迁移，可以直接删除。
@@ -204,13 +204,16 @@ workflow。
 
 - `.dmm.json` 按原版逐字节读写，清单版本为 3
 - VPK 命名规则与原版一致，包括 `pakNN_dir.vpk` 的分片和前缀规则
-- `gameinfo.gi` 里使用的开始 / 结束标记与原版相同，已有的游戏配置能被识别和替换
+- `gameinfo.gi` 里使用的开始 / 结束标记与原版相同，同时识别原版新版的逐条标记；已有配置和外部挂载能被保留
+- 模组健康检查复用原版的状态与症状模型，结果缓存在 `mod-health.json`，按模组文件、游戏版本和规则版本失效
+- 兼容修复不修改原模组文件：修复后的资源写进 `game/citadel/dmm_localization_<后缀>/` 下的独立 VPK，并放在搜索路径首位
+- 目前接入相机类修复：旧基准帧迁移、缺失相机接口字段、缺失相机挂点与控制骨；其余类别按原版模块逐步移植
 
 ## 项目状态
 
 还在早期开发中，当前版本 `0.1.3`。
 
-已实现商店、安装、启停、角色皮肤、模组更新检查、应用自更新和启动。尚未实现：
+已实现商店、安装、启停、角色皮肤、模组更新检查、应用自更新、启动，以及带相机修复的模组兼容性检查。尚未实现：
 
 - 一次更新多个模组
 - 跳过某个模组的更新
@@ -221,11 +224,11 @@ workflow。
 ## 致谢
 
 - 模组数据来自 [GameBanana](https://gamebanana.com)
-- 行为与文件格式对齐 Tauri 原版：[deadlock-mod-manager/deadlock-mod-manager](https://github.com/deadlock-mod-manager/deadlock-mod-manager)
+- 行为与文件格式对齐 Tauri 原版：[deadlock-mod-manager/deadlock-mod-manager](https://github.com/deadlock-mod-manager/deadlock-mod-manager)。兼容性检查与修复逻辑直接移植自原版，来源、提交与文件映射见 [third_party/deadlock-mod-manager/NOTICE.md](third_party/deadlock-mod-manager/NOTICE.md)。
 - 界面框架：[Mygo](https://github.com/egoist/mygo)
 
 MyLock 是非官方工具，与 Valve 无关。Deadlock 是 Valve Corporation 的商标。
 
 ## 许可证
 
-[MIT](LICENSE) © 2026 BabyLy233
+[GPL-3.0](LICENSE) © 2026 BabyLy233。因为复用了 GPL-3.0 的原版实现，MyLock 整体以 GPL-3.0 分发。

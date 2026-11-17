@@ -351,10 +351,45 @@ ProfilePage；列表里没有它也能打开详情。详情面板因此还可能
 │       ├── .dmm.json
 │       └── …
 ├── addons2/<profile>/…         同一配置档启用文件超过 99 个时的溢出 shard
-└── addons3 … addons10
+├── addons3 … addons10
+└── dmm_localization_<后缀>/    兼容性修复包（不修改原模组文件）
+    ├── pak01_dir.vpk
+    └── compatibility.json      输入指纹、修复记录与包哈希
 ```
 
-应用只写 `addons`、`addonsN` 和 `gameinfo.gi`（含 `.bak`），不碰游戏本体。
+应用只写 `addons`、`addonsN`、`dmm_localization_<后缀>` 和 `gameinfo.gi`
+（含 `.bak`），不碰游戏本体。
+
+## 兼容性检查与修复
+
+`internal/modhealth` 保存模组健康状态：`works` / `fixable` / `partlyFixable` /
+`fixed` / `originalFiles` / `needsUpdate` / `notCovered`，症状分为
+`cameraAim`、`animations`、`appearance`、`model`、`gameData`、`crashRisk`
+六类。状态分支顺序照原版：先看可修复项，再看未解决的警告，最后才看覆盖范围；
+只检查了相机时不把「没有发现问题」当成完全正常。
+
+缓存写在配置目录的 `mod-health.json`，独立于 `config.json`。键由模组 VPK 的
+大小与修改时间（按清单顺序，不按文件名）、游戏版本（`steam.inf` 的
+`ClientVersion=`）、修复规则版本和状态规则版本组成。分析期间不持锁；分析结束
+后重新取一次键，不相等的结果不发布也不缓存。损坏或未知 `schemaVersion` 的
+缓存当作空缓存。
+
+`internal/modcompat` 把一个模组的 VPK 与 `internal/source2` 的游戏索引对照，
+只读地产生 `Repairs` / `Warnings` / `Fixed`；`internal/overlay` 把修复后的
+资源打包成独立 VPK。包与回执的命名、默认与配置档后缀、`pak01_dir.vpk` 文件名
+都照原版：
+
+- 后缀：默认配置档 `default`，其它配置档是 `hex(SHA-256(folder)[:8])`。
+- 回执 `compatibility.json` 带 `generator: "mylock"` 和独立 revision；不信任
+  原版回执，原版也不信任这里的，双方都会重建。
+- 写包顺序 fail closed：临时文件写 VPK → 回读逐条目校验 → rename → 写回执；
+  回执失败删除新 VPK；没有修复内容时删除旧 VPK，并写一份“无需修复”的回执；
+  撤掉修复时 VPK 与回执一并删除。
+- `gameinfo.gi` 里兼容包目录排在模组目录之前；包不存在时不写该路径。
+
+锁顺序固定为 `profileWriteMu -> gameinfoMu -> game.writeMu`。修复开始前和提交前
+各查一次游戏是否在运行；先删旧包、再原子写清单、然后重建包并应用搜索路径。
+任何保持性校验失败都放弃修复、只留下警告，不写盘。
 
 ## 兼容性约束
 

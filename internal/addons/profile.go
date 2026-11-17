@@ -128,6 +128,16 @@ type Mod struct {
 	// Vpks names the mod's files as they are on disk now: pakNN_dir.vpk while
 	// it is enabled, and prefixed names while it is not.
 	Vpks []string
+	// VpkPaths are the absolute paths of Vpks, aligned with it.
+	VpkPaths []string
+	// OriginalNames holds each file's name before the mod id prefix, aligned
+	// with Vpks when the manifest records it.
+	OriginalNames []string
+	// CompatibilityEnabled reports that the player opted this mod into the
+	// compatibility overlay.
+	CompatibilityEnabled bool
+	// CompatibilityOptedOut reports that the player chose the original files.
+	CompatibilityOptedOut bool
 	// Pak is the number the mod's first enabled VPK carries, which is where it
 	// falls in the load order. Zero when it is disabled, or when none of its
 	// files is named like an enabled one.
@@ -175,21 +185,35 @@ func (p Profile) Read() ([]Mod, error) {
 	return mods, nil
 }
 
+// InstalledMods returns the profile's mods in load order, including disabled
+// ones, with the absolute paths of their files and their compatibility
+// choices.
+func (p Profile) InstalledMods() ([]Mod, error) {
+	return p.Read()
+}
+
 // mod describes one mod, looking in the directory its files should be in.
 func (p Profile) mod(id string, entry Entry) Mod {
-	m := Mod{ID: id, Enabled: entry.Enabled, Shard: entry.Shard}
+	m := Mod{
+		ID:                    id,
+		Enabled:               entry.Enabled,
+		Shard:                 entry.Shard,
+		CompatibilityEnabled:  entry.CompatibilityEnabled,
+		CompatibilityOptedOut: entry.CompatibilityOptedOut,
+	}
 
 	dir, names := p.Dir, entry.DisabledVpks
 	if entry.Enabled {
 		dir, names = p.ShardDir(entry.Shard), entry.CurrentVpks
 	}
-	for _, name := range names {
+	for i, name := range names {
 		// The number is taken from every name, not only the ones that are
 		// there, so that a mod missing a file keeps its place in the order.
 		if n := pakNumber(name); n > 0 && (m.Pak == 0 || n < m.Pak) {
 			m.Pak = n
 		}
-		info, err := os.Stat(filepath.Join(dir, name))
+		path := filepath.Join(dir, name)
+		info, err := os.Stat(path)
 		if err != nil {
 			m.Missing = append(m.Missing, name)
 			continue
@@ -198,8 +222,36 @@ func (p Profile) mod(id string, entry Entry) Mod {
 			m.Modified = info.ModTime()
 		}
 		m.Vpks = append(m.Vpks, name)
+		m.VpkPaths = append(m.VpkPaths, path)
+		if i < len(entry.OriginalVpkNames) {
+			m.OriginalNames = append(m.OriginalNames, entry.OriginalVpkNames[i])
+		} else {
+			m.OriginalNames = append(m.OriginalNames, name)
+		}
 	}
 	return m
+}
+
+// SetCompatibility records the player's choice for every listed mod in one
+// manifest write. Enabling opts the mods into the compatibility overlay;
+// disabling records that the player chose the original files. The caller is
+// responsible for removing an overlay built from the previous choice before
+// this save, so a stale fix cannot be mounted.
+func (p Profile) SetCompatibility(ids []string, enabled bool) error {
+	m, err := Load(p.ManifestPath())
+	if err != nil {
+		return err
+	}
+	for _, id := range ids {
+		entry, ok := m.Mods[id]
+		if !ok {
+			return fmt.Errorf("install mod %s before changing compatibility", id)
+		}
+		entry.CompatibilityEnabled = enabled
+		entry.CompatibilityOptedOut = !enabled
+		m.Mods[id] = entry
+	}
+	return m.Save(p.ManifestPath())
 }
 
 // pakNumber reads the number out of an enabled VPK name, "pak07_dir.vpk" being

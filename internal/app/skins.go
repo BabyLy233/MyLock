@@ -847,7 +847,10 @@ func (a *app) wearSkin(hero, id string, on bool) {
 		// switch on the mods page, but only when nothing failed.
 		info, infoErr := game.GameInfo{}, error(nil)
 		if len(errs) == 0 {
+			a.profileWriteMu.Lock()
+			a.refreshOverlay(install, profile)
 			info, infoErr = a.patchGameInfo(install, profile)
+			a.profileWriteMu.Unlock()
 		}
 
 		var message string

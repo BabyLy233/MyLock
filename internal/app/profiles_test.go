@@ -11,6 +11,7 @@ import (
 	"github.com/BabyLy233/mylock/internal/addons"
 	"github.com/BabyLy233/mylock/internal/config"
 	"github.com/BabyLy233/mylock/internal/game"
+	portoverlay "github.com/BabyLy233/mylock/third_party/deadlock-mod-manager/port/overlay"
 )
 
 // profileApp is an app pointed at a game, with the default profile as the one
@@ -268,6 +269,13 @@ func TestDeletingTheActiveProfileSwitchesBackToTheDefault(t *testing.T) {
 	addMod(t, def, "default-mod", "default.vpk")
 	folder := "profile_1_abcd_测试"
 	makeNamedProfile(t, install, folder, "test-mod")
+	overlayDir := portoverlay.Directory(install.CitadelDir(), &folder)
+	if err := os.MkdirAll(overlayDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(overlayDir, "pak01_dir.vpk"), []byte("overlay"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	a.mu.Lock()
 	a.profileFolder = folder
 	a.mu.Unlock()
@@ -285,6 +293,9 @@ func TestDeletingTheActiveProfileSwitchesBackToTheDefault(t *testing.T) {
 	}
 	if _, statErr := os.Stat(filepath.Join(install.AddonsDir(), folder)); !os.IsNotExist(statErr) {
 		t.Errorf("the profile folder survived the deletion: %v", statErr)
+	}
+	if _, statErr := os.Stat(overlayDir); !os.IsNotExist(statErr) {
+		t.Errorf("the profile's compatibility package survived the deletion: %v", statErr)
 	}
 	state := a.installed()
 	if len(state.list) != 1 || state.list[0].ID != "default-mod" {

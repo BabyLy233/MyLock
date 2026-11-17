@@ -714,6 +714,7 @@ func (s *store) commitInstall(a *app, task *transfer, install *game.Install, pro
 	active := a.profileFolder
 	a.mu.Unlock()
 	inUse := profileFor(install, active)
+	a.refreshOverlay(install, inUse)
 	info, infoErr := a.patchGameInfo(install, inUse)
 	mods, readErr := inUse.Read()
 

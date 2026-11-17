@@ -109,7 +109,7 @@ func TestPatchPutsTheSectionInAVanillaFile(t *testing.T) {
 		}
 	}
 	// The section it replaced is gone, rather than sitting beside the new one.
-	if strings.Count(got, "SearchPaths") != 1 {
+	if strings.Count(got, "\t\tSearchPaths") != 1 {
 		t.Errorf("the file holds %d SearchPaths sections, want 1:\n%s", strings.Count(got, "SearchPaths"), got)
 	}
 }
@@ -410,5 +410,126 @@ func TestPatchWithoutAGameInfoFile(t *testing.T) {
 	install := &Install{GamePath: t.TempDir()}
 	if _, err := install.PatchGameInfo([]string{"citadel/addons"}); err == nil {
 		t.Error("patching a missing file reported no error")
+	}
+}
+
+// The original app's newer writer tags individual mounts inside SearchPaths.
+// Replacing that block must edit only its own lines: the surrounding mounts and
+// the one SearchPaths section have to survive.
+func TestPatchReplacesTheV2BlockInPlace(t *testing.T) {
+	content := `"GameInfo"
+{
+	FileSystem
+	{
+		SearchPaths
+		{
+			Game_UILanguage		citadel_*LANGUAGE*
+			Game			citadel
+			Mod			citadel
+			// Deadlock Mod Manager - Start (SearchPaths v2)
+			Game				citadel/addons // dmm-search-path
+			// Deadlock Mod Manager (SearchPaths v2) - End
+			Game			custom/mods
+			Write			core
+		}
+	}
+}
+`
+	install, path := installation(t, content)
+	changed, err := install.PatchGameInfo([]string{"citadel/dmm_localization_default", "citadel/addons"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !changed {
+		t.Fatal("v2 patch reported no change")
+	}
+	got := read(t, path)
+	if strings.Count(got, "\t\tSearchPaths") != 1 {
+		t.Fatalf("SearchPaths was nested:\n%s", got)
+	}
+	if strings.Count(got, "citadel/dmm_localization_default") != 1 || strings.Count(got, "citadel/addons") != 1 {
+		t.Fatalf("mounts not replaced:\n%s", got)
+	}
+	if !strings.Contains(got, "Game\t\t\tcustom/mods") && !strings.Contains(got, "custom/mods") {
+		t.Fatalf("external mount was removed:\n%s", got)
+	}
+	if strings.Contains(got, "// dmm-search-path") {
+		t.Fatalf("v2 tagged entries were kept:\n%s", got)
+	}
+	status, err := install.ReadGameInfo()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !status.Markers || !status.ModPaths {
+		t.Fatalf("status after v2 patch = %+v", status)
+	}
+
+	if _, err := install.PatchGameInfoVanilla(); err != nil {
+		t.Fatal(err)
+	}
+	got = read(t, path)
+	if strings.Contains(got, markerStartV2) || strings.Contains(got, markerEndV2) {
+		t.Fatalf("vanilla launch kept the v2 block:\n%s", got)
+	}
+	if !strings.Contains(got, "custom/mods") {
+		t.Fatalf("vanilla launch removed an external mount:\n%s", got)
+	}
+}
+
+// A file another tool added mounts to keeps them when this app rebuilds the
+// section after a game update.
+func TestPatchKeepsForeignMountsInAVanillaFile(t *testing.T) {
+	content := `"GameInfo"
+{
+	FileSystem
+	{
+		SearchPaths
+		{
+			Game		citadel
+			Mod		core
+			Write		core
+			// Hyperline
+			Game		hyperline/mods
+			Mod		hyperline
+		}
+	}
+}
+`
+	install, path := installation(t, content)
+	if _, err := install.PatchGameInfo([]string{"citadel/addons"}); err != nil {
+		t.Fatal(err)
+	}
+	got := read(t, path)
+	for _, want := range []string{"hyperline/mods", "hyperline", "// Hyperline", "citadel/addons"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("the rebuilt section lost %q:\n%s", want, got)
+		}
+	}
+}
+
+// Moving a nested block line by line would break its braces, so the file is
+// left exactly as it was.
+func TestPatchRefusesToMoveANestedSearchPathBlock(t *testing.T) {
+	content := `"GameInfo"
+{
+	FileSystem
+	{
+		SearchPaths
+		{
+			Game		citadel
+			Other
+			{
+				Game		inside
+			}
+		}
+	}
+}
+`
+	install, path := installation(t, content)
+	if _, err := install.PatchGameInfo([]string{"citadel/addons"}); err == nil {
+		t.Fatal("a nested SearchPaths block was rewritten")
+	}
+	if got := read(t, path); got != content {
+		t.Fatalf("the file changed after a refused patch:\n%s", got)
 	}
 }

@@ -170,7 +170,11 @@ func (a *app) applyFiles() {
 			}
 			a.profileWriteMu.Lock()
 			defer a.profileWriteMu.Unlock()
-			return profile.SetFiles(id, selected)
+			if err := profile.SetFiles(id, selected); err != nil {
+				return err
+			}
+			a.refreshOverlay(install, profile)
+			return nil
 		}()
 
 		var mods []addons.Mod

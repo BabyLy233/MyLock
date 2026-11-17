@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 
 	"github.com/BabyLy233/mylock/internal/vdf"
 )
@@ -39,6 +41,33 @@ type Install struct {
 // AddonsDir returns the directory the game loads mods from.
 func (i *Install) AddonsDir() string {
 	return filepath.Join(i.GamePath, filepath.FromSlash(AddonsRel))
+}
+
+// CitadelDir returns game/citadel, where the game's VPKs and steam.inf live.
+func (i *Install) CitadelDir() string {
+	return filepath.Join(i.GamePath, "game", "citadel")
+}
+
+// ClientVersion returns the ClientVersion line from game/citadel/steam.inf.
+// nil means the file or line is missing, which is distinct from version 0.
+func (i *Install) ClientVersion() *uint32 {
+	data, err := os.ReadFile(filepath.Join(i.CitadelDir(), "steam.inf"))
+	if err != nil {
+		return nil
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		value, ok := strings.CutPrefix(strings.TrimSpace(line), "ClientVersion=")
+		if !ok {
+			continue
+		}
+		version, err := strconv.ParseUint(strings.TrimSpace(value), 10, 32)
+		if err != nil {
+			return nil
+		}
+		v := uint32(version)
+		return &v
+	}
+	return nil
 }
 
 // GameInfoPath returns the gameinfo.gi the mod search paths live in.

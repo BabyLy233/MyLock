@@ -3,11 +3,13 @@ package app
 import (
 	"errors"
 	"fmt"
+	"log"
 
 	"github.com/egoist/mygo/ui"
 
 	"github.com/BabyLy233/mylock/internal/addons"
 	"github.com/BabyLy233/mylock/internal/game"
+	"github.com/BabyLy233/mylock/internal/overlay"
 )
 
 // launchRow starts the game, with the mods or without them.
@@ -132,6 +134,7 @@ func (a *app) launch(vanilla bool) {
 			// gone, and then the mods are put back. One with mods is the
 			// configuration the game goes back to, so it cancels any waiting.
 			a.vanillaPending, a.vanillaSeen = vanilla, false
+			a.healthEpoch++
 			a.mu.Unlock()
 			// Written down as well, so that closing the app before the game
 			// does not lose track of the session.
@@ -144,14 +147,26 @@ func (a *app) launch(vanilla bool) {
 // state that left it in. The write is one at a time with the switches and the
 // settings page's button, which write the same file.
 func (a *app) prepareLaunch(install *game.Install, profile addons.Profile, vanilla bool) (game.GameInfo, error) {
+	// A launch with mods rebuilds the compatibility package from the files as
+	// they are now, under the same lock a manifest change takes. A rebuild that
+	// fails leaves the old package removed, so the game falls back to the mod
+	// files instead of mounting a fix for inputs that are no longer there.
+	if !vanilla {
+		a.profileWriteMu.Lock()
+		rebuildErr := a.rebuildOverlayLocked(install, profile)
+		a.profileWriteMu.Unlock()
+		if rebuildErr != nil {
+			log.Printf("rebuilding the compatibility overlay before launch: %v", rebuildErr)
+			if err := overlay.Remove(overlayVPKPath(install, profile)); err != nil {
+				log.Printf("removing the compatibility overlay: %v", err)
+			}
+		}
+		// A launch with mods writes what the settings page's button writes, and
+		// reports the state it left behind in the same way.
+		return a.patchGameInfo(install, profile)
+	}
 	a.gameinfoMu.Lock()
 	defer a.gameinfoMu.Unlock()
-
-	// A launch with mods writes what the settings page's button writes, and
-	// reports the state it left behind in the same way.
-	if !vanilla {
-		return patchGameInfo(install, profile)
-	}
 	if _, err := install.PatchGameInfoVanilla(); err != nil {
 		return game.GameInfo{}, err
 	}

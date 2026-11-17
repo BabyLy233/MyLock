@@ -58,6 +58,11 @@ func (a *app) observeGame(running bool) {
 	if !running {
 		a.blocked = ""
 	}
+	// A game that has closed may have updated itself; the next frame checks
+	// again rather than trusting a verdict from before it ran.
+	if wasRunning && !running {
+		a.healthEpoch++
+	}
 	a.mu.Unlock()
 
 	switch {
@@ -82,7 +87,12 @@ func (a *app) observeGame(running bool) {
 // configuration after a session without mods has ended, so that the next
 // launch, from the app or from Steam, loads them again.
 func (a *app) restoreMods(install *game.Install, profile addons.Profile) {
+	// The game may have updated while it ran, so the package is rebuilt from
+	// the files as they are now before the paths are put back.
+	a.profileWriteMu.Lock()
+	a.refreshOverlay(install, profile)
 	info, err := a.patchGameInfo(install, profile)
+	a.profileWriteMu.Unlock()
 
 	a.publish(func() {
 		a.mu.Lock()

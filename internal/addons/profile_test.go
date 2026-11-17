@@ -271,3 +271,94 @@ func itoa(n uint32) string {
 	}
 	return string(digits)
 }
+
+func TestInstalledModsExposeAbsolutePathsAndChoices(t *testing.T) {
+	_, addonsDir := citadel(t)
+	p := Open(addonsDir)
+	touch(t, addonsDir, "pak01_dir.vpk")
+	touch(t, addonsDir, "off_extra.vpk")
+	m := New()
+	m.Mods["42"] = Entry{
+		Enabled:              true,
+		CompatibilityEnabled: true,
+		Shard:                FirstShard,
+		CurrentVpks:          []string{"pak01_dir.vpk"},
+		OriginalVpkNames:     []string{"skin.vpk"},
+	}
+	m.Mods["off"] = Entry{
+		Shard:                 FirstShard,
+		DisabledVpks:          []string{"off_extra.vpk"},
+		OriginalVpkNames:      []string{"extra.vpk"},
+		CompatibilityOptedOut: true,
+	}
+	if err := m.Save(p.ManifestPath()); err != nil {
+		t.Fatal(err)
+	}
+	mods, err := p.InstalledMods()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(mods) != 2 || mods[0].ID != "42" || mods[1].ID != "off" {
+		t.Fatalf("mods = %+v", mods)
+	}
+	if got := mods[0].VpkPaths; len(got) != 1 || got[0] != filepath.Join(addonsDir, "pak01_dir.vpk") {
+		t.Fatalf("enabled paths = %v", got)
+	}
+	if got := mods[0].OriginalNames; len(got) != 1 || got[0] != "skin.vpk" {
+		t.Fatalf("original names = %v", got)
+	}
+	if !mods[0].CompatibilityEnabled || mods[0].CompatibilityOptedOut {
+		t.Fatalf("enabled choice = %+v", mods[0])
+	}
+	if mods[0].Enabled != true || mods[1].Enabled != false {
+		t.Fatal("enabled flags lost")
+	}
+	if got := mods[1].VpkPaths; len(got) != 1 || got[0] != filepath.Join(addonsDir, "off_extra.vpk") {
+		t.Fatalf("disabled paths = %v", got)
+	}
+	if !mods[1].CompatibilityOptedOut || mods[1].CompatibilityEnabled {
+		t.Fatalf("opted-out choice = %+v", mods[1])
+	}
+}
+
+func TestSetCompatibilityWritesBothChoicesOnce(t *testing.T) {
+	_, addonsDir := citadel(t)
+	p := Open(addonsDir)
+	m := New()
+	m.Mods["a"] = Entry{Shard: FirstShard, DisabledVpks: []string{"a_vpk.vpk"}}
+	m.Mods["b"] = Entry{Shard: FirstShard, DisabledVpks: []string{"b_vpk.vpk"}}
+	m.Mods["c"] = Entry{Shard: FirstShard, DisabledVpks: []string{"c_vpk.vpk"}}
+	if err := m.Save(p.ManifestPath()); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.SetCompatibility([]string{"a", "b"}, true); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := Load(p.ManifestPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"a", "b"} {
+		entry := loaded.Mods[id]
+		if !entry.CompatibilityEnabled || entry.CompatibilityOptedOut {
+			t.Fatalf("%s enable = %+v", id, entry)
+		}
+	}
+	if entry := loaded.Mods["c"]; entry.CompatibilityEnabled || entry.CompatibilityOptedOut {
+		t.Fatalf("untouched mod changed: %+v", entry)
+	}
+	if err := p.SetCompatibility([]string{"a"}, false); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err = Load(p.ManifestPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := loaded.Mods["a"]
+	if entry.CompatibilityEnabled || !entry.CompatibilityOptedOut {
+		t.Fatalf("disable = %+v", entry)
+	}
+	if err := p.SetCompatibility([]string{"missing"}, true); err == nil {
+		t.Fatal("unknown mod accepted")
+	}
+}

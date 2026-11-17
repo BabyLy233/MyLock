@@ -675,6 +675,7 @@ func (a *app) commitUpdate(task *transfer, install *game.Install, profile addons
 		if err := profile.SetEnabled(id, true); err != nil {
 			return err
 		}
+		a.refreshOverlay(install, profile)
 		info, infoErr := a.patchGameInfo(install, profile)
 		outcome.patched = true
 		outcome.gameInfo, outcome.gameInfoErr = info, ""

@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"log"
 	"maps"
+	"os"
 	"runtime"
 	"slices"
 	"strings"
@@ -34,7 +35,10 @@ import (
 	"github.com/BabyLy233/mylock/internal/gb"
 	"github.com/BabyLy233/mylock/internal/heroart"
 	"github.com/BabyLy233/mylock/internal/imagecache"
+	"github.com/BabyLy233/mylock/internal/modhealth"
 	"github.com/BabyLy233/mylock/internal/proxy"
+	"github.com/BabyLy233/mylock/internal/source2"
+	portoverlay "github.com/BabyLy233/mylock/third_party/deadlock-mod-manager/port/overlay"
 )
 
 // app is the state the window shows. The view builds the interface from it on
@@ -211,6 +215,17 @@ type app struct {
 
 	gameInfo    game.GameInfo
 	gameInfoErr string
+	// health is the compatibility check's state: the last report, the check in
+	// flight and the compatibility write it may be running. healthEpoch is
+	// bumped by anything that changes the inputs, and a check started under an
+	// older epoch is not published.
+	health      healthRuntime
+	healthEpoch uint64
+	// gameIndex caches the game's VPK index between checks, keyed by citadel
+	// directory, so a second check does not rescan every archive.
+	gameIndexMu   sync.Mutex
+	gameIndexPath string
+	gameIndex     *source2.GameIndex
 	// The launch in flight, if there is one: why it could not be started, and
 	// what came of the last one that was.
 	launching bool
@@ -568,10 +583,12 @@ func (a *app) modsPage(c *ui.Context) {
 	// list current: the check stands for its time, so the several rebuilds of
 	// one frame and the redraws after it ask at most once in a while.
 	a.maybeCheckUpdates()
+	a.maybeCheckHealth()
 	s := a.state()
 	mods := a.installed()
 	profiles := a.profileStateNow()
 	infos := a.modInfos()
+	health := a.healthState()
 	// The page orders the mods itself rather than showing the game's load
 	// order: an order that changes with a switch is one a click can land in
 	// the wrong row of.
@@ -587,6 +604,7 @@ func (a *app) modsPage(c *ui.Context) {
 	a.heroDialog(c)
 	a.filesDialog(c)
 	a.updateFilesDialog(c)
+	a.compatibilityDialog(c)
 
 	ui.Column(c).Fill().Padding(24).Gap(12).Children(func() {
 		ui.Row(c).FillWidth().Gap(12).AlignItems(ui.Center).Children(func() {
@@ -605,6 +623,10 @@ func (a *app) modsPage(c *ui.Context) {
 			ui.Segmented(c, &order, modsSortLabels...).
 				Label("模组排序方式").
 				OnChange(func() { a.setModsSort(modsSorts[order]) })
+			ui.Button(c, "兼容性").
+				Tooltip("检查模组与当前游戏是否兼容，并修复相机等问题。").
+				Disabled(s.install == nil || s.looking).
+				OnClick(a.openCompatibility)
 			ui.Button(c, "检查更新").
 				Label("检查模组更新").
 				Disabled(s.install == nil || s.looking || len(mods.list) == 0 ||
@@ -667,7 +689,8 @@ func (a *app) modsPage(c *ui.Context) {
 					mod := list[i]
 					info := infos[mod.ID]
 					work := a.modWorkFor(mod, info, ups.snapshots, active)
-					a.modCard(c, mod, info, work, mods.reading || s.gameRunning || work.busy)
+					healthEntry, hasHealth := health.byID[mod.ID]
+					a.modCard(c, mod, info, work, healthEntry, hasHealth, mods.reading || s.gameRunning || work.busy)
 				}).Grow(1)
 			return
 		}
@@ -683,7 +706,8 @@ func (a *app) modsPage(c *ui.Context) {
 				mod := list[r.Index]
 				info := infos[mod.ID]
 				work := a.modWorkFor(mod, info, ups.snapshots, active)
-				a.modRow(c, r, mod, info, work,
+				healthEntry, hasHealth := health.byID[mod.ID]
+				a.modRow(c, r, mod, info, work, healthEntry, hasHealth,
 					mods.reading || s.gameRunning || work.busy)
 			})
 	})
@@ -735,7 +759,7 @@ var modPicture = box{W: 160, H: 90}
 // id and no picture. A mod the last check found an update for offers the way to
 // install it here.
 func (a *app) modRow(c *ui.Context, r ui.ListRow, mod addons.Mod, info config.ModInfo,
-	work modWork, reading bool) {
+	work modWork, health modhealth.Health, hasHealth bool, reading bool) {
 	t := c.Theme()
 	// A local copy, because the switch binds to a value the view rebuilds every
 	// pass. OnChange runs once the bound switch has written the new state into
@@ -767,6 +791,10 @@ func (a *app) modRow(c *ui.Context, r ui.ListRow, mod addons.Mod, info config.Mo
 				MaxLines(1).Ellipsis("…")
 			ui.Text(c, "角色："+heroLabel(heroFor(mod.ID, info))).FontSize(12).TextColor(t.TextMuted)
 			ui.Text(c, modSummary(mod)).FontSize(12).TextColor(t.TextMuted)
+			if hasHealth {
+				line, tone := healthLine(health)
+				ui.Text(c, line).FontSize(12).TextColor(healthToneColor(t, tone))
+			}
 			if work.hasUpdate {
 				color := t.Accent
 				if work.updating {
@@ -856,7 +884,7 @@ var modCardPicture = box{W: 240, H: 130}
 // and the way into the store are in 更多, so that a card stays a summary at the
 // width the grid gives it.
 func (a *app) modCard(c *ui.Context, mod addons.Mod, info config.ModInfo,
-	work modWork, reading bool) {
+	work modWork, health modhealth.Health, hasHealth bool, reading bool) {
 	t := c.Theme()
 	enabled := mod.Enabled
 	name := modName(mod.ID, info)
@@ -879,6 +907,11 @@ func (a *app) modCard(c *ui.Context, mod addons.Mod, info config.ModInfo,
 			TextColor(t.TextMuted).MaxLines(1).Ellipsis("…")
 		ui.Text(c, modSummary(mod)).FontSize(12).TextColor(t.TextMuted).
 			MaxLines(1).Ellipsis("…")
+		if hasHealth {
+			line, tone := healthLine(health)
+			ui.Text(c, line).FontSize(12).TextColor(healthToneColor(t, tone)).
+				MaxLines(1).Ellipsis("…")
+		}
 		// One line of state at most: the card has a fixed height, and an
 		// update that failed is the thing the user has to act on.
 		switch {
@@ -1019,6 +1052,7 @@ func (a *app) setEnabled(id string, on bool) {
 		// doing nothing, so the game's configuration follows every change.
 		info, infoErr := game.GameInfo{}, error(nil)
 		if switchErr == nil {
+			a.refreshOverlay(install, profile)
 			info, infoErr = a.patchGameInfo(install, profile)
 		}
 		a.profileWriteMu.Unlock()
@@ -1095,6 +1129,7 @@ func (a *app) removeMod(id string) {
 		// follows every change, as it does a switch.
 		info, infoErr := game.GameInfo{}, error(nil)
 		if removeErr == nil {
+			a.refreshOverlay(install, profile)
 			info, infoErr = a.patchGameInfo(install, profile)
 		}
 		a.profileWriteMu.Unlock()
@@ -1156,7 +1191,11 @@ func (a *app) applyGameInfo() {
 			return
 		}
 
-		info, err := a.patchGameInfo(install, profileFor(install, folder))
+		profile := profileFor(install, folder)
+		a.profileWriteMu.Lock()
+		a.refreshOverlay(install, profile)
+		info, err := a.patchGameInfo(install, profile)
+		a.profileWriteMu.Unlock()
 		var message string
 		if err != nil {
 			message = err.Error()
@@ -1188,8 +1227,12 @@ func (a *app) applyGameInfo() {
 // between.
 func (a *app) patchGameInfo(install *game.Install, profile addons.Profile) (game.GameInfo, error) {
 	a.gameinfoMu.Lock()
-	defer a.gameinfoMu.Unlock()
-	return patchGameInfo(install, profile)
+	info, err := patchGameInfo(install, profile)
+	a.gameinfoMu.Unlock()
+	// Every caller changes something the health check looked at, or writes the
+	// paths its fixes are mounted through.
+	a.bumpHealth()
+	return info, err
 }
 
 // patchGameInfo is the write itself, without the lock this app's callers take.
@@ -1198,10 +1241,22 @@ func patchGameInfo(install *game.Install, profile addons.Profile) (game.GameInfo
 	if err != nil {
 		return game.GameInfo{}, err
 	}
+	// The compatibility package wins over the mods it was built from, so its
+	// directory is searched first. A package that is not there is not named:
+	// the same call after a failed rebuild leaves the game on the mod files.
+	if vpkPath := overlayVPKPath(install, profile); fileExists(vpkPath) {
+		overlayPath := portoverlay.SearchPath(profileFolderPtr(profile.Folder))
+		paths = append([]string{overlayPath}, paths...)
+	}
 	if _, err := install.PatchGameInfo(paths); err != nil {
 		return game.GameInfo{}, err
 	}
 	return install.ReadGameInfo()
+}
+
+func fileExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.Mode().IsRegular()
 }
 
 func (a *app) settingsPage(c *ui.Context) {
@@ -1220,6 +1275,7 @@ func (a *app) settingsPage(c *ui.Context) {
 			a.cacheSection(c, s)
 			a.skinsSection(c, s)
 			a.appUpdateSection(c)
+			a.healthSection(c, s)
 			a.aboutSection(c)
 		})
 	})
@@ -1519,6 +1575,7 @@ func (a *app) start(cfg config.Config, cfgErr error) {
 			log.Printf("reading the mod library: %v", err)
 		}
 	}
+	a.initHealth()
 	if cfgErr != nil {
 		// The directory the user chose last time is not in effect, so the app
 		// detects the game instead, and says why.
@@ -1681,6 +1738,7 @@ func (a *app) look(pinned string, remember bool, warn error) {
 				// and the new set gets the page's own check again.
 				a.checkedAt = time.Time{}
 				a.autoChecked = false
+				a.healthEpoch++
 			}
 			a.gameInfo, a.gameInfoErr = info, infoErr
 			if lookErr != nil {

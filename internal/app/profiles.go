@@ -18,6 +18,7 @@ import (
 	"github.com/BabyLy233/mylock/internal/addons"
 	"github.com/BabyLy233/mylock/internal/config"
 	"github.com/BabyLy233/mylock/internal/game"
+	portoverlay "github.com/BabyLy233/mylock/third_party/deadlock-mod-manager/port/overlay"
 )
 
 // defaultProfileName is what the default profile, whose files are the addons
@@ -444,7 +445,10 @@ func (a *app) switchProfile(folder string) {
 				return
 			}
 		}
+		a.profileWriteMu.Lock()
+		a.refreshOverlay(install, target)
 		info, err := a.patchGameInfo(install, target)
+		a.profileWriteMu.Unlock()
 		if err != nil {
 			a.failProfile("切换配置档失败：" + err.Error())
 			return
@@ -550,7 +554,10 @@ func (a *app) deleteProfile(folder string) {
 		if active {
 			def := addons.Open(install.AddonsDir())
 			var err error
+			a.profileWriteMu.Lock()
+			a.refreshOverlay(install, def)
 			info, err = a.patchGameInfo(install, def)
+			a.profileWriteMu.Unlock()
 			if err != nil {
 				a.failProfile("删除前切回默认配置档失败：" + err.Error())
 				return
@@ -570,6 +577,10 @@ func (a *app) deleteProfile(folder string) {
 		// files of the profile are left for the game to find.
 		profile := addons.OpenNamed(install.AddonsDir(), folder)
 		var removeErrs []error
+		// The package belongs to this profile's folder, so it goes with it.
+		if err := os.RemoveAll(portoverlay.Directory(install.CitadelDir(), &folder)); err != nil {
+			removeErrs = append(removeErrs, err)
+		}
 		for shard := uint32(addons.FirstShard); shard <= addons.MaxShards; shard++ {
 			if err := os.RemoveAll(profile.ShardDir(shard)); err != nil {
 				removeErrs = append(removeErrs, err)
