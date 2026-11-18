@@ -12,6 +12,7 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/BabyLy233/mylock/third_party/deadlock-mod-manager/port/compiled"
 	"github.com/BabyLy233/mylock/third_party/deadlock-mod-manager/port/kv3"
 	"github.com/BabyLy233/mylock/third_party/deadlock-mod-manager/port/resource"
 )
@@ -334,5 +335,63 @@ func TestBuildTableMigratesEnumsAndRebasesCopiedHero(t *testing.T) {
 	})
 	if !found {
 		t.Fatalf("repairs = %+v", prepared.Repairs)
+	}
+}
+
+func TestMergeRebuildsNestedValuesAndPreservesWireTypes(t *testing.T) {
+	baseRow := kv3.Object(
+		kv3.Pair{Key: "_class", Value: kv3.String("TestAbility")},
+		kv3.Pair{Key: "m_flCooldown", Value: kv3.Double(1.5)},
+		kv3.Pair{Key: "m_nLevels", Value: kv3.Int(2)},
+		kv3.Pair{Key: "m_vecPoint", Value: kv3.Array(kv3.Double(0.5), kv3.Double(1.25))},
+		kv3.Pair{Key: "m_sName", Value: kv3.String("base")},
+	)
+	authoredRow := kv3.Object(
+		kv3.Pair{Key: "_class", Value: kv3.String("TestAbility")},
+		kv3.Pair{Key: "m_flCooldown", Value: kv3.Double(2.75)},
+		kv3.Pair{Key: "m_nLevels", Value: kv3.Int(3)},
+		kv3.Pair{Key: "m_vecPoint", Value: kv3.Array(kv3.Double(1), kv3.Double(2), kv3.Double(3))},
+		kv3.Pair{Key: "m_sName", Value: kv3.String("authored")},
+		kv3.Pair{Key: "m_bEnabled", Value: kv3.Bool(true)},
+	)
+	base := kv3.Object(
+		kv3.Pair{Key: "ability_one", Value: baseRow},
+		kv3.Pair{Key: "ability_untouched", Value: kv3.Int(7)},
+	)
+	sourceTable := kv3.Object(kv3.Pair{Key: "ability_one", Value: authoredRow})
+	table, err := BuildTable(AbilitiesPath, compiledResource(t, base), []Source{{
+		ModID: "mod", SourceVPK: "mod.vpk", Bytes: compiledResource(t, sourceTable),
+	}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := Prepare([]*Table{table}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	output, applied, err := table.EncodeMerged(prepared.Merged[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if applied != 1 {
+		t.Fatalf("applied rows = %d", applied)
+	}
+	_, root, encoding, err := compiled.Decode(output, "rebuilt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	row, ok := rowOf(&root, "ability_one")
+	if !ok || !kv3.Equal(row, &authoredRow) {
+		t.Fatalf("row = %+v", row)
+	}
+	untouched, _ := rowOf(&root, "ability_untouched")
+	if untouched.Int != 7 {
+		t.Fatalf("untouched row = %+v", untouched)
+	}
+	_, expectedEncoding := decodeTest(t, sourceTable)
+	rowEncoding, _ := compiledEncodingGet(encoding.Children.Object, "ability_one")
+	expectedRowEncoding, _ := compiledEncodingGet(expectedEncoding.Children.Object, "ability_one")
+	if !encodingEqual(rowEncoding, expectedRowEncoding) {
+		t.Fatal("authored wire types were not preserved")
 	}
 }

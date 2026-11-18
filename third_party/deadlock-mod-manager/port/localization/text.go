@@ -81,8 +81,17 @@ func ParseBytes(bytes []byte, source string) (Parsed, error) {
 		return Parsed{}, fmt.Errorf("%s is not UTF-8 or UTF-16 text", source)
 	}
 	text = strings.TrimPrefix(text, "\ufeff")
-	if parsed, ok := parseKeyValues(text); ok {
+	parsed, outcome, root := parseKeyValues(text)
+	switch outcome {
+	case keyValuesOK:
+		if parsed.File.Language == "" {
+			parsed.File.Language = InferLanguage(source)
+		}
 		return parsed, nil
+	case keyValuesWrongRoot:
+		return Parsed{}, fmt.Errorf("Localization file %s has root %q, expected lang", source, root)
+	case keyValuesInvalidStructure:
+		return Parsed{}, fmt.Errorf("Localization file %s has no Tokens object", source)
 	}
 	return parseLines(text, source)
 }
@@ -130,21 +139,29 @@ type kvToken struct {
 	text string
 }
 
-func parseKeyValues(text string) (Parsed, bool) {
+type keyValuesOutcome uint8
+
+const (
+	keyValuesOK keyValuesOutcome = iota
+	keyValuesSyntax
+	keyValuesWrongRoot
+	keyValuesInvalidStructure
+)
+
+func parseKeyValues(text string) (Parsed, keyValuesOutcome, string) {
 	tokens, ok := tokenizeKeyValues(text)
 	if !ok || len(tokens) < 2 || tokens[0].kind != 's' {
-		return Parsed{}, false
+		return Parsed{}, keyValuesSyntax, ""
 	}
 	root, position, ok := parsePair(tokens, 0)
 	if !ok || position != len(tokens) {
-		return Parsed{}, false
+		return Parsed{}, keyValuesSyntax, ""
 	}
 	if !strings.EqualFold(root.key, "lang") {
-		// The original reports this as an error, not as a fallback parse.
-		return Parsed{}, false
+		return Parsed{}, keyValuesWrongRoot, root.key
 	}
 	if !root.value.isObject {
-		return Parsed{}, false
+		return Parsed{}, keyValuesInvalidStructure, root.key
 	}
 	language := ""
 	for _, pair := range root.value.object {
@@ -152,9 +169,6 @@ func parseKeyValues(text string) (Parsed, bool) {
 			language = pair.value.text
 			break
 		}
-	}
-	if language == "" {
-		language = InferLanguage("")
 	}
 	tokensObject := (*kvValue)(nil)
 	for index := range root.value.object {
@@ -165,7 +179,7 @@ func parseKeyValues(text string) (Parsed, bool) {
 		}
 	}
 	if tokensObject == nil {
-		return Parsed{}, false
+		return Parsed{}, keyValuesInvalidStructure, root.key
 	}
 	localization := File{Language: language, Tokens: make(map[string]string)}
 	for _, pair := range tokensObject.object {
@@ -173,7 +187,7 @@ func parseKeyValues(text string) (Parsed, bool) {
 			localization.Tokens[pair.key] = pair.value.text
 		}
 	}
-	return Parsed{File: localization}, true
+	return Parsed{File: localization}, keyValuesOK, root.key
 }
 
 func parsePair(tokens []kvToken, position int) (kvPair, int, bool) {
