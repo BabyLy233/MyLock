@@ -14,7 +14,7 @@ const (
 	// SchemaVersion is bumped when the cache layout changes incompatibly.
 	SchemaVersion = 1
 	// RulesRevision is bumped when status, symptom or coverage rules change.
-	RulesRevision = 12
+	RulesRevision = 13
 	// RepairRevision is bumped when the repair rules change.
 	RepairRevision = 8
 )

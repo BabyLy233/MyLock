@@ -38,7 +38,7 @@ file records the source path and baseline commit in its header.
 | `localization_overlay/model_camera/contract.rs` | `port/camera/contract.go` |
 | `localization_overlay/camera_controls.rs` | `port/camera/controls.go` |
 | `localization_overlay/model_text.rs` | `port/modeltext/` |
-| `localization_overlay/asset_compatibility.rs` (skeleton, remapping, mesh, reference subset) | `port/compat/`, `internal/modcompat/analyze.go` |
+| `localization_overlay/asset_compatibility.rs` (skeleton, remapping, mesh, reference, unloaded-model subset) | `port/compat/`, `internal/modcompat/analyze.go`, `internal/modcompat/references.go` |
 | `localization_overlay/model_sounds.rs` | `port/modelsounds/` |
 | `packages/vpkmanager/src/material_repair.rs` | `port/resource/rerl.go`, `port/material/` |
 | `packages/vpkmanager/src/resource_id.rs` | `port/resource/id.go` |
@@ -57,7 +57,7 @@ file records the source path and baseline commit in its header.
 | `localization_overlay/model_animation/sampled_controls.rs` | `port/animation/restore.go` |
 | `localization_overlay/model_animation/metadata.rs` | `port/animation/restore.go` |
 | `localization_overlay/model_animation/scaled_rig.rs` | `port/animation/proof.go` |
-| `localization_overlay/model_relocation.rs` (archived bindings subset) | `port/relocation/`, `internal/modcompat/relocation.go` |
+| `localization_overlay/model_relocation.rs` (archived bindings and prop-model subset) | `port/relocation/`, `internal/modcompat/relocation.go`, `internal/modcompat/references.go` |
 | `assets/hero-model-bindings.json` | `port/relocation/hero-model-bindings.json` |
 | `mod_manager/vdata_history.rs` (observed string bindings subset) | `port/history/` |
 | `assets/vdata-history.bin` | `port/history/vdata-history.bin` |

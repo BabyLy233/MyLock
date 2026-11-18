@@ -359,6 +359,38 @@ func TestOverlappingModelsMarkBothModsIncomplete(t *testing.T) {
 	}
 }
 
+func TestFindingsIgnoreUnloadedModelsAndHeroChecksOnProps(t *testing.T) {
+	findings := FindingsFromAnalysis(modcompat.Analysis{
+		ModelsChecked:  2,
+		UnloadedModels: []string{"models/unloaded.vmdl_c"},
+		PropModels:     []string{"models/prop.vmdl_c"},
+		AssetWarnings: []modcompat.AssetWarning{
+			{FilePath: "models/unloaded.vmdl_c", Kind: compat.WarningMissingResource},
+			{FilePath: "models/prop.vmdl_c", Kind: compat.WarningMissingCameraInterface},
+			{FilePath: "models/prop.vmdl_c", Kind: compat.WarningInvalidHitbox},
+		},
+	})
+	if findings.Warnings != 2 {
+		t.Fatalf("warnings = %d", findings.Warnings)
+	}
+	if len(findings.RemainingSymptoms) != 1 || findings.RemainingSymptoms[0] != SymptomCrashRisk {
+		t.Fatalf("remaining = %v", findings.RemainingSymptoms)
+	}
+	if !findings.NeedsUpdate {
+		t.Fatal("invalid hitbox should need an update")
+	}
+	unloadedOnly := FindingsFromAnalysis(modcompat.Analysis{
+		ModelsChecked:  1,
+		UnloadedModels: []string{"models/unloaded.vmdl_c"},
+		AssetWarnings: []modcompat.AssetWarning{
+			{FilePath: "models/unloaded.vmdl_c", Kind: compat.WarningMissingResource},
+		},
+	})
+	if unloadedOnly.Warnings != 0 || unloadedOnly.NeedsUpdate {
+		t.Fatalf("unloaded findings = %+v", unloadedOnly)
+	}
+}
+
 func TestFindingsFromAnalysisMapsTaggedSoundRepairToAnimations(t *testing.T) {
 	findings := FindingsFromAnalysis(modcompat.Analysis{
 		ModelsChecked: 1,

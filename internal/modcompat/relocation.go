@@ -78,17 +78,18 @@ func applyRelocation(analysis *Analysis, modID string, models []modelSource, gam
 	modPaths map[string]struct{}, modArchives map[string]*vpk.Archive,
 	read func(string) ([]byte, error), exists func(string) bool,
 	hasAnimationEntries bool, scope Scope, repairedPaths map[string]struct{},
-	effective map[string]effectiveModel, mode Mode) {
+	effective map[string]effectiveModel, mode Mode) map[string]struct{} {
+	historical := make(map[string]struct{})
 	if game == nil || len(models) == 0 {
-		return
+		return historical
 	}
 	registryBytes, ok := game.GameBytes(relocation.HeroesVDataPath)
 	if !ok {
-		return
+		return historical
 	}
 	_, registry, _, err := camera.DecodeCompiled(registryBytes)
 	if err != nil {
-		return
+		return historical
 	}
 	registryBlocked := scope.RegistryModified || scope.Unknown
 	var overridden map[string]struct{}
@@ -124,6 +125,7 @@ func applyRelocation(analysis *Analysis, modID string, models []modelSource, gam
 		if len(targets) == 0 {
 			continue
 		}
+		historical[path] = struct{}{}
 		if len(targets) > 1 {
 			warn(source, path, fmt.Sprintf(
 				"Historical hero bindings associate this old model with multiple current models: %s",
@@ -283,6 +285,7 @@ func applyRelocation(analysis *Analysis, modID string, models []modelSource, gam
 			analysis.Fixed[target] = fixed
 		}
 	}
+	return historical
 }
 
 // changedRegistryTargets lists the game registry targets a mod registry would

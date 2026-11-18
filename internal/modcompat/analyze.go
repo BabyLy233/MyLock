@@ -93,6 +93,12 @@ type Analysis struct {
 	// ScopeIncomplete marks a mod whose files another enabled mod also
 	// provides: its findings cannot be repaired on its own.
 	ScopeIncomplete bool
+	// UnloadedModels are mod-only models nothing loaded references. Their
+	// warnings are left out of review and mod health.
+	UnloadedModels []string
+	// PropModels are warned models that are not a hero's model. Hero camera,
+	// animation and model-mapping warnings on them do not affect mod health.
+	PropModels []string
 }
 
 // SupportedChecks are the health categories the analyzer covers today.
@@ -274,7 +280,7 @@ func Analyze(modID string, vpkPaths []string, game *source2.GameIndex, scope Sco
 		}
 	}
 
-	applyRelocation(&analysis, modID, models, game, modPaths, modArchives,
+	relocated := applyRelocation(&analysis, modID, models, game, modPaths, modArchives,
 		readResource, exists, hasAnimationEntries, scope, repairedPaths, effective, mode)
 	applyMaterialBindings(&analysis, modID, materialCandidates, readResource, game, repairedPaths, effective, mode)
 
@@ -306,6 +312,17 @@ func Analyze(modID string, vpkPaths []string, game *source2.GameIndex, scope Sco
 		return Analysis{}, err
 	}
 	applyAnimationContract(&analysis, modID, effective, readResource, game, modArchives, scope)
+	if unloaded, ok := unloadedModels(game, modPaths, modArchives, readResource, relocated); ok {
+		analysis.UnloadedModels = unloaded
+	}
+	warnedPaths := make([]string, 0, len(analysis.AssetWarnings)+len(analysis.Warnings))
+	for _, warning := range analysis.AssetWarnings {
+		warnedPaths = append(warnedPaths, warning.FilePath)
+	}
+	for _, warning := range analysis.Warnings {
+		warnedPaths = append(warnedPaths, warning.FilePath)
+	}
+	analysis.PropModels = propModels(game, readResource, warnedPaths, relocated)
 	return analysis, nil
 }
 

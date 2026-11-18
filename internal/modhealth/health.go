@@ -125,18 +125,42 @@ type Report struct {
 func FindingsFromAnalysis(analysis modcompat.Analysis) Findings {
 	fixSet := make(map[Symptom]struct{})
 	remaining := make(map[Symptom]struct{})
+	unloaded := make(map[string]struct{}, len(analysis.UnloadedModels))
+	for _, path := range analysis.UnloadedModels {
+		unloaded[path] = struct{}{}
+	}
+	props := make(map[string]struct{}, len(analysis.PropModels))
+	for _, path := range analysis.PropModels {
+		props[path] = struct{}{}
+	}
 	for _, repair := range analysis.Repairs {
 		if symptom := repairSymptom(repair.Kind); symptom != "" {
 			fixSet[symptom] = struct{}{}
 		}
 	}
+	warnings := 0
 	for _, warning := range analysis.Warnings {
+		if _, skipped := unloaded[camera.NormalizePath(warning.FilePath)]; skipped {
+			continue
+		}
+		warnings++
+		if _, prop := props[camera.NormalizePath(warning.FilePath)]; prop && heroOnlyCamera(warning.Kind) {
+			continue
+		}
 		if symptom := warningSymptom(warning.Kind); symptom != "" {
 			remaining[symptom] = struct{}{}
 		}
 	}
 	for _, warning := range analysis.AssetWarnings {
+		path := camera.NormalizePath(warning.FilePath)
+		if _, skipped := unloaded[path]; skipped {
+			continue
+		}
+		warnings++
 		if informationalAssetWarning(warning) {
+			continue
+		}
+		if _, prop := props[path]; prop && heroOnlyAsset(warning.Kind) {
 			continue
 		}
 		if symptom := assetWarningSymptom(warning.Kind); symptom != "" {
@@ -146,13 +170,35 @@ func FindingsFromAnalysis(analysis modcompat.Analysis) Findings {
 	return Findings{
 		Repairs:           len(analysis.Repairs),
 		Checks:            append([]string(nil), analysis.Checks...),
-		Warnings:          len(analysis.Warnings) + len(analysis.AssetWarnings),
+		Warnings:          warnings,
 		NeedsUpdate:       len(remaining) > 0,
 		FixSymptoms:       sortedSymptoms(fixSet),
 		RemainingSymptoms: sortedSymptoms(remaining),
 		Covered:           analysis.ModelsChecked > 0 || analysis.AssetsChecked > 0,
 		ScopeIncomplete:   analysis.ScopeIncomplete,
 	}
+}
+
+// heroOnlyCamera reports camera findings that do not apply to a non-hero model.
+func heroOnlyCamera(kind camera.WarningKind) bool {
+	switch kind {
+	case camera.WarningMissingInterface, camera.WarningMissingAttachments,
+		camera.WarningOutdatedAttachments:
+		return true
+	}
+	return false
+}
+
+// heroOnlyAsset reports hero interface and mapping findings that do not apply
+// to a non-hero model, such as a particle's model.
+func heroOnlyAsset(kind compat.WarningKind) bool {
+	switch kind {
+	case compat.WarningMissingCameraInterface, compat.WarningMissingCameraAttachments,
+		compat.WarningOutdatedCameraAttachments, compat.WarningMissingAnimationInterface,
+		compat.WarningModelMapping:
+		return true
+	}
+	return false
 }
 
 // informationalAssetWarning reports differences that only change how a mod
