@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/BabyLy233/mylock/internal/modcompat"
@@ -663,5 +664,53 @@ func TestFindingsKeepAdvisoryHudChecksWithoutChangingStatus(t *testing.T) {
 	}
 	if status := findings.Status(ChoiceUnset); status != StatusWorks {
 		t.Fatalf("HUD evidence changed the status to %s", status)
+	}
+}
+
+func TestOverlapDetailsNameAnimationFilesFromAnotherMod(t *testing.T) {
+	dir := t.TempDir()
+	compiled := func(value kv3.Value) []byte {
+		data, err := resource.Build([]resource.BuildResult{{
+			Kind: resource.BlockTypeData, Payload: kv3.Encode(&value, kv3.Format{}),
+		}}, nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return data
+	}
+	pack := func(name string, entries []vpk.PackEntry) string {
+		data, err := vpk.Pack(entries)
+		if err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	model := kv3.Object(kv3.Pair{
+		Key: "m_vecNmSkeletonRefs", Value: kv3.Array(kv3.String("anims/hero.vnmskel_c")),
+	})
+	first := pack("first_dir.vpk", []vpk.PackEntry{{
+		Path: "models/hero/hero.vmdl_c", Data: compiled(model),
+	}})
+	second := pack("second_dir.vpk", []vpk.PackEntry{
+		{Path: "models/hero/hero.vmdl_c", Data: compiled(kv3.Object())},
+		{Path: "anims/hero.vnmskel_c", Data: compiled(kv3.Object(
+			kv3.Pair{Key: "m_boneIDs", Value: kv3.Array(kv3.String("root"))},
+		))},
+	})
+	overlaps := modelOverlaps([]CheckMod{
+		{ID: "first", VPKs: []string{first}, Enabled: true},
+		{ID: "second", VPKs: []string{second}, Enabled: true},
+	})
+	if len(overlaps) != 2 {
+		t.Fatalf("overlaps = %+v", overlaps)
+	}
+	details := overlaps["first"].details
+	if len(details) != 1 || !strings.Contains(details[0], "模组 second") ||
+		!strings.Contains(details[0], "anims/hero.vnmskel_c") {
+		t.Fatalf("details = %v", details)
 	}
 }

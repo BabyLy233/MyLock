@@ -1360,6 +1360,7 @@ func (a *app) compatibilityDialog(c *ui.Context) {
 				if hud != "" {
 					extraHeight += 15
 				}
+				extraHeight += len(health.OverlapDetails) * 30
 				if health.Repairs > 0 && health.Status != modhealth.StatusFixed && !health.ScopeIncomplete {
 					fixable = append(fixable, mod.ID)
 				}
@@ -1402,6 +1403,10 @@ func (a *app) compatibilityDialog(c *ui.Context) {
 									if hud := hudSummary(health.HudChecks); hud != "" {
 										ui.Text(c, hud).FontSize(11).TextColor(t.TextMuted).
 											MaxLines(2).Ellipsis("…")
+									}
+									for _, detail := range health.OverlapDetails {
+										ui.Text(c, detail).FontSize(11).TextColor(t.TextMuted).
+											MaxLines(3).Ellipsis("…")
 									}
 								})
 								ui.Row(c).Shrink(0).Gap(6).Children(func() {

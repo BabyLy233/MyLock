@@ -59,6 +59,7 @@ file records the source path and baseline commit in its header.
 | `localization_overlay/model_animation/metadata.rs` | `port/animation/restore.go` |
 | `localization_overlay/model_animation/scaled_rig.rs` | `port/animation/proof.go` |
 | `localization_overlay/model_relocation.rs` (archived bindings and prop-model subset) | `port/relocation/`, `internal/modcompat/relocation.go`, `internal/modcompat/references.go` |
+| `localization_overlay/model_dependencies.rs` (mixed animation dependency detail) | `internal/modcompat/dependencies.go`, `internal/modhealth/check.go` |
 | `localization_overlay/animation_contract/cache.rs` | `internal/modcompat/animation_contract.go` |
 | `assets/hero-model-bindings.json` | `port/relocation/hero-model-bindings.json` |
 | `localization_overlay/compiled_resource.rs` | `port/compiled/` |
@@ -123,6 +124,12 @@ The differences are limited to Go idioms and the boundaries of this project:
   review answers only the exact conflict set, involved mod stamps, game stamps
   and learned-history digest it covered; anything else is asked again. A
   package is never written from unreviewed defaults.
+- Two enabled mods providing the same model path are reported as an overlap.
+  For the winning copy, the analyzer follows the model's animation references
+  (including graphs, clips, skeleton bindings and included models) and names
+  the files the load order would take from a different mod with different
+  bytes. The text is advisory provenance for the overlap warning; it never
+  changes the package.
 - Game-data compatibility merges every enabled mod's `scripts/*.vdata_c` table
   with the current game table at profile level, then writes one merged table
   into the overlay. Hero rows, inherited definitions, enum aliases, retired

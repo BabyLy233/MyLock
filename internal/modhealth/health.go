@@ -111,6 +111,7 @@ type Health struct {
 	Checks            []string             `json:"checks,omitempty"`
 	ScopeIncomplete   bool                 `json:"scopeIncomplete,omitempty"`
 	HudChecks         []modcompat.HudCheck `json:"hudChecks,omitempty"`
+	OverlapDetails    []string             `json:"overlapDetails,omitempty"`
 	GameBuild         *uint32              `json:"gameBuild,omitempty"`
 	CheckedAt         string               `json:"checkedAt"`
 	Source            Source               `json:"source"`

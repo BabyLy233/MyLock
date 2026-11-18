@@ -1,6 +1,7 @@
 package modhealth
 
 import (
+	"fmt"
 	"log"
 	"sort"
 	"strings"
@@ -186,21 +187,36 @@ func (c *Checker) Check(profile string, mods []CheckMod, game *source2.GameIndex
 	return CheckResult{Report: report, HistoryChanged: historyChanged}, nil
 }
 
+// overlapSummary is one mod's view of the models more than one enabled mod
+// provides: the paths, plus any animation files the load order would mix in
+// from another mod.
+type overlapSummary struct {
+	paths   []string
+	details []string
+}
+
 // applyOverlaps adds the cross-mod findings to the report without persisting
 // them: whether a path is shared depends on the other installed mods, not on
 // the bytes this mod's cached verdict was recorded for.
-func applyOverlaps(report *Report, overlaps, protected map[string][]string) {
+func applyOverlaps(report *Report, overlaps map[string]overlapSummary, protected map[string][]string) {
 	for i := range report.Mods {
 		health := &report.Mods[i]
-		paths, hasOverlap := overlaps[health.ModID]
+		overlap, hasOverlap := overlaps[health.ModID]
 		shared, protectedKnown := protected[health.ModID]
-		if len(paths) == 0 && !protectedKnown {
+		if len(overlap.paths) == 0 && !protectedKnown {
 			continue
 		}
 		health.ScopeIncomplete = true
-		health.Warnings += len(paths) + len(shared)
+		health.Warnings += len(overlap.paths) + len(shared)
 		if hasOverlap {
 			health.Symptoms = withSymptom(health.Symptoms, SymptomModel)
+		}
+		if len(overlap.details) > 3 {
+			health.OverlapDetails = append(health.OverlapDetails, overlap.details[:3]...)
+			health.OverlapDetails = append(health.OverlapDetails,
+				fmt.Sprintf("另有 %d 处重叠模型混入了其它模组的动画文件", len(overlap.details)-3))
+		} else {
+			health.OverlapDetails = append(health.OverlapDetails, overlap.details...)
 		}
 		for _, path := range shared {
 			switch {
@@ -255,42 +271,69 @@ func sharedProtection(mods []CheckMod, mounted []modcompat.ModFiles) (map[string
 	return protected, nil
 }
 
-// modelOverlaps lists the enabled mods that provide the same model path.
-func modelOverlaps(mods []CheckMod) map[string][]string {
-	enabled := 0
+// modelOverlaps lists the enabled mods that provide the same model path and,
+// for the winning copy, the animation files the load order would take from a
+// different mod. The detail is provenance evidence, not a verdict: the model
+// can be fine, or can stretch when another mod's animation ships with it.
+func modelOverlaps(mods []CheckMod) map[string]overlapSummary {
+	enabled := make([]modcompat.ModFiles, 0, len(mods))
 	for _, mod := range mods {
 		if mod.Enabled && len(mod.VPKs) > 0 {
-			enabled++
+			enabled = append(enabled, modcompat.ModFiles{ID: mod.ID, VPKs: mod.VPKs})
 		}
 	}
-	if enabled < 2 {
+	if len(enabled) < 2 {
 		return nil
 	}
 	owners := make(map[string][]string)
+	winners := make(map[string]string)
+	vpks := make(map[string][]string, len(mods))
 	for _, mod := range mods {
 		if !mod.Enabled || len(mod.VPKs) == 0 {
 			continue
 		}
+		vpks[mod.ID] = mod.VPKs
 		paths, err := modcompat.ModelPaths(mod.VPKs)
 		if err != nil {
 			continue
 		}
 		for _, path := range paths {
+			if _, taken := winners[path]; !taken {
+				winners[path] = mod.ID
+			}
 			owners[path] = append(owners[path], mod.ID)
 		}
 	}
-	overlaps := make(map[string][]string)
+	overlaps := make(map[string]overlapSummary)
 	for path, ids := range owners {
 		if len(ids) < 2 {
 			continue
 		}
 		sort.Strings(ids)
+		detail := ""
+		if winner := winners[path]; winner != "" {
+			owner := modcompat.ModFiles{ID: winner, VPKs: vpks[winner]}
+			mixed, err := modcompat.MixedAnimationDependencies(owner, enabled, path)
+			if err != nil {
+				log.Printf("Could not inspect overlapping model dependencies for %s: %v", path, err)
+				detail = "按当前加载顺序，部分动画依赖无法检查；如果模型拉伸或扭曲，先只启用需要的皮肤再测试。"
+			} else if len(mixed) > 0 {
+				detail = fmt.Sprintf("按当前加载顺序，这个模型还会混入其它模组的动画文件：%s。修复会单独评估；如果模型拉伸或扭曲，先只启用需要的皮肤再测试。",
+					modcompat.DescribeMixedDependencies(mixed))
+			}
+		}
 		for _, id := range ids {
-			overlaps[id] = append(overlaps[id], path)
+			summary := overlaps[id]
+			summary.paths = append(summary.paths, path)
+			if detail != "" {
+				summary.details = append(summary.details, detail)
+			}
+			overlaps[id] = summary
 		}
 	}
-	for id := range overlaps {
-		sort.Strings(overlaps[id])
+	for id, summary := range overlaps {
+		sort.Strings(summary.paths)
+		overlaps[id] = summary
 	}
 	return overlaps
 }
