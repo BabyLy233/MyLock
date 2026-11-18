@@ -16,7 +16,7 @@ const (
 	// RulesRevision is bumped when status, symptom or coverage rules change.
 	RulesRevision = 15
 	// RepairRevision is bumped when the repair rules change.
-	RepairRevision = 10
+	RepairRevision = 11
 )
 
 // FileStamp identifies a VPK by size and modification time, not by name:
