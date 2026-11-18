@@ -371,3 +371,91 @@ func containsSymptom(symptoms []modhealth.Symptom, want modhealth.Symptom) bool 
 	}
 	return false
 }
+
+func TestSharedLocalizationIsLeftToTheGameUnlessEveryOwnerOptsIn(t *testing.T) {
+	a := newApp()
+	a.running = func() bool { return false }
+	install, profile := fakeGame(t)
+	a.health.analyze = modcompat.Analyze
+	a.health.historyPath = func(string) (string, error) {
+		return filepath.Join(t.TempDir(), "vdata-history.bin"), nil
+	}
+	const textPath = "resource/localization/example/example_english.txt"
+	gameData, err := vpk.Pack([]vpk.PackEntry{
+		{Path: "models/heroes/hero/hero.vmdl_c", Data: []byte("game model")},
+		{Path: textPath, Data: localizationFile("Token_A", "Vanilla", "Token_B", "Keep")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(install.CitadelDir(), "pak01_dir.vpk"), gameData, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"selected", "original"} {
+		addMod(t, profile, id, "mod.vpk")
+		if err := profile.SetEnabled(id, true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mods, err := profile.Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, mod := range mods {
+		if len(mod.VpkPaths) == 0 {
+			t.Fatalf("mod %s has no VPK", mod.ID)
+		}
+		value := "Authored"
+		if mod.ID == "original" {
+			value = "Original"
+		}
+		data, err := vpk.Pack([]vpk.PackEntry{{Path: textPath, Data: localizationFile("Token_A", value)}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(mod.VpkPaths[0], data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a.install, a.mods = install, mods
+	if err := profile.SetCompatibility([]string{"selected"}, true); err != nil {
+		t.Fatal(err)
+	}
+	overlayPath := overlayVPKPath(install, profile)
+	if err := a.rebuildOverlayLocked(install, profile); err != nil {
+		t.Fatal(err)
+	}
+	if fileExists(overlayPath) {
+		t.Fatal("merged text overrode a mod that had not opted in")
+	}
+	if err := sharedFixConflict(profile, []string{"selected"}); err == nil ||
+		!strings.Contains(err.Error(), "original") {
+		t.Fatalf("shared fix error = %v", err)
+	}
+
+	// Once the other owner opts in too, both are merged and the fix proceeds.
+	if err := profile.SetCompatibility([]string{"original"}, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := sharedFixConflict(profile, []string{"selected"}); err != nil {
+		t.Fatalf("shared fix error = %v", err)
+	}
+	if err := a.rebuildOverlayLocked(install, profile); err != nil {
+		t.Fatal(err)
+	}
+	archive, err := vpk.Open(overlayPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text, err := archive.Read(textPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := portlocalization.ParseBytes(text, textPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value, _ := parsed.File.Lookup("Token_A"); value != "Authored" {
+		t.Fatalf("merged token = %q", value)
+	}
+}

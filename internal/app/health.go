@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/egoist/mygo/ui"
@@ -367,6 +368,28 @@ func (a *app) rebuildOverlayLocked(install *game.Install, profile addons.Profile
 	}
 	historyPath := a.historyPathFor(install)
 	learned := modcompat.LoadHistory(historyPath, install.ClientVersion())
+	// Resources another installed mod also ships are left as the game loads
+	// them: rewriting a shared file would change that mod without its owner
+	// opting in.
+	allFiles := make([]modcompat.ModFiles, 0, len(mods))
+	for _, mod := range mods {
+		if len(mod.VpkPaths) == 0 {
+			continue
+		}
+		allFiles = append(allFiles, modcompat.ModFiles{ID: mod.ID, VPKs: mod.VpkPaths})
+	}
+	selectedIDs := make(map[string]struct{}, len(selected))
+	for _, mod := range selected {
+		selectedIDs[mod.ID] = struct{}{}
+	}
+	protection, err := modcompat.NewRepairScope(allFiles, selectedIDs)
+	if err != nil {
+		return err
+	}
+	protected := make(map[string]struct{}, len(protection.ProtectedPaths()))
+	for _, path := range protection.ProtectedPaths() {
+		protected[path] = struct{}{}
+	}
 	// Two mods providing the same model would be collapsed into one fixed file,
 	// which silently changes the mod the game loads. Refuse instead.
 	owners := make(map[string]string)
@@ -395,11 +418,11 @@ func (a *app) rebuildOverlayLocked(install *game.Install, profile addons.Profile
 	for _, mod := range selected {
 		dataInputs = append(dataInputs, modcompat.DataInput{ModID: mod.ID, VPKs: mod.VpkPaths})
 	}
-	data, err := modcompat.FixData(dataInputs, gameIndex, learned)
+	data, err := modcompat.FixData(dataInputs, gameIndex, learned, protected)
 	if err != nil {
 		return err
 	}
-	text, err := modcompat.FixLocalization(dataInputs, gameIndex)
+	text, err := modcompat.FixLocalization(dataInputs, gameIndex, protected)
 	if err != nil {
 		return err
 	}
@@ -427,6 +450,7 @@ func (a *app) rebuildOverlayLocked(install *game.Install, profile addons.Profile
 		if err != nil {
 			return err
 		}
+		analysis.RemoveProtected(protection)
 		for path := range analysis.Fixed {
 			if modcompat.IsDataTablePath(path) {
 				delete(analysis.Fixed, path)
@@ -550,6 +574,58 @@ func (a *app) applyCompatibility(ids []string, enabled bool) {
 	}()
 }
 
+// sharedFixConflict refuses to opt a mod in when another installed mod that
+// was not part of the package keeps one of its files. The package leaves such
+// files alone, so the repair could never take effect; naming the other mod is
+// clearer than a status that keeps saying the mod is fixable.
+func sharedFixConflict(profile addons.Profile, ids []string) error {
+	mods, err := profile.Read()
+	if err != nil {
+		return err
+	}
+	requested := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		requested[id] = struct{}{}
+	}
+	var allFiles []modcompat.ModFiles
+	selected := make(map[string]struct{}, len(ids))
+	for _, mod := range mods {
+		if len(mod.VpkPaths) == 0 {
+			continue
+		}
+		allFiles = append(allFiles, modcompat.ModFiles{ID: mod.ID, VPKs: mod.VpkPaths})
+		if !mod.Enabled {
+			continue
+		}
+		if _, ok := requested[mod.ID]; ok || mod.CompatibilityEnabled {
+			selected[mod.ID] = struct{}{}
+		}
+	}
+	protection, err := modcompat.NewRepairScope(allFiles, selected)
+	if err != nil {
+		return err
+	}
+	for _, mod := range mods {
+		if !mod.Enabled || len(mod.VpkPaths) == 0 {
+			continue
+		}
+		if _, ok := requested[mod.ID]; !ok {
+			continue
+		}
+		paths, err := protection.ProtectedFor(mod.VpkPaths)
+		if err != nil {
+			return err
+		}
+		if len(paths) == 0 {
+			continue
+		}
+		owners := protection.ModIDs(paths[0])
+		return fmt.Errorf("模组 %s 与 %s 共用 %s，无法安全修复；请先停用对方模组，或为它也开启兼容性。",
+			mod.ID, strings.Join(owners, "、"), paths[0])
+	}
+	return nil
+}
+
 // writeCompatibility takes the profile lock, changes the choice, rebuilds the
 // overlay and writes the game's search paths, in that order. Removing the old
 // package first means a crash at any step falls back to the mod files rather
@@ -563,6 +639,11 @@ func (a *app) writeCompatibility(install *game.Install, folder string, ids []str
 
 	profile := profileFor(install, folder)
 	vpkPath := overlayVPKPath(install, profile)
+	if enabled {
+		if err := sharedFixConflict(profile, ids); err != nil {
+			return nil, game.GameInfo{}, err
+		}
+	}
 	// Asked again after taking the lock, which is the last point before files
 	// this write replaces are touched: the game can have started while the
 	// choice was being prepared.

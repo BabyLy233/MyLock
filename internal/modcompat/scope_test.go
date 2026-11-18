@@ -2,8 +2,10 @@ package modcompat
 
 import (
 	"path/filepath"
+	"slices"
 	"testing"
 
+	"github.com/BabyLy233/mylock/third_party/deadlock-mod-manager/port/vdata"
 	"github.com/BabyLy233/mylock/third_party/deadlock-mod-manager/port/vpk"
 )
 
@@ -75,5 +77,137 @@ func TestProvidesPathNormalizesResourceNames(t *testing.T) {
 	provided, err = ProvidesPath([]string{mod}, "models/other/other.vmdl")
 	if err != nil || provided {
 		t.Fatalf("unexpected model provided = %v, err = %v", provided, err)
+	}
+}
+
+func TestRepairScopeProtectsMergedFilesFromNonSelectedMods(t *testing.T) {
+	const path = "resource/localization/example/example_english.txt"
+	const table = "scripts/heroes.vdata_c"
+	selected := packMod(t, []vpk.PackEntry{
+		{Path: path, Data: []byte("selected text")},
+		{Path: table, Data: []byte("selected table")},
+	})
+	original := packMod(t, []vpk.PackEntry{
+		{Path: path, Data: []byte("original text")},
+		{Path: table, Data: []byte("original table")},
+	})
+	for _, order := range [][]ModFiles{
+		{{ID: "selected", VPKs: []string{selected}}, {ID: "original", VPKs: []string{original}}},
+		{{ID: "original", VPKs: []string{original}}, {ID: "selected", VPKs: []string{selected}}},
+	} {
+		scope, err := NewRepairScope(order, map[string]struct{}{"selected": {}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !scope.Protects(path) || !scope.Protects(table) {
+			t.Fatalf("merged paths were not protected: %v", scope.ProtectedPaths())
+		}
+		if owners := scope.ModIDs(path); len(owners) != 1 || owners[0] != "original" {
+			t.Fatalf("owners = %v", owners)
+		}
+		protected, err := scope.ProtectedFor([]string{selected})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Equal(protected, []string{path, table}) {
+			t.Fatalf("protected for selected = %v", protected)
+		}
+	}
+}
+
+func TestRepairScopeProtectsBinaryAssetsOnlyWhenTheOtherModWins(t *testing.T) {
+	const path = "models/custom.vmdl_c"
+	selected := packMod(t, []vpk.PackEntry{{Path: path, Data: []byte("selected")}})
+	original := packMod(t, []vpk.PackEntry{{Path: path, Data: []byte("original")}})
+
+	first := []ModFiles{
+		{ID: "selected", VPKs: []string{selected}},
+		{ID: "original", VPKs: []string{original}},
+	}
+	scope, err := NewRepairScope(first, map[string]struct{}{"selected": {}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if scope.Protects(path) {
+		t.Fatal("a losing asset copy protected the selected mod's repair")
+	}
+
+	second := []ModFiles{
+		{ID: "original", VPKs: []string{original}},
+		{ID: "selected", VPKs: []string{selected}},
+	}
+	scope, err = NewRepairScope(second, map[string]struct{}{"selected": {}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !scope.Protects(path) {
+		t.Fatal("the winning original mod did not protect the path")
+	}
+}
+
+func TestRepairScopeIgnoresUnrelatedMods(t *testing.T) {
+	selected := packMod(t, []vpk.PackEntry{
+		{Path: "resource/localization/example/example_english.txt", Data: []byte("text")},
+	})
+	unrelated := packMod(t, []vpk.PackEntry{
+		{Path: "scripts/custom.vdata_c", Data: []byte("not parseable")},
+		{Path: "sounds/own.vsnd_c", Data: []byte("sound")},
+	})
+	scope, err := NewRepairScope([]ModFiles{
+		{ID: "selected", VPKs: []string{selected}},
+		{ID: "unrelated", VPKs: []string{unrelated}},
+	}, map[string]struct{}{"selected": {}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if paths, err := scope.ProtectedFor([]string{selected}); err != nil {
+		t.Fatal(err)
+	} else if len(paths) != 0 {
+		t.Fatalf("unrelated files protected for the selected mod: %v", paths)
+	}
+}
+
+func TestRemoveProtectedDropsFindingsAndFixedBytes(t *testing.T) {
+	const path = "resource/localization/example/example_english.txt"
+	const model = "models/custom.vmdl_c"
+	selected := packMod(t, []vpk.PackEntry{
+		{Path: path, Data: []byte("selected")},
+		{Path: model, Data: []byte("model")},
+	})
+	original := packMod(t, []vpk.PackEntry{{Path: path, Data: []byte("original")}})
+	scope, err := NewRepairScope([]ModFiles{
+		{ID: "selected", VPKs: []string{selected}},
+		{ID: "original", VPKs: []string{original}},
+	}, map[string]struct{}{"selected": {}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	analysis := Analysis{
+		Repairs: []Repair{
+			{FilePath: path, Kind: RepairRestoredGameData},
+			{FilePath: model, Kind: RepairCameraAttachmentFrame},
+		},
+		Warnings: []Warning{{FilePath: path}},
+		DataRepairs: []vdata.DataRepair{
+			{FilePath: path, Kind: vdata.RepairRestoredGameData},
+		},
+		DataWarnings: []vdata.DataWarning{{FilePath: path}},
+		Fixed: map[string][]byte{
+			path:  []byte("merged"),
+			model: []byte("fixed model"),
+		},
+	}
+	analysis.RemoveProtected(scope)
+	if len(analysis.Repairs) != 1 || analysis.Repairs[0].FilePath != model {
+		t.Fatalf("repairs = %+v", analysis.Repairs)
+	}
+	if len(analysis.Warnings) != 0 || len(analysis.DataRepairs) != 0 || len(analysis.DataWarnings) != 0 {
+		t.Fatalf("protected findings kept: %+v", analysis)
+	}
+	if _, ok := analysis.Fixed[path]; ok {
+		t.Fatal("protected fixed bytes kept")
+	}
+	if _, ok := analysis.Fixed[model]; !ok {
+		t.Fatal("unprotected fixed bytes were dropped")
 	}
 }

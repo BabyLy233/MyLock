@@ -61,8 +61,9 @@ func applyLocalization(analysis *Analysis, modID string, modPaths map[string]str
 }
 
 // FixLocalization merges every enabled mod's localization files against the
-// current game files. The merged text is emitted into the overlay.
-func FixLocalization(inputs []DataInput, game *source2.GameIndex) (DataResult, error) {
+// current game files. The merged text is emitted into the overlay. A path in
+// protected is left as the game loads it.
+func FixLocalization(inputs []DataInput, game *source2.GameIndex, protected map[string]struct{}) (DataResult, error) {
 	result := DataResult{Files: make(map[string][]byte)}
 	sources := make(map[string][]localization.Source)
 	for priority, input := range inputs {
@@ -74,6 +75,9 @@ func FixLocalization(inputs []DataInput, game *source2.GameIndex) (DataResult, e
 			for _, entry := range archive.Entries {
 				path := camera.NormalizePath(entry.FullPath)
 				if !localization.IsLocalizationPath(path) {
+					continue
+				}
+				if _, kept := protected[path]; kept {
 					continue
 				}
 				bytes, err := archive.ReadLimited(entry.FullPath, maxModelBytes)

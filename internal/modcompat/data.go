@@ -184,7 +184,8 @@ type DataResult struct {
 // tables. Tables are merged across mods because the game loads one table per
 // path; the first enabled mod's value wins unless a repair proves otherwise.
 // The game tables it reads are learned into hist for later game updates.
-func FixData(inputs []DataInput, game *source2.GameIndex, hist *History) (DataResult, error) {
+// A path in protected is left as the game loads it.
+func FixData(inputs []DataInput, game *source2.GameIndex, hist *History, protected map[string]struct{}) (DataResult, error) {
 	result := DataResult{Files: make(map[string][]byte)}
 	if game == nil {
 		return result, nil
@@ -202,6 +203,9 @@ func FixData(inputs []DataInput, game *source2.GameIndex, hist *History) (DataRe
 				path := camera.NormalizePath(entry.FullPath)
 				modPaths[path] = struct{}{}
 				if !IsDataTablePath(path) {
+					continue
+				}
+				if _, kept := protected[path]; kept {
 					continue
 				}
 				bytes, err := archive.ReadLimited(entry.FullPath, maxModelBytes)

@@ -67,6 +67,7 @@ file records the source path and baseline commit in its header.
 | `assets/localization-history.bin` | `port/localization/localization-history.bin` |
 | `mod_manager/vdata_history.rs` (observed strings, baseline matching, recording) | `port/history/` |
 | `localization_overlay/observed_data.rs` (observation cache and learning) | `internal/modcompat/history.go` |
+| `localization_overlay/repair_scope.rs` | `internal/modcompat/scope.go`, `internal/app/health.go` |
 | `mod_manager/manager/localization/history.rs` (learned history path, load, save) | `internal/modcompat/history.go`, `internal/config/history.go` |
 | `assets/vdata-history.bin` | `port/history/vdata-history.bin` |
 | `mod_manager/mod_health.rs` | `port/health/model.go` |
@@ -105,6 +106,12 @@ The differences are limited to Go idioms and the boundaries of this project:
   this project's `mylock` directory (the upstream uses the Tauri bundle id) and
   is keyed by the citadel path. A check that persists newly learned data
   reports `HistoryChanged`, which rebuilds the active profile's package.
+- The repair scope protects resources shipped by an installed mod that did not
+  opt in, using the same rule as upstream: merged localization/data tables are
+  protected by any other copy, a binary asset only when the other mod wins the
+  load order. Background builds skip protected files. This port has no review
+  dialog, so an explicit fix refuses with an error naming the other mod instead
+  of silently producing a package without that repair.
 - Game-data compatibility merges every enabled mod's `scripts/*.vdata_c` table
   with the current game table at profile level, then writes one merged table
   into the overlay. Hero rows, inherited definitions, enum aliases, retired

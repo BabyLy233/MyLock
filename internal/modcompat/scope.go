@@ -8,7 +8,9 @@ import (
 	"slices"
 
 	"github.com/BabyLy233/mylock/third_party/deadlock-mod-manager/port/camera"
+	"github.com/BabyLy233/mylock/third_party/deadlock-mod-manager/port/localization"
 	"github.com/BabyLy233/mylock/third_party/deadlock-mod-manager/port/relocation"
+	"github.com/BabyLy233/mylock/third_party/deadlock-mod-manager/port/vdata"
 	"github.com/BabyLy233/mylock/third_party/deadlock-mod-manager/port/vpk"
 )
 
@@ -65,6 +67,149 @@ func (s Scope) Fingerprint() string {
 	}
 	fmt.Fprintf(h, "registry=%t unknown=%t profileData=%t", s.RegistryModified, s.Unknown, s.ProfileData)
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+// RepairScope lists the resources a compatibility package must not rewrite.
+// A path is protected when an installed mod that is not part of the package
+// also ships it: merged text and data tables combine providers, while a
+// binary asset is only protected when the other mod wins the load order.
+type RepairScope struct {
+	selected  map[string]struct{}
+	protected map[string][]string
+}
+
+// NewRepairScope builds the protection set for one profile. mods are every
+// installed mod in load order, selected are the ones the package includes.
+func NewRepairScope(mods []ModFiles, selected map[string]struct{}) (*RepairScope, error) {
+	pathsByMod := make(map[string][]string, len(mods))
+	winners := make(map[string]string)
+	for _, mod := range mods {
+		paths, err := archivePaths(mod.VPKs)
+		if err != nil {
+			return nil, err
+		}
+		pathsByMod[mod.ID] = paths
+		for _, path := range paths {
+			if _, taken := winners[path]; !taken {
+				winners[path] = mod.ID
+			}
+		}
+	}
+	protected := make(map[string]map[string]struct{})
+	for _, mod := range mods {
+		if _, ok := selected[mod.ID]; ok {
+			continue
+		}
+		for _, path := range pathsByMod[mod.ID] {
+			// Merged tables combine every provider, so any other copy makes the
+			// path unsafe. A binary asset only matters when this mod is the one
+			// the game loads; otherwise the package cannot change that copy.
+			if !localization.IsLocalizationPath(path) && !IsDataTablePath(path) &&
+				winners[path] != mod.ID {
+				continue
+			}
+			if protected[path] == nil {
+				protected[path] = make(map[string]struct{})
+			}
+			protected[path][mod.ID] = struct{}{}
+		}
+	}
+	scope := &RepairScope{
+		selected:  make(map[string]struct{}, len(selected)),
+		protected: make(map[string][]string, len(protected)),
+	}
+	maps.Copy(scope.selected, selected)
+	for path, ids := range protected {
+		scope.protected[path] = slices.Sorted(maps.Keys(ids))
+	}
+	return scope, nil
+}
+
+// Includes reports whether a mod is part of the package.
+func (s *RepairScope) Includes(modID string) bool {
+	if s == nil {
+		return false
+	}
+	_, ok := s.selected[modID]
+	return ok
+}
+
+// Protects reports whether the path must be left as the game loads it.
+func (s *RepairScope) Protects(filePath string) bool {
+	if s == nil {
+		return false
+	}
+	_, ok := s.protected[normalizeScopePath(filePath)]
+	return ok
+}
+
+// ModIDs names the installed mods that keep a protected path.
+func (s *RepairScope) ModIDs(filePath string) []string {
+	if s == nil {
+		return nil
+	}
+	return s.protected[normalizeScopePath(filePath)]
+}
+
+// ProtectedPaths returns every protected path in sorted order.
+func (s *RepairScope) ProtectedPaths() []string {
+	if s == nil {
+		return nil
+	}
+	return slices.Sorted(maps.Keys(s.protected))
+}
+
+func normalizeScopePath(filePath string) string {
+	return camera.NormalizePath(filePath)
+}
+
+// ProtectedFor lists the requested resources that another installed mod keeps.
+func (s *RepairScope) ProtectedFor(vpkPaths []string) ([]string, error) {
+	if s == nil {
+		return nil, nil
+	}
+	paths, err := archivePaths(vpkPaths)
+	if err != nil {
+		return nil, err
+	}
+	var protected []string
+	for _, path := range paths {
+		if s.Protects(path) {
+			protected = append(protected, path)
+		}
+	}
+	slices.Sort(protected)
+	return slices.Compact(protected), nil
+}
+
+// RemoveProtected drops findings and repaired bytes for resources the package
+// must leave as the game loads them. Standalone health keeps the findings so
+// the player can see what a mod needs; the profile-level build removes them so
+// a report never claims a repair the package does not contain.
+func (a *Analysis) RemoveProtected(scope *RepairScope) {
+	if scope == nil {
+		return
+	}
+	a.Repairs = slices.DeleteFunc(a.Repairs, func(repair Repair) bool {
+		return scope.Protects(repair.FilePath)
+	})
+	a.Warnings = slices.DeleteFunc(a.Warnings, func(warning Warning) bool {
+		return scope.Protects(warning.FilePath)
+	})
+	a.AssetWarnings = slices.DeleteFunc(a.AssetWarnings, func(warning AssetWarning) bool {
+		return scope.Protects(warning.FilePath)
+	})
+	a.DataRepairs = slices.DeleteFunc(a.DataRepairs, func(repair vdata.DataRepair) bool {
+		return scope.Protects(repair.FilePath)
+	})
+	a.DataWarnings = slices.DeleteFunc(a.DataWarnings, func(warning vdata.DataWarning) bool {
+		return scope.Protects(warning.FilePath)
+	})
+	for path := range a.Fixed {
+		if scope.Protects(path) {
+			delete(a.Fixed, path)
+		}
+	}
 }
 
 // Scopes computes the cross-mod scope for every mod in one load order.
