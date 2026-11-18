@@ -155,12 +155,17 @@ func (a *app) checkHealth(force bool) {
 				Enabled: mod.Enabled,
 			})
 		}
+		mounted, mountErr := profileModFiles(profile, mods)
+		if mountErr != nil {
+			log.Printf("compatibility inputs: %v", mountErr)
+		}
 		result, err := checker.Check(profileCacheKey(profile), checks, gameIndex,
 			modhealth.CheckOptions{
-				Force:       force,
-				Build:       install.ClientVersion(),
-				HistoryPath: historyPath,
-				OnProgress:  a.healthProgress(install, folder, epoch),
+				Force:        force,
+				Build:        install.ClientVersion(),
+				HistoryPath:  historyPath,
+				MountedFiles: mounted,
+				OnProgress:   a.healthProgress(install, folder, epoch),
 			})
 		a.finishHealth(install, folder, epoch, result, err)
 	}()

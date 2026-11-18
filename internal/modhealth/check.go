@@ -3,11 +3,13 @@ package modhealth
 import (
 	"log"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/BabyLy233/mylock/internal/modcompat"
 	"github.com/BabyLy233/mylock/internal/source2"
+	"github.com/BabyLy233/mylock/third_party/deadlock-mod-manager/port/camera"
 )
 
 // Analyzer is the per-mod analysis function; tests can replace it.
@@ -32,6 +34,10 @@ type CheckOptions struct {
 	// reads, and saves it back when that taught it something new. Empty
 	// disables both learning and persistence.
 	HistoryPath string
+	// MountedFiles lists every archive the game loads, in load order,
+	// including archives no mod lists. Nil builds it from the checked mods.
+	// It decides which shared files the package may not rewrite.
+	MountedFiles []modcompat.ModFiles
 }
 
 // CheckResult is one check's report and whether learning changed the saved
@@ -84,6 +90,18 @@ func (c *Checker) Check(profile string, mods []CheckMod, game *source2.GameIndex
 		}
 	}
 	scopes, scopeErr := modcompat.Scopes(files)
+	protected, protectionErr := sharedProtection(mods, opts.MountedFiles)
+	if protectionErr != nil {
+		// A package cannot be proven safe without knowing who ships what, so
+		// an opted-in mod is left unfixed instead of guessing.
+		log.Printf("Could not resolve shared compatibility resources: %v", protectionErr)
+		protected = make(map[string][]string)
+		for _, mod := range mods {
+			if mod.Enabled && mod.Choice == ChoiceEnabled {
+				protected[mod.ID] = nil
+			}
+		}
+	}
 	type analyzed struct {
 		key      HealthKey
 		analysis modcompat.Analysis
@@ -154,7 +172,7 @@ func (c *Checker) Check(profile string, mods []CheckMod, game *source2.GameIndex
 		return CheckResult{}, err
 	}
 	report := c.store.Report(profile, opts.Build, installed)
-	applyOverlaps(&report, overlaps)
+	applyOverlaps(&report, overlaps, protected)
 	// Persist once, after the batch, so a crash cannot leave half a lesson.
 	// A failure never fails the check: the same tables can be learned again.
 	historyChanged := false
@@ -171,20 +189,70 @@ func (c *Checker) Check(profile string, mods []CheckMod, game *source2.GameIndex
 // applyOverlaps adds the cross-mod findings to the report without persisting
 // them: whether a path is shared depends on the other installed mods, not on
 // the bytes this mod's cached verdict was recorded for.
-func applyOverlaps(report *Report, overlaps map[string][]string) {
+func applyOverlaps(report *Report, overlaps, protected map[string][]string) {
 	for i := range report.Mods {
 		health := &report.Mods[i]
-		paths, ok := overlaps[health.ModID]
-		if !ok {
+		paths, hasOverlap := overlaps[health.ModID]
+		shared, protectedKnown := protected[health.ModID]
+		if len(paths) == 0 && !protectedKnown {
 			continue
 		}
 		health.ScopeIncomplete = true
-		health.Warnings += len(paths)
-		health.Symptoms = withSymptom(health.Symptoms, SymptomModel)
+		health.Warnings += len(paths) + len(shared)
+		if hasOverlap {
+			health.Symptoms = withSymptom(health.Symptoms, SymptomModel)
+		}
+		for _, path := range shared {
+			switch {
+			case strings.HasPrefix(path, "resource/localization/") && strings.HasSuffix(path, ".txt"),
+				modcompat.IsDataTablePath(path):
+				health.Symptoms = withSymptom(health.Symptoms, SymptomGameData)
+			case camera.IsModelPath(path):
+				health.Symptoms = withSymptom(health.Symptoms, SymptomModel)
+			}
+		}
 		if health.Status == StatusWorks {
 			health.Status = StatusNeedsUpdate
 		}
 	}
+}
+
+// sharedProtection reports the paths each opted-in mod may not repair because
+// another mounted archive also ships them.
+func sharedProtection(mods []CheckMod, mounted []modcompat.ModFiles) (map[string][]string, error) {
+	if mounted == nil {
+		mounted = make([]modcompat.ModFiles, 0, len(mods))
+		for _, mod := range mods {
+			if len(mod.VPKs) == 0 {
+				continue
+			}
+			mounted = append(mounted, modcompat.ModFiles{ID: mod.ID, VPKs: mod.VPKs})
+		}
+	}
+	selected := make(map[string]struct{})
+	for _, mod := range mods {
+		if mod.Enabled && mod.Choice == ChoiceEnabled {
+			selected[mod.ID] = struct{}{}
+		}
+	}
+	scope, err := modcompat.NewRepairScope(mounted, selected)
+	if err != nil {
+		return nil, err
+	}
+	protected := make(map[string][]string)
+	for _, mod := range mods {
+		if !mod.Enabled || mod.Choice != ChoiceEnabled || len(mod.VPKs) == 0 {
+			continue
+		}
+		paths, err := scope.ProtectedFor(mod.VPKs)
+		if err != nil {
+			return nil, err
+		}
+		if len(paths) > 0 {
+			protected[mod.ID] = paths
+		}
+	}
+	return protected, nil
 }
 
 // modelOverlaps lists the enabled mods that provide the same model path.

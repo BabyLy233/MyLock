@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/BabyLy233/mylock/internal/modcompat"
@@ -547,5 +548,68 @@ func TestCheckLearnsGameTablesAndReportsOnlySavedHistory(t *testing.T) {
 	}
 	if check().HistoryChanged {
 		t.Fatal("a failed save was reported as a history change")
+	}
+}
+
+func TestCheckMarksOptedInModsWhoseSharedFileIsProtected(t *testing.T) {
+	dir := t.TempDir()
+	store, err := Open(filepath.Join(dir, "mod-health.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const textPath = "resource/localization/example/example_english.txt"
+	pack := func(name, path string) string {
+		data, err := vpk.Pack([]vpk.PackEntry{{Path: path, Data: []byte("text")}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return writeFile(t, dir, name, data)
+	}
+	selected := pack("selected_dir.vpk", textPath)
+	other := pack("other_dir.vpk", textPath)
+	checker := NewCheckerWithAnalyzer(store, func(modID string, _ []string, _ *source2.GameIndex, _ modcompat.Scope, _ modcompat.Mode) (modcompat.Analysis, error) {
+		repairs := []modcompat.Repair{}
+		if modID == "selected" {
+			repairs = append(repairs, modcompat.Repair{
+				ModID: modID, FilePath: textPath, Kind: modcompat.RepairRestoredGameData,
+			})
+		}
+		return modcompat.Analysis{AssetsChecked: 1, Repairs: repairs}, nil
+	})
+	mods := []CheckMod{
+		{ID: "selected", VPKs: []string{selected}, Enabled: true, Choice: ChoiceEnabled},
+		{ID: "other", VPKs: []string{other}, Enabled: true},
+	}
+	report, err := checker.Check("profile", mods, nil, CheckOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := func(id string) Health {
+		t.Helper()
+		for _, health := range report.Report.Mods {
+			if health.ModID == id {
+				return health
+			}
+		}
+		t.Fatalf("mod %s missing from report", id)
+		return Health{}
+	}
+	fixed := status("selected")
+	if !fixed.ScopeIncomplete || fixed.Warnings == 0 ||
+		!slices.Contains(fixed.Symptoms, SymptomGameData) {
+		t.Fatalf("selected health = %+v", fixed)
+	}
+	if unselected := status("other"); unselected.ScopeIncomplete {
+		t.Fatalf("an unselected mod was marked incomplete: %+v", unselected)
+	}
+
+	// Once the other owner opts in too, both are merged and nothing is shared.
+	mods[1].Choice = ChoiceEnabled
+	report, err = checker.Check("profile", mods, nil, CheckOptions{Force: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if health := status("selected"); health.ScopeIncomplete {
+		t.Fatalf("merged mod stayed incomplete: %+v", health)
 	}
 }
