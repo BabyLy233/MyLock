@@ -40,8 +40,8 @@ func TestFindingsFromAnalysisMapsCameraSymptoms(t *testing.T) {
 		ModelsChecked: 1,
 		Checks:        []string{"cameraAim", "crashRisk"},
 		Repairs: []modcompat.Repair{
-			{Kind: camera.RepairAttachmentFrame},
-			{Kind: camera.RepairInterface},
+			{Kind: modcompat.RepairCameraAttachmentFrame},
+			{Kind: modcompat.RepairCameraInterface},
 		},
 		Warnings: []modcompat.Warning{{Kind: camera.WarningMissingInterface}},
 	})
@@ -117,7 +117,7 @@ func TestCheckerCachesSkipsAndForces(t *testing.T) {
 		calls++
 		return modcompat.Analysis{
 			ModelsChecked: 1,
-			Repairs:       []modcompat.Repair{{Kind: camera.RepairAttachmentFrame}},
+			Repairs:       []modcompat.Repair{{Kind: modcompat.RepairCameraAttachmentFrame}},
 			Checks:        []string{"cameraAim", "crashRisk"},
 		}, nil
 	})
@@ -182,7 +182,7 @@ func TestCheckerDropsResultsWhenFilesChangeDuringAnalysis(t *testing.T) {
 		if err := os.WriteFile(vpks[0], []byte("changed during analysis"), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		return modcompat.Analysis{ModelsChecked: 1, Repairs: []modcompat.Repair{{Kind: camera.RepairAttachmentFrame}}}, nil
+		return modcompat.Analysis{ModelsChecked: 1, Repairs: []modcompat.Repair{{Kind: modcompat.RepairCameraAttachmentFrame}}}, nil
 	})
 	mods := []CheckMod{{ID: "a", VPKs: []string{vpk}}}
 	report, err := checker.Check("profile", mods, nil, CheckOptions{})
@@ -318,5 +318,19 @@ func TestOverlappingModelsMarkBothModsIncomplete(t *testing.T) {
 	}
 	if len(report.Mods) != 1 || report.Mods[0].ScopeIncomplete {
 		t.Fatalf("stale overlap = %+v", report.Mods)
+	}
+}
+
+func TestFindingsFromAnalysisMapsTaggedSoundRepairToAnimations(t *testing.T) {
+	findings := FindingsFromAnalysis(modcompat.Analysis{
+		ModelsChecked: 1,
+		Repairs:       []modcompat.Repair{{Kind: modcompat.RepairTaggedSounds}},
+		AssetWarnings: []modcompat.AssetWarning{{Kind: compat.WarningMissingSoundBindings}},
+	})
+	if len(findings.FixSymptoms) != 1 || findings.FixSymptoms[0] != SymptomAnimations {
+		t.Fatalf("fix symptoms = %v", findings.FixSymptoms)
+	}
+	if len(findings.RemainingSymptoms) != 1 || findings.RemainingSymptoms[0] != SymptomAnimations {
+		t.Fatalf("remaining symptoms = %v", findings.RemainingSymptoms)
 	}
 }

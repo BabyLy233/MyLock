@@ -26,7 +26,7 @@ func packMod(t *testing.T, entries []vpk.PackEntry) string {
 	return path
 }
 
-func TestAnalyzeReportsCameraChecksAndEmptyFindings(t *testing.T) {
+func TestAnalyzeReportsSupportedChecksAndEmptyFindings(t *testing.T) {
 	mod := packMod(t, []vpk.PackEntry{
 		{Path: "materials/hero.vmat_c", Data: []byte("material")},
 	})
@@ -34,7 +34,7 @@ func TestAnalyzeReportsCameraChecksAndEmptyFindings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(analysis.Checks) != len(CameraChecks) || analysis.ModelsChecked != 0 {
+	if len(analysis.Checks) != len(SupportedChecks) || analysis.ModelsChecked != 0 {
 		t.Fatalf("analysis = %+v", analysis)
 	}
 	if len(analysis.Repairs) != 0 || len(analysis.Warnings) != 0 || analysis.Fixed != nil {
@@ -256,5 +256,197 @@ func TestAnalyzeReportsMaterialInterfaceDifferences(t *testing.T) {
 	}
 	if len(analysis.AssetWarnings) != 0 {
 		t.Fatalf("identical material warned: %+v", analysis.AssetWarnings)
+	}
+}
+
+const soundHeader = "<!-- kv3 encoding:text:version{e21c7f3c-8a33-41c5-9977-a76d3a32aa0d} format:vmdlkeys4:version{9f5c1002-f19f-470c-bd42-c3c26c063d33} -->"
+
+func soundBinding(name, table string) string {
+	return name + " = \n\t{\n\t\tm_taggedSounds = \n\t\t[\n\t\t\tresource:\"" + table + "\",\n\t\t]\n\t}"
+}
+
+func soundText(fields string) string {
+	return soundHeader + "\n{\n\tCustom = { value = 7 }\n\t" + fields + "\n}\n"
+}
+
+func soundModel(t *testing.T, body string, references []resource.Reference) []byte {
+	t.Helper()
+	value := kv3.Object(
+		kv3.Pair{Key: "m_modelInfo", Value: kv3.Object(
+			kv3.Pair{Key: "m_keyValueText", Value: kv3.String(body)},
+		)},
+		kv3.Pair{Key: "authored", Value: kv3.String("mesh and rig")},
+	)
+	raw, err := resource.Build([]resource.BuildResult{
+		{Kind: resource.BlockTypeData, Payload: kv3.Encode(&value, kv3.Format{})},
+		{Kind: resource.BlockTypeRERL, Payload: []byte{8, 0, 0, 0, 0, 0, 0, 0}},
+		{Kind: [4]byte{'M', 'D', 'A', 'T'}, Payload: []byte{4, 5, 6}},
+	}, nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(references) > 0 {
+		raw, err = resource.AddReferencesOf(raw, references)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	return raw
+}
+
+func soundTable(t *testing.T, kind string) []byte {
+	t.Helper()
+	value := kv3.Object(kv3.Pair{Key: "generic_data_type", Value: kv3.String(kind)})
+	return compiledBlock(t, &value)
+}
+
+func TestAnalyzeRepairsTaggedSoundBindings(t *testing.T) {
+	const modelPath = "models/hero/hero.vmdl_c"
+	const gameTable = "scripts/tagged_sounds/test_anim_sounds.vdata"
+	const customTable = "scripts/tagged_sounds/custom_steps.vdata"
+	gameID, err := resource.ResourceID(gameTable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	customID, err := resource.ResourceID(customTable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	game := gameIndexWith(t, []vpk.PackEntry{
+		{Path: modelPath, Data: soundModel(t, soundText(soundBinding("TaggedSoundSettings_t", gameTable)),
+			[]resource.Reference{{ID: gameID, Path: gameTable}})},
+		{Path: gameTable + "_c", Data: soundTable(t, "CTaggedSound_t")},
+	})
+	mod := packMod(t, []vpk.PackEntry{
+		{Path: modelPath, Data: soundModel(t,
+			soundText(soundBinding("CitadelTaggedSoundSettings_t", customTable)), nil)},
+		{Path: customTable + "_c", Data: soundTable(t, "CTaggedSound_t")},
+	})
+
+	analysis, err := Analyze("mod", []string{mod}, game, Detect)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, repair := range analysis.Repairs {
+		if repair.Kind == RepairTaggedSounds {
+			found = true
+		}
+	}
+	if !found || len(analysis.Fixed) != 0 {
+		t.Fatalf("analysis = %+v", analysis)
+	}
+	for _, warning := range analysis.AssetWarnings {
+		if warning.Kind == compat.WarningMissingSoundBindings {
+			t.Fatalf("repaired binding still warned: %+v", analysis.AssetWarnings)
+		}
+	}
+
+	analysis, err = Analyze("mod", []string{mod}, game, Fix)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixed, ok := analysis.Fixed[modelPath]
+	if !ok {
+		t.Fatalf("no fixed bytes: %+v", analysis)
+	}
+	references, err := resource.ReferencesOf(fixed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := resource.Reference{ID: customID, Path: customTable}
+	if len(references) != 1 || references[0] != want {
+		t.Fatalf("references = %#v", references)
+	}
+}
+
+func TestAnalyzeWarnsWhenTaggedSoundBindingsCannotBeRepaired(t *testing.T) {
+	const modelPath = "models/hero/hero.vmdl_c"
+	const gameTable = "scripts/tagged_sounds/test_anim_sounds.vdata"
+	const missingTable = "scripts/tagged_sounds/missing.vdata"
+	gameID, err := resource.ResourceID(gameTable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	game := gameIndexWith(t, []vpk.PackEntry{
+		{Path: modelPath, Data: soundModel(t, soundText(soundBinding("TaggedSoundSettings_t", gameTable)),
+			[]resource.Reference{{ID: gameID, Path: gameTable}})},
+		{Path: gameTable + "_c", Data: soundTable(t, "CTaggedSound_t")},
+	})
+	mod := packMod(t, []vpk.PackEntry{
+		{Path: modelPath, Data: soundModel(t,
+			soundText(soundBinding("CitadelTaggedSoundSettings_t", missingTable)), nil)},
+	})
+	analysis, err := Analyze("mod", []string{mod}, game, Detect)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, warning := range analysis.AssetWarnings {
+		if warning.Kind == compat.WarningMissingSoundBindings {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("warnings = %+v", analysis.AssetWarnings)
+	}
+	for _, repair := range analysis.Repairs {
+		if repair.Kind == RepairTaggedSounds {
+			t.Fatal("unresolvable table reported as repairable")
+		}
+	}
+}
+
+func TestAnalyzeWarnsAboutUnresolvedMaterialReferences(t *testing.T) {
+	const materialPath = "materials/hero/hero.vmat_c"
+	const missingTexture = "materials/hero/missing.vtex"
+	missingID, err := resource.ResourceID(missingTexture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := kv3.Object(
+		kv3.Pair{Key: "m_shaderName", Value: kv3.String("csgo_environment.vfx")},
+		kv3.Pair{Key: "m_intParams", Value: kv3.Array()},
+		kv3.Pair{Key: "m_textureParams", Value: kv3.Array()},
+	)
+	raw, err := resource.Build([]resource.BuildResult{
+		{Kind: resource.BlockTypeData, Payload: kv3.Encode(&source, kv3.Format{})},
+		{Kind: resource.BlockTypeRERL, Payload: []byte{8, 0, 0, 0, 0, 0, 0, 0}},
+	}, nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err = resource.AddReferencesOf(raw, []resource.Reference{{ID: missingID, Path: missingTexture}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mod := packMod(t, []vpk.PackEntry{{Path: materialPath, Data: raw}})
+	analysis, err := Analyze("mod", []string{mod}, nil, Detect)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, warning := range analysis.AssetWarnings {
+		if warning.Kind == compat.WarningMissingResource && warning.Detail == missingTexture {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("warnings = %+v", analysis.AssetWarnings)
+	}
+
+	// The same reference resolves through the mod's own VPK, in load order.
+	withTexture := packMod(t, []vpk.PackEntry{
+		{Path: materialPath, Data: raw},
+		{Path: missingTexture + "_c", Data: []byte("texture")},
+	})
+	analysis, err = Analyze("mod", []string{withTexture}, nil, Detect)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, warning := range analysis.AssetWarnings {
+		if warning.Kind == compat.WarningMissingResource && warning.Detail == missingTexture {
+			t.Fatalf("resolved reference warned: %+v", analysis.AssetWarnings)
+		}
 	}
 }

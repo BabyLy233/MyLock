@@ -377,7 +377,13 @@ ProfilePage；列表里没有它也能打开详情。详情面板因此还可能
 `internal/modcompat` 把一个模组的 VPK 与 `internal/source2` 的游戏索引对照，
 只读地产生 `Repairs` / `Warnings` / `AssetWarnings` / `Fixed`。结构检查覆盖
 模型骨架、骨骼重映射、网格挂点与碰撞盒、动画接口字段、资源引用和材质接口；有安全修复
-的项进入 `Repairs`，其余进入 `AssetWarnings` 并映射到对应症状。跨模组的同一
+的项进入 `Repairs`，其余进入 `AssetWarnings` 并映射到对应症状。音效绑定按原版
+`model_sounds` 处理：旧名 `CitadelTaggedSoundSettings_t` 就地改名为
+`TaggedSoundSettings_t`，缺失时从当前游戏模型复制绑定，保留模组自带的
+`scripts/tagged_sounds/*.vdata` 音效表，并把表路径以 `RERL` 引用（MurmurHash64B
+资源 ID）写进模型；表类型不是 `CTaggedSound_t`、表无法解析或与游戏 ID 冲突时放弃
+修复。材质除了接口比较，还会逐条解析 `RERL` 引用，缺失的依赖报为崩溃风险。
+跨模组的同一
 模型路径在检查编排层统一检测，只进入报告而不写缓存（是否冲突取决于当前安装
 的其它模组），并禁止对冲突模组做单模组修复。
 `internal/overlay` 把修复后的资源打包成独立 VPK。包与回执的命名、默认与配置档后缀、`pak01_dir.vpk` 文件名

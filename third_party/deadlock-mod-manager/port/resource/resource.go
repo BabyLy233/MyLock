@@ -37,6 +37,9 @@ func invalid(format string, args ...any) error {
 // BlockTypeData is the FOURCC of the KV3 DATA block.
 var BlockTypeData = [4]byte{'D', 'A', 'T', 'A'}
 
+// BlockTypeRERL is the FOURCC of the resource-reference block.
+var BlockTypeRERL = [4]byte{'R', 'E', 'R', 'L'}
+
 const (
 	headerLen           = 16
 	knownHeaderVersion  = 12

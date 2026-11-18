@@ -11,7 +11,6 @@ import (
 	"github.com/BabyLy233/mylock/internal/modcompat"
 	"github.com/BabyLy233/mylock/internal/modhealth"
 	"github.com/BabyLy233/mylock/internal/source2"
-	"github.com/BabyLy233/mylock/third_party/deadlock-mod-manager/port/camera"
 	"github.com/BabyLy233/mylock/third_party/deadlock-mod-manager/port/vpk"
 )
 
@@ -33,11 +32,11 @@ func writeGameVPK(t *testing.T, install *game.Install) {
 func fakeCompatibility(modID string, _ []string, _ *source2.GameIndex, mode modcompat.Mode) (modcompat.Analysis, error) {
 	analysis := modcompat.Analysis{
 		ModelsChecked: 1,
-		Checks:        append([]string(nil), modcompat.CameraChecks...),
+		Checks:        append([]string(nil), modcompat.SupportedChecks...),
 		Repairs: []modcompat.Repair{{
 			ModID:    modID,
 			FilePath: "models/heroes/hero/hero.vmdl_c",
-			Kind:     camera.RepairAttachmentFrame,
+			Kind:     modcompat.RepairCameraAttachmentFrame,
 		}},
 	}
 	if mode == modcompat.Fix {
@@ -191,16 +190,16 @@ func TestHealthCheckIsRefusedWhileTheGameRuns(t *testing.T) {
 }
 
 func TestHealthStatusBranchesShowEveryState(t *testing.T) {
-	if got, _ := healthLine(modhealth.Health{Status: modhealth.StatusFixable, Checks: modcompat.CameraChecks, Symptoms: []modhealth.Symptom{modhealth.SymptomCameraAim}}); got != "可修复：相机/瞄准（未检查：动画、外观、模型、游戏数据）" {
+	if got, _ := healthLine(modhealth.Health{Status: modhealth.StatusFixable, Checks: modcompat.SupportedChecks, Symptoms: []modhealth.Symptom{modhealth.SymptomCameraAim}}); got != "可修复：相机/瞄准（未检查：模型、游戏数据）" {
 		t.Fatalf("fixable line = %q", got)
 	}
-	if got, _ := healthLine(modhealth.Health{Status: modhealth.StatusFixed, Checks: modcompat.CameraChecks, Symptoms: []modhealth.Symptom{modhealth.SymptomCameraAim}}); got != "已修复：相机/瞄准（未检查：动画、外观、模型、游戏数据）" {
+	if got, _ := healthLine(modhealth.Health{Status: modhealth.StatusFixed, Checks: modcompat.SupportedChecks, Symptoms: []modhealth.Symptom{modhealth.SymptomCameraAim}}); got != "已修复：相机/瞄准（未检查：模型、游戏数据）" {
 		t.Fatalf("fixed line = %q", got)
 	}
-	if got, _ := healthLine(modhealth.Health{Status: modhealth.StatusNeedsUpdate, Checks: modcompat.CameraChecks, Symptoms: []modhealth.Symptom{modhealth.SymptomCrashRisk}}); got != "需要更新：崩溃风险（未检查：动画、外观、模型、游戏数据）" {
+	if got, _ := healthLine(modhealth.Health{Status: modhealth.StatusNeedsUpdate, Checks: modcompat.SupportedChecks, Symptoms: []modhealth.Symptom{modhealth.SymptomCrashRisk}}); got != "需要更新：崩溃风险（未检查：模型、游戏数据）" {
 		t.Fatalf("needs-update line = %q", got)
 	}
-	if got, _ := healthLine(modhealth.Health{Status: modhealth.StatusOriginalFiles, Checks: modcompat.CameraChecks}); got != "使用原文件（未检查：动画、外观、模型、游戏数据）" {
+	if got, _ := healthLine(modhealth.Health{Status: modhealth.StatusOriginalFiles, Checks: modcompat.SupportedChecks}); got != "使用原文件（未检查：模型、游戏数据）" {
 		t.Fatalf("original line = %q", got)
 	}
 }

@@ -151,10 +151,12 @@ func FindingsFromAnalysis(analysis modcompat.Analysis) Findings {
 	}
 }
 
-func repairSymptom(kind camera.RepairKind) Symptom {
+func repairSymptom(kind modcompat.RepairKind) Symptom {
 	switch kind {
-	case camera.RepairAttachmentFrame, camera.RepairInterface, camera.RepairControls:
+	case modcompat.RepairCameraAttachmentFrame, modcompat.RepairCameraInterface, modcompat.RepairCameraControls:
 		return SymptomCameraAim
+	case modcompat.RepairTaggedSounds:
+		return SymptomAnimations
 	}
 	return ""
 }

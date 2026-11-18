@@ -10,6 +10,7 @@ import (
 	"github.com/BabyLy233/mylock/third_party/deadlock-mod-manager/port/camera"
 	"github.com/BabyLy233/mylock/third_party/deadlock-mod-manager/port/compat"
 	"github.com/BabyLy233/mylock/third_party/deadlock-mod-manager/port/kv3"
+	"github.com/BabyLy233/mylock/third_party/deadlock-mod-manager/port/modelsounds"
 	"github.com/BabyLy233/mylock/third_party/deadlock-mod-manager/port/resource"
 	"github.com/BabyLy233/mylock/third_party/deadlock-mod-manager/port/vpk"
 )
@@ -27,12 +28,23 @@ const (
 	Fix
 )
 
+// RepairKind identifies a compatibility repair. The camera kinds keep their
+// upstream names because receipts store the kind as a string.
+type RepairKind string
+
+const (
+	RepairCameraAttachmentFrame RepairKind = RepairKind(camera.RepairAttachmentFrame)
+	RepairCameraInterface       RepairKind = RepairKind(camera.RepairInterface)
+	RepairCameraControls        RepairKind = RepairKind(camera.RepairControls)
+	RepairTaggedSounds          RepairKind = "TaggedSounds"
+)
+
 // Repair is one safe repair the analyzer can apply.
 type Repair struct {
 	ModID     string
 	SourceVPK string
 	FilePath  string
-	Kind      camera.RepairKind
+	Kind      RepairKind
 }
 
 // AssetWarning is a structural asset problem that changes what loads or how it
@@ -73,8 +85,8 @@ type Analysis struct {
 	ScopeIncomplete bool
 }
 
-// CameraChecks are the health categories the camera analyzer covers today.
-var CameraChecks = []string{"cameraAim", "crashRisk"}
+// SupportedChecks are the health categories the analyzer covers today.
+var SupportedChecks = []string{"cameraAim", "crashRisk", "animations", "appearance"}
 
 type modelSource struct {
 	path    string
@@ -86,13 +98,14 @@ type modelSource struct {
 // VPK order is load order: the first VPK providing a path wins.
 func Analyze(modID string, vpkPaths []string, game *source2.GameIndex, mode Mode) (Analysis, error) {
 	var analysis Analysis
-	analysis.Checks = append(analysis.Checks, CameraChecks...)
+	analysis.Checks = append(analysis.Checks, SupportedChecks...)
 	if mode == Fix {
 		analysis.Fixed = make(map[string][]byte)
 	}
 
 	seen := make(map[string]struct{})
 	modPaths := make(map[string]struct{})
+	modArchives := make(map[string]*vpk.Archive)
 	var models []modelSource
 	var assets []modelSource
 	hasAnimationEntries := false
@@ -105,6 +118,9 @@ func Analyze(modID string, vpkPaths []string, game *source2.GameIndex, mode Mode
 			path := entry.FullPath
 			normalized := camera.NormalizePath(path)
 			modPaths[normalized] = struct{}{}
+			if _, ok := modArchives[normalized]; !ok {
+				modArchives[normalized] = archive
+			}
 			if isAnimationPath(path) {
 				hasAnimationEntries = true
 			}
@@ -126,6 +142,23 @@ func Analyze(modID string, vpkPaths []string, game *source2.GameIndex, mode Mode
 		}
 	}
 	exists := func(name string) bool { return resourceExists(name, modPaths, game) }
+	// readResource resolves resources the way the load order does: the mod's
+	// first VPK wins, then the game. A missing resource is (nil, nil).
+	readResource := func(name string) ([]byte, error) {
+		path, ok := source2.ResourcePath(name)
+		if !ok {
+			return nil, nil
+		}
+		if archive, ok := modArchives[strings.ToLower(path)]; ok {
+			return archive.Read(path)
+		}
+		if game != nil {
+			if data, ok := game.GameBytes(path); ok {
+				return data, nil
+			}
+		}
+		return nil, nil
+	}
 
 	for _, source := range models {
 		modBytes, err := source.archive.ReadLimited(source.path, maxModelBytes)
@@ -138,31 +171,48 @@ func Analyze(modID string, vpkPaths []string, game *source2.GameIndex, mode Mode
 			base, hasBase = game.GameBytes(source.path)
 		}
 		analysis.AssetsChecked++
+		fixed := modBytes
+		changed := false
+		if hasBase {
+			analysis.ModelsChecked++
+			allowControls := func(vanilla *kv3.Value) bool {
+				return !hasAnimationEntries && gameSkeletonReference(vanilla)
+			}
+			result := camera.Analyze(modBytes, base, allowControls)
+			for _, kind := range result.RepairKinds {
+				analysis.Repairs = append(analysis.Repairs, Repair{
+					ModID: modID, SourceVPK: source.vpkPath, FilePath: source.path,
+					Kind: RepairKind(kind),
+				})
+			}
+			for _, kind := range result.Warnings {
+				analysis.Warnings = append(analysis.Warnings, Warning{
+					ModID: modID, SourceVPK: source.vpkPath, FilePath: source.path, Kind: kind, Detail: warningDetail(kind),
+				})
+			}
+			// The analyzers inspect the repaired bytes, as the upstream overlay
+			// does: warnings must describe what the game will actually load.
+			if result.Repairable {
+				if repaired, _, _, ok := camera.Repair(modBytes, base, allowControls); ok {
+					fixed = repaired
+					changed = true
+				}
+			}
+			soundFixed, soundChanged, err := modelsounds.Repair(fixed, base, readResource)
+			if err != nil {
+				return Analysis{}, fmt.Errorf("reading tagged sounds for %s: %w", source.path, err)
+			}
+			if soundChanged {
+				fixed = soundFixed
+				changed = true
+				analysis.Repairs = append(analysis.Repairs, Repair{
+					ModID: modID, SourceVPK: source.vpkPath, FilePath: source.path, Kind: RepairTaggedSounds,
+				})
+			}
+		}
 		analysis.AssetWarnings = append(analysis.AssetWarnings, structuralModelWarnings(
-			modID, source.vpkPath, source.path, modBytes, base, hasBase, exists)...)
-		if !hasBase {
-			continue
-		}
-		analysis.ModelsChecked++
-		allowControls := func(vanilla *kv3.Value) bool {
-			return !hasAnimationEntries && gameSkeletonReference(vanilla)
-		}
-		result := camera.Analyze(modBytes, base, allowControls)
-		for _, kind := range result.RepairKinds {
-			analysis.Repairs = append(analysis.Repairs, Repair{
-				ModID: modID, SourceVPK: source.vpkPath, FilePath: source.path, Kind: kind,
-			})
-		}
-		for _, kind := range result.Warnings {
-			analysis.Warnings = append(analysis.Warnings, Warning{
-				ModID: modID, SourceVPK: source.vpkPath, FilePath: source.path, Kind: kind, Detail: warningDetail(kind),
-			})
-		}
-		if mode != Fix || !result.Repairable {
-			continue
-		}
-		fixed, _, _, changed := camera.Repair(modBytes, base, allowControls)
-		if changed {
+			modID, source.vpkPath, source.path, fixed, base, hasBase, exists)...)
+		if mode == Fix && changed {
 			analysis.Fixed[source.path] = fixed
 		}
 	}
@@ -183,7 +233,7 @@ func Analyze(modID string, vpkPaths []string, game *source2.GameIndex, mode Mode
 				meshAssetWarnings(modID, source.vpkPath, source.path, data)...)
 		default:
 			analysis.AssetWarnings = append(analysis.AssetWarnings,
-				materialAssetWarnings(modID, source.vpkPath, source.path, data, game)...)
+				materialAssetWarnings(modID, source.vpkPath, source.path, data, game, exists)...)
 		}
 	}
 	return analysis, nil
@@ -262,6 +312,9 @@ func structuralModelWarnings(modID, vpkPath, path string, data, base []byte, has
 			for _, field := range compat.MissingAnimationFields(&value, &vanilla) {
 				add(compat.WarningMissingAnimationInterface, field)
 			}
+			if modelsounds.Missing(&value, &vanilla) {
+				add(compat.WarningMissingSoundBindings, modelsounds.Settings)
+			}
 		}
 	}
 	if parsed, err := resource.Parse(data); err == nil {
@@ -337,38 +390,52 @@ func meshAssetWarnings(modID, vpkPath, path string, data []byte) []AssetWarning 
 }
 
 // materialAssetWarnings compares a mod material's shader interface with the
-// current game material. It reports differences only; nothing is rewritten.
-func materialAssetWarnings(modID, vpkPath, path string, data []byte, game *source2.GameIndex) []AssetWarning {
+// current game material and checks that every RERL dependency still resolves.
+// It reports differences only; nothing is rewritten.
+func materialAssetWarnings(modID, vpkPath, path string, data []byte, game *source2.GameIndex, exists func(string) bool) []AssetWarning {
+	var warnings []AssetWarning
+	add := func(kind compat.WarningKind, detail string) {
+		warnings = append(warnings, AssetWarning{ModID: modID, SourceVPK: vpkPath, FilePath: path,
+			Kind: kind, Detail: detail})
+	}
 	_, source, _, err := camera.DecodeCompiled(data)
 	if err != nil {
 		return []AssetWarning{{ModID: modID, SourceVPK: vpkPath, FilePath: path,
 			Kind: compat.WarningUnreadableResource, Detail: err.Error()}}
 	}
-	if game == nil {
-		return nil
+	if game != nil {
+		if base, ok := game.GameBytes(path); ok {
+			_, current, _, err := camera.DecodeCompiled(base)
+			if err != nil {
+				add(compat.WarningMaterialInterface,
+					"Current material interface could not be decoded: "+err.Error())
+			} else {
+				details, err := compat.MaterialDifferences(&source, &current)
+				if err != nil {
+					add(compat.WarningMaterialInterface, err.Error())
+				}
+				for _, detail := range details {
+					add(compat.WarningMaterialInterface, detail)
+				}
+			}
+		}
 	}
-	base, ok := game.GameBytes(path)
-	if !ok {
-		// A mod-only material has no current reference to compare against.
-		return nil
+	// A mod-only material has no current reference to compare against, but its
+	// own dependencies are still resolved in the mod's load order.
+	if parsed, err := resource.Parse(data); err == nil {
+		if _, ok := parsed.FindBlock(resource.BlockTypeRERL); ok {
+			references, err := parsed.References()
+			if err != nil {
+				add(compat.WarningUnreadableResource, err.Error())
+			}
+			for _, reference := range references {
+				if !exists(reference.Path) {
+					add(compat.WarningMissingResource, reference.Path)
+				}
+			}
+		}
 	}
-	_, current, _, err := camera.DecodeCompiled(base)
-	if err != nil {
-		return []AssetWarning{{ModID: modID, SourceVPK: vpkPath, FilePath: path,
-			Kind:   compat.WarningMaterialInterface,
-			Detail: "Current material interface could not be decoded: " + err.Error()}}
-	}
-	details, err := compat.MaterialDifferences(&source, &current)
-	if err != nil {
-		return []AssetWarning{{ModID: modID, SourceVPK: vpkPath, FilePath: path,
-			Kind: compat.WarningMaterialInterface, Detail: err.Error()}}
-	}
-	warnings := make([]AssetWarning, 0, len(details))
-	for _, detail := range details {
-		warnings = append(warnings, AssetWarning{ModID: modID, SourceVPK: vpkPath, FilePath: path,
-			Kind: compat.WarningMaterialInterface, Detail: detail})
-	}
-	return warnings
+	return dedupeAssetWarnings(warnings)
 }
 
 func modelBoneSet(value *kv3.Value) map[string]struct{} {
