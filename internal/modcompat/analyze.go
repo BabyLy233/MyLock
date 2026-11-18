@@ -46,6 +46,7 @@ const (
 	RepairAnimationSkeleton        RepairKind = "AnimationSkeleton"
 	RepairAnimationSkeletonRebased RepairKind = "AnimationSkeletonRebased"
 	RepairAnimationClipTracks      RepairKind = "AnimationClipTracks"
+	RepairAnimationRigRebase       RepairKind = "AnimationRigRebase"
 )
 
 // Repair is one safe repair the analyzer can apply.

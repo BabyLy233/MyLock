@@ -29,7 +29,7 @@ const (
 	Generator = "mylock"
 	// Revision is the receipt revision. Bump it when repair rules or output
 	// semantics change, so installed overlays are rebuilt.
-	Revision uint32 = 5
+	Revision uint32 = 6
 )
 
 // ErrConflict is returned when two mods would contribute the same resource

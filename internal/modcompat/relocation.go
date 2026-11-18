@@ -36,6 +36,40 @@ func (s animationSource) FromMod(name string) bool {
 	return ok
 }
 
+// targetSkeleton resolves the single game-owned sampled skeleton referenced by
+// the current target model.
+func targetSkeleton(base []byte, resolve animation.Source) (kv3.Value, bool) {
+	_, current, _, err := camera.DecodeCompiled(base)
+	if err != nil {
+		return kv3.Value{}, false
+	}
+	refsValue, ok := current.Get("m_vecNmSkeletonRefs")
+	if !ok {
+		return kv3.Value{}, false
+	}
+	refs, ok := refsValue.AsArray()
+	if !ok || len(refs) != 1 {
+		return kv3.Value{}, false
+	}
+	name, ok := refs[0].AsString()
+	if !ok {
+		return kv3.Value{}, false
+	}
+	path, ok := source2.ResourcePath(name)
+	if !ok || resolve.FromMod(path) {
+		return kv3.Value{}, false
+	}
+	bytes, err := resolve.Resolve(path)
+	if err != nil || bytes == nil {
+		return kv3.Value{}, false
+	}
+	_, skeleton, _, err := camera.DecodeCompiled(bytes)
+	if err != nil {
+		return kv3.Value{}, false
+	}
+	return skeleton, true
+}
+
 // applyRelocation moves a mod's retired hero model onto the current hero model
 // path when the archived bindings and the animation proof agree. The relocation
 // is conservative: any competing model, modified registry, animation asset or
@@ -153,10 +187,29 @@ func applyRelocation(analysis *Analysis, modID string, models []modelSource, gam
 			return err == nil && bytes != nil
 		}
 		restored := false
+		animationKind := RepairAnimationInterface
 		beforeAnimation := modBytes
 		if prepared, ok := animation.RestoreBindings(modBytes, targetBase, resolve, available); ok {
 			beforeAnimation = prepared
 			restored = true
+		} else if skeleton, ok := targetSkeleton(targetBase, resolve); ok {
+			if rebased, ok := animation.RebaseModelRig(modBytes, targetBase, &skeleton); ok {
+				if prepared, ok := animation.RestoreBindings(rebased, targetBase, resolve, available); ok {
+					beforeAnimation = prepared
+					restored = true
+					animationKind = RepairAnimationRigRebase
+				} else {
+					warn(source, path, fmt.Sprintf(
+						"Historical hero binding maps this model to current hero model %s, but animation preservation could not be verified. Rebased animation bindings could not be restored",
+						target))
+					continue
+				}
+			} else if err := animation.ProveCurrentBindings(&old, &current, false, resolve); err != nil {
+				warn(source, path, fmt.Sprintf(
+					"Historical hero binding maps this model to current hero model %s, but animation preservation could not be verified. %s",
+					target, err))
+				continue
+			}
 		} else if err := animation.ProveCurrentBindings(&old, &current, false, resolve); err != nil {
 			warn(source, path, fmt.Sprintf(
 				"Historical hero binding maps this model to current hero model %s, but animation preservation could not be verified. %s",
@@ -217,7 +270,7 @@ func applyRelocation(analysis *Analysis, modID string, models []modelSource, gam
 		if restored {
 			analysis.Repairs = append(analysis.Repairs, Repair{
 				ModID: modID, SourceVPK: source.vpkPath, FilePath: target,
-				Kind: RepairAnimationInterface,
+				Kind: animationKind,
 			})
 		}
 		analysis.Repairs = append(analysis.Repairs, Repair{

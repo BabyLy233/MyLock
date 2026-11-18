@@ -178,7 +178,7 @@ func repairSymptom(kind modcompat.RepairKind) Symptom {
 		return SymptomCameraAim
 	case modcompat.RepairTaggedSounds, modcompat.RepairAnimationInterface,
 		modcompat.RepairAnimationSkeleton, modcompat.RepairAnimationSkeletonRebased,
-		modcompat.RepairAnimationClipTracks:
+		modcompat.RepairAnimationClipTracks, modcompat.RepairAnimationRigRebase:
 		return SymptomAnimations
 	case modcompat.RepairMaterialBindings:
 		return SymptomAppearance

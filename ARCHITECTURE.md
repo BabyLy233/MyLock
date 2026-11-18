@@ -396,7 +396,10 @@ overlay，原模组文件不改。依赖、模板、角色或命名空间校验�
 只有在采样骨架对得上的前提下才会按当前模型补齐绑定、退役已不可用的旧版动画图
 选择器，并追加缺失的、直接挂在根骨骼下的采样控制骨；已有的变形骨骼与网格不动。
 迁移判断先查随包的学习历史索引（`port/history`），再查归档的
-`hero-model-bindings.json`；需要骨骼重排（rig rebase）的模型会被拒绝。
+`hero-model-bindings.json`；采样骨骼层级不同时，`port/animation` 的
+`model_animation/rig_rebase` 路径会以当前游戏模型为底补齐控制骨、重算局部
+变换，并用原模型空间绑定帧、网格 `inverseBindPose`、相机挂点和碰撞盒逐项
+复核；任何一步无法证明就不迁移。
 动画依赖契约（`internal/modcompat/animation_contract.go`）从每个模型声明的
 骨骼和动画图出发，遍历 `m_resources`、片段绑定和 `m_skeleton`，检查资源是否
 存在/可读、骨骼是否有效、片段轨道数是否等于骨骼数；无法确定的布局只记为未

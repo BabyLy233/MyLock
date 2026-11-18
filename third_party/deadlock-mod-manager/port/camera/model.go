@@ -146,6 +146,100 @@ func CameraDataNames(text string) (map[string]struct{}, bool) {
 	return names, true
 }
 
+// RequiredBones returns the lowercase non-root influence bones the current
+// model's camera points use on one mesh. Missing or duplicated camera points
+// fail closed.
+func RequiredBones(model, mesh *kv3.Value) (map[string]struct{}, bool) {
+	text, ok := modelText(model)
+	if !ok {
+		return nil, false
+	}
+	names, ok := CameraDataNames(text)
+	if !ok {
+		return nil, false
+	}
+	points, ok := fieldArray(mesh, "m_attachments")
+	if !ok {
+		return nil, false
+	}
+	for _, pivot := range []string{"standing_pivot", "crouching_pivot"} {
+		for i := range points {
+			keyValue, ok := points[i].Get("key")
+			if !ok {
+				continue
+			}
+			value, ok := keyValue.AsString()
+			if ok && value == pivot {
+				names[pivot] = struct{}{}
+			}
+		}
+	}
+	for name := range names {
+		count := 0
+		for i := range points {
+			key, ok := points[i].Get("key")
+			if !ok {
+				continue
+			}
+			if value, ok := key.AsString(); ok && value == name {
+				count++
+			}
+		}
+		if count != 1 {
+			return nil, false
+		}
+	}
+	bones := make(map[string]struct{})
+	for i := range points {
+		value, ok := points[i].Get("value")
+		if !ok {
+			return nil, false
+		}
+		nameValue, ok := value.Get("m_name")
+		if !ok {
+			continue
+		}
+		name, ok := nameValue.AsString()
+		if !ok {
+			return nil, false
+		}
+		if _, required := names[name]; !required {
+			continue
+		}
+		countValue, ok := value.Get("m_nInfluences")
+		if !ok {
+			return nil, false
+		}
+		count, ok := countValue.AsInt()
+		if !ok || count < 0 {
+			return nil, false
+		}
+		roots, ok := fieldArray(value, "m_bInfluenceRootTransform")
+		if !ok {
+			return nil, false
+		}
+		influences, ok := fieldArray(value, "m_influenceNames")
+		if !ok || int(count) > len(roots) || int(count) > len(influences) {
+			return nil, false
+		}
+		for j := 0; j < int(count); j++ {
+			root, ok := roots[j].AsBool()
+			if !ok {
+				return nil, false
+			}
+			if root {
+				continue
+			}
+			name, ok := influences[j].AsString()
+			if !ok {
+				return nil, false
+			}
+			bones[strings.ToLower(name)] = struct{}{}
+		}
+	}
+	return bones, true
+}
+
 func stripQuotes(s string) (string, bool) {
 	if len(s) < 2 || s[0] != '"' || s[len(s)-1] != '"' {
 		return "", false

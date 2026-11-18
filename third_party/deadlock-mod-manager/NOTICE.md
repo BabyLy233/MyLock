@@ -53,6 +53,7 @@ file records the source path and baseline commit in its header.
 | `localization_overlay/animation_poses.rs` (reference-pose consistency and preserve) | `port/animation/proof.go`, `port/animation/rebase.go` |
 | `localization_overlay/animation_contract.rs` (dependency closure subset) | `internal/modcompat/animation_contract.go` |
 | `localization_overlay/model_animation.rs` (`prove_current_bindings` and `restore_bindings_from` subsets) | `port/animation/` |
+| `localization_overlay/model_animation/rig_rebase.rs`, `rig_rebase/{bind_frames,preservation,transforms}.rs` | `port/animation/rig_rebase.go`, `port/animation/transforms.go` |
 | `localization_overlay/model_animation/sampled_controls.rs` | `port/animation/restore.go` |
 | `localization_overlay/model_animation/metadata.rs` | `port/animation/restore.go` |
 | `localization_overlay/model_animation/scaled_rig.rs` | `port/animation/proof.go` |
@@ -90,8 +91,10 @@ The differences are limited to Go idioms and the boundaries of this project:
   relocation consults the learned bindings before the archived JSON.
 - Animation bindings are restored by copying the current graph and skeleton
   references, retiring unavailable legacy selectors and appending missing
-  identity sampled controls. The upstream deformation-rig rebase path is not
-  ported, so a model that needs it is declined instead.
+  identity sampled controls. When the sampled hierarchy differs, the
+  deformation-rig rebase path rebuilds it from the current game rig while
+  preserving authored bind frames, meshes, camera attachments and hitboxes;
+  any step that cannot be proven declines the relocation.
 - Skeleton refreshes use the semantic-equivalence path (`AnimationSkeleton`) or
   the rebase path (`AnimationSkeletonRebased`), which preserves authored primary
   mask weights and reference poses. Masks with secondary weight lists or custom
