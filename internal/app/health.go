@@ -362,7 +362,9 @@ func profileModFiles(profile addons.Profile, mods []addons.Mod) ([]modcompat.Mod
 		files = append(files, modcompat.ModFiles{ID: "unmanaged:" + path, VPKs: []string{path}})
 	}
 	for _, mod := range mods {
-		if len(mod.VpkPaths) == 0 {
+		if !mod.Enabled || len(mod.VpkPaths) == 0 {
+			// A disabled mod is not mounted, so its files cannot conflict with
+			// what the game loads.
 			continue
 		}
 		files = append(files, modcompat.ModFiles{ID: mod.ID, VPKs: mod.VpkPaths})

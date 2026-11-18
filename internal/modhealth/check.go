@@ -223,7 +223,7 @@ func sharedProtection(mods []CheckMod, mounted []modcompat.ModFiles) (map[string
 	if mounted == nil {
 		mounted = make([]modcompat.ModFiles, 0, len(mods))
 		for _, mod := range mods {
-			if len(mod.VPKs) == 0 {
+			if !mod.Enabled || len(mod.VPKs) == 0 {
 				continue
 			}
 			mounted = append(mounted, modcompat.ModFiles{ID: mod.ID, VPKs: mod.VPKs})

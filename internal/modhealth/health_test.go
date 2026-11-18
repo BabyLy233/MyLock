@@ -613,3 +613,36 @@ func TestCheckMarksOptedInModsWhoseSharedFileIsProtected(t *testing.T) {
 		t.Fatalf("merged mod stayed incomplete: %+v", health)
 	}
 }
+
+func TestDisabledModIsNotMountedForProtection(t *testing.T) {
+	dir := t.TempDir()
+	store, err := Open(filepath.Join(dir, "mod-health.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const textPath = "resource/localization/example/example_english.txt"
+	data, err := vpk.Pack([]vpk.PackEntry{{Path: textPath, Data: []byte("text")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	selected := writeFile(t, dir, "selected_dir.vpk", data)
+	disabled := writeFile(t, dir, "disabled_dir.vpk", data)
+	checker := NewCheckerWithAnalyzer(store, func(string, []string, *source2.GameIndex, modcompat.Scope, modcompat.Mode) (modcompat.Analysis, error) {
+		return modcompat.Analysis{AssetsChecked: 1}, nil
+	})
+	report, err := checker.Check("profile", []CheckMod{
+		{ID: "selected", VPKs: []string{selected}, Enabled: true, Choice: ChoiceEnabled},
+		{ID: "disabled", VPKs: []string{disabled}},
+	}, nil, CheckOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Report.Mods) != 2 {
+		t.Fatalf("report = %+v", report.Report.Mods)
+	}
+	for _, health := range report.Report.Mods {
+		if health.ScopeIncomplete {
+			t.Fatalf("a disabled mod protected a path: %+v", health)
+		}
+	}
+}

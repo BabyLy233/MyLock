@@ -522,3 +522,71 @@ func TestUnmanagedVpkProtectsItsSharedLocalization(t *testing.T) {
 		t.Fatalf("shared fix error = %v", err)
 	}
 }
+
+func TestDisabledModDoesNotProtectItsSharedLocalization(t *testing.T) {
+	a := newApp()
+	a.running = func() bool { return false }
+	install, profile := fakeGame(t)
+	a.health.analyze = modcompat.Analyze
+	a.health.historyPath = func(string) (string, error) {
+		return filepath.Join(t.TempDir(), "vdata-history.bin"), nil
+	}
+	const textPath = "resource/localization/example/example_english.txt"
+	gameData, err := vpk.Pack([]vpk.PackEntry{
+		{Path: "models/heroes/hero/hero.vmdl_c", Data: []byte("game model")},
+		{Path: textPath, Data: localizationFile("Token_A", "Vanilla", "Token_B", "Keep")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(install.CitadelDir(), "pak01_dir.vpk"), gameData, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	addMod(t, profile, "selected", "mod.vpk")
+	addMod(t, profile, "disabled", "mod.vpk")
+	if err := profile.SetEnabled("selected", true); err != nil {
+		t.Fatal(err)
+	}
+	mods, err := profile.Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	selected, err := vpk.Pack([]vpk.PackEntry{
+		{Path: textPath, Data: localizationFile("Token_A", "Authored")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, mod := range mods {
+		if mod.ID == "selected" {
+			if err := os.WriteFile(mod.VpkPaths[0], selected, 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	a.install, a.mods = install, mods
+	if err := profile.SetCompatibility([]string{"selected"}, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := sharedFixConflict(profile, []string{"selected"}); err != nil {
+		t.Fatalf("a disabled mod blocked the fix: %v", err)
+	}
+	if err := a.rebuildOverlayLocked(install, profile); err != nil {
+		t.Fatal(err)
+	}
+	archive, err := vpk.Open(overlayVPKPath(install, profile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text, err := archive.Read(textPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := portlocalization.ParseBytes(text, textPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value, _ := parsed.File.Lookup("Token_A"); value != "Authored" {
+		t.Fatalf("merged token = %q", value)
+	}
+}
