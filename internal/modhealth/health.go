@@ -7,6 +7,7 @@ import (
 
 	"github.com/BabyLy233/mylock/internal/modcompat"
 	"github.com/BabyLy233/mylock/third_party/deadlock-mod-manager/port/camera"
+	"github.com/BabyLy233/mylock/third_party/deadlock-mod-manager/port/compat"
 )
 
 // Status is the verdict shown for a mod.
@@ -106,6 +107,7 @@ type Health struct {
 	Repairs           int       `json:"repairs"`
 	Warnings          int       `json:"warnings"`
 	Checks            []string  `json:"checks,omitempty"`
+	ScopeIncomplete   bool      `json:"scopeIncomplete,omitempty"`
 	GameBuild         *uint32   `json:"gameBuild,omitempty"`
 	CheckedAt         string    `json:"checkedAt"`
 	Source            Source    `json:"source"`
@@ -132,14 +134,20 @@ func FindingsFromAnalysis(analysis modcompat.Analysis) Findings {
 			remaining[symptom] = struct{}{}
 		}
 	}
+	for _, warning := range analysis.AssetWarnings {
+		if symptom := assetWarningSymptom(warning.Kind); symptom != "" {
+			remaining[symptom] = struct{}{}
+		}
+	}
 	return Findings{
 		Repairs:           len(analysis.Repairs),
 		Checks:            append([]string(nil), analysis.Checks...),
-		Warnings:          len(analysis.Warnings),
+		Warnings:          len(analysis.Warnings) + len(analysis.AssetWarnings),
 		NeedsUpdate:       len(remaining) > 0,
 		FixSymptoms:       sortedSymptoms(fixSet),
 		RemainingSymptoms: sortedSymptoms(remaining),
-		Covered:           analysis.ModelsChecked > 0,
+		Covered:           analysis.ModelsChecked > 0 || analysis.AssetsChecked > 0,
+		ScopeIncomplete:   analysis.ScopeIncomplete,
 	}
 }
 
@@ -147,6 +155,29 @@ func repairSymptom(kind camera.RepairKind) Symptom {
 	switch kind {
 	case camera.RepairAttachmentFrame, camera.RepairInterface, camera.RepairControls:
 		return SymptomCameraAim
+	}
+	return ""
+}
+
+// assetWarningSymptom follows the original health mapping: structural faults
+// and missing references are crash risks; camera and mapping warnings belong
+// to their own categories.
+func assetWarningSymptom(kind compat.WarningKind) Symptom {
+	switch kind {
+	case compat.WarningUnverifiedSkeleton, compat.WarningMissingAnimationInterface,
+		compat.WarningAnimationMapping, compat.WarningMissingSoundBindings:
+		return SymptomAnimations
+	case compat.WarningOutdatedCameraAttachments, compat.WarningMissingCameraAttachments:
+		return SymptomCameraAim
+	case compat.WarningMaterialMapping, compat.WarningMaterialInterface:
+		return SymptomAppearance
+	case compat.WarningModelMapping, compat.WarningOverlappingModel:
+		return SymptomModel
+	case compat.WarningInvalidSkeleton, compat.WarningInvalidBoneRemapping,
+		compat.WarningInvalidAttachment, compat.WarningInvalidHitbox,
+		compat.WarningMissingResource, compat.WarningUnreadableResource,
+		compat.WarningMissingCameraInterface:
+		return SymptomCrashRisk
 	}
 	return ""
 }

@@ -1,6 +1,7 @@
 package modhealth
 
 import (
+	"sort"
 	"sync"
 	"time"
 
@@ -16,6 +17,8 @@ type CheckMod struct {
 	ID     string
 	VPKs   []string
 	Choice Choice
+	// Enabled mods take part in the load order, so only they can overlap.
+	Enabled bool
 }
 
 // CheckOptions controls one check run.
@@ -51,6 +54,11 @@ func (c *Checker) Check(profile string, mods []CheckMod, game *source2.GameIndex
 
 	installed := make([]Installed, 0, len(mods))
 	entries := make(map[string]Cached)
+	type analyzed struct {
+		key      HealthKey
+		analysis modcompat.Analysis
+	}
+	analyses := make(map[string]analyzed)
 	total := len(mods)
 	checked := 0
 	for _, mod := range mods {
@@ -90,19 +98,93 @@ func (c *Checker) Check(profile string, mods []CheckMod, game *source2.GameIndex
 			}
 			continue
 		}
-		entries[mod.ID] = Cached{
-			Key:       key,
-			Findings:  FindingsFromAnalysis(analysis),
-			CheckedAt: time.Now().UTC(),
-			Source:    SourceStandalone,
-		}
+		analyses[mod.ID] = analyzed{key: key, analysis: analysis}
 		checked++
 		if opts.OnProgress != nil {
 			opts.OnProgress(checked, total)
 		}
 	}
+	for id, analyzed := range analyses {
+		entries[id] = Cached{
+			Key:       analyzed.key,
+			Findings:  FindingsFromAnalysis(analyzed.analysis),
+			CheckedAt: time.Now().UTC(),
+			Source:    SourceStandalone,
+		}
+	}
+	overlaps := modelOverlaps(mods)
 	if err := c.store.Record(profile, opts.Build, entries); err != nil {
 		return Report{}, err
 	}
-	return c.store.Report(profile, opts.Build, installed), nil
+	report := c.store.Report(profile, opts.Build, installed)
+	applyOverlaps(&report, overlaps)
+	return report, nil
+}
+
+// applyOverlaps adds the cross-mod findings to the report without persisting
+// them: whether a path is shared depends on the other installed mods, not on
+// the bytes this mod's cached verdict was recorded for.
+func applyOverlaps(report *Report, overlaps map[string][]string) {
+	for i := range report.Mods {
+		health := &report.Mods[i]
+		paths, ok := overlaps[health.ModID]
+		if !ok {
+			continue
+		}
+		health.ScopeIncomplete = true
+		health.Warnings += len(paths)
+		health.Symptoms = withSymptom(health.Symptoms, SymptomModel)
+		if health.Status == StatusWorks {
+			health.Status = StatusNeedsUpdate
+		}
+	}
+}
+
+// modelOverlaps lists the enabled mods that provide the same model path.
+func modelOverlaps(mods []CheckMod) map[string][]string {
+	enabled := 0
+	for _, mod := range mods {
+		if mod.Enabled && len(mod.VPKs) > 0 {
+			enabled++
+		}
+	}
+	if enabled < 2 {
+		return nil
+	}
+	owners := make(map[string][]string)
+	for _, mod := range mods {
+		if !mod.Enabled || len(mod.VPKs) == 0 {
+			continue
+		}
+		paths, err := modcompat.ModelPaths(mod.VPKs)
+		if err != nil {
+			continue
+		}
+		for _, path := range paths {
+			owners[path] = append(owners[path], mod.ID)
+		}
+	}
+	overlaps := make(map[string][]string)
+	for path, ids := range owners {
+		if len(ids) < 2 {
+			continue
+		}
+		sort.Strings(ids)
+		for _, id := range ids {
+			overlaps[id] = append(overlaps[id], path)
+		}
+	}
+	for id := range overlaps {
+		sort.Strings(overlaps[id])
+	}
+	return overlaps
+}
+
+func withSymptom(list []Symptom, symptom Symptom) []Symptom {
+	set := make(map[Symptom]struct{}, len(list)+1)
+	for _, value := range list {
+		set[value] = struct{}{}
+	}
+	set[symptom] = struct{}{}
+	return sortedSymptoms(set)
 }

@@ -127,9 +127,10 @@ func (a *app) checkHealth(force bool) {
 				continue
 			}
 			checks = append(checks, modhealth.CheckMod{
-				ID:     mod.ID,
-				VPKs:   mod.VpkPaths,
-				Choice: compatibilityChoice(mod),
+				ID:      mod.ID,
+				VPKs:    mod.VpkPaths,
+				Choice:  compatibilityChoice(mod),
+				Enabled: mod.Enabled,
 			})
 		}
 		report, err := checker.Check(profileCacheKey(profile), checks, gameIndex,
@@ -531,6 +532,9 @@ func healthLine(health modhealth.Health) (string, string) {
 			line += "（未检查：" + healthSymptoms(missing) + "）"
 		}
 	}
+	if health.ScopeIncomplete {
+		line += "（多个模组提供同一文件，无法单独修复）"
+	}
 	return line, tone
 }
 
@@ -612,7 +616,7 @@ func (a *app) compatibilityDialog(c *ui.Context) {
 				if health.Status != modhealth.StatusWorks || health.Repairs > 0 {
 					shown = append(shown, mod)
 				}
-				if health.Repairs > 0 && health.Status != modhealth.StatusFixed {
+				if health.Repairs > 0 && health.Status != modhealth.StatusFixed && !health.ScopeIncomplete {
 					fixable = append(fixable, mod.ID)
 				}
 			}
@@ -656,7 +660,7 @@ func (a *app) compatibilityDialog(c *ui.Context) {
 									if health.Repairs > 0 && health.Status != modhealth.StatusFixed {
 										ui.PrimaryButton(c, "修复").
 											Label("修复 " + name).
-											Disabled(h.busy || h.checking || !mod.Enabled || a.gameRunningNow()).
+											Disabled(h.busy || h.checking || !mod.Enabled || health.ScopeIncomplete || a.gameRunningNow()).
 											OnClick(func() { a.fixCompatibility([]string{mod.ID}) })
 									}
 									if health.Status == modhealth.StatusFixed {

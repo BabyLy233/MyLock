@@ -204,3 +204,19 @@ func TestHealthStatusBranchesShowEveryState(t *testing.T) {
 		t.Fatalf("original line = %q", got)
 	}
 }
+
+func TestHealthLineNamesAnOverlappingModel(t *testing.T) {
+	checks := make([]string, 0, len(modhealth.AllSymptoms))
+	for _, symptom := range modhealth.AllSymptoms {
+		checks = append(checks, string(symptom))
+	}
+	line, _ := healthLine(modhealth.Health{
+		Status:          modhealth.StatusFixable,
+		Checks:          checks,
+		ScopeIncomplete: true,
+		Symptoms:        []modhealth.Symptom{modhealth.SymptomModel},
+	})
+	if !strings.Contains(line, "无法单独修复") {
+		t.Fatalf("line = %q", line)
+	}
+}

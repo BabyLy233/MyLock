@@ -9,6 +9,8 @@ import (
 	"github.com/BabyLy233/mylock/internal/modcompat"
 	"github.com/BabyLy233/mylock/internal/source2"
 	"github.com/BabyLy233/mylock/third_party/deadlock-mod-manager/port/camera"
+	"github.com/BabyLy233/mylock/third_party/deadlock-mod-manager/port/compat"
+	"github.com/BabyLy233/mylock/third_party/deadlock-mod-manager/port/vpk"
 )
 
 func TestStatusBranches(t *testing.T) {
@@ -212,5 +214,109 @@ func TestCheckerSkipsAnalysisErrorsAndAdvancesBuild(t *testing.T) {
 	}
 	if !equalBuild(report.PreviousGameBuild, nil) {
 		t.Fatalf("previous build = %v", report.PreviousGameBuild)
+	}
+}
+
+func TestAssetWarningsMapToSymptoms(t *testing.T) {
+	cases := map[compat.WarningKind]Symptom{
+		compat.WarningInvalidSkeleton:           SymptomCrashRisk,
+		compat.WarningInvalidBoneRemapping:      SymptomCrashRisk,
+		compat.WarningInvalidAttachment:         SymptomCrashRisk,
+		compat.WarningInvalidHitbox:             SymptomCrashRisk,
+		compat.WarningMissingResource:           SymptomCrashRisk,
+		compat.WarningUnreadableResource:        SymptomCrashRisk,
+		compat.WarningMissingCameraInterface:    SymptomCrashRisk,
+		compat.WarningOutdatedCameraAttachments: SymptomCameraAim,
+		compat.WarningMissingCameraAttachments:  SymptomCameraAim,
+		compat.WarningUnverifiedSkeleton:        SymptomAnimations,
+		compat.WarningMissingAnimationInterface: SymptomAnimations,
+		compat.WarningMissingSoundBindings:      SymptomAnimations,
+		compat.WarningMaterialMapping:           SymptomAppearance,
+		compat.WarningMaterialInterface:         SymptomAppearance,
+		compat.WarningModelMapping:              SymptomModel,
+		compat.WarningOverlappingModel:          SymptomModel,
+	}
+	for kind, want := range cases {
+		if got := assetWarningSymptom(kind); got != want {
+			t.Fatalf("%s = %s, want %s", kind, got, want)
+		}
+	}
+}
+
+func TestFindingsCountStructuralWarningsAndCoverage(t *testing.T) {
+	findings := FindingsFromAnalysis(modcompat.Analysis{
+		AssetsChecked: 1,
+		AssetWarnings: []modcompat.AssetWarning{
+			{Kind: compat.WarningInvalidSkeleton},
+			{Kind: compat.WarningMissingResource},
+		},
+	})
+	if findings.Warnings != 2 || !findings.Covered || !findings.NeedsUpdate {
+		t.Fatalf("findings = %+v", findings)
+	}
+	if len(findings.RemainingSymptoms) != 1 || findings.RemainingSymptoms[0] != SymptomCrashRisk {
+		t.Fatalf("remaining = %v", findings.RemainingSymptoms)
+	}
+	if findings.Status(ChoiceUnset) != StatusNeedsUpdate {
+		t.Fatalf("status = %s", findings.Status(ChoiceUnset))
+	}
+}
+
+func TestOverlappingModelsMarkBothModsIncomplete(t *testing.T) {
+	dir := t.TempDir()
+	store, err := Open(filepath.Join(dir, "mod-health.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	packModel := func(name string) string {
+		data, err := vpk.Pack([]vpk.PackEntry{
+			{Path: "models/hero/hero.vmdl_c", Data: []byte("model")},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	first := packModel("first_dir.vpk")
+	second := packModel("second_dir.vpk")
+	checker := NewCheckerWithAnalyzer(store, func(string, []string, *source2.GameIndex, modcompat.Mode) (modcompat.Analysis, error) {
+		return modcompat.Analysis{ModelsChecked: 1}, nil
+	})
+	mods := []CheckMod{
+		{ID: "first", VPKs: []string{first}, Enabled: true},
+		{ID: "second", VPKs: []string{second}, Enabled: true},
+	}
+	report, err := checker.Check("profile", mods, nil, CheckOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Mods) != 2 {
+		t.Fatalf("report = %+v", report.Mods)
+	}
+	for _, health := range report.Mods {
+		if !health.ScopeIncomplete || health.Status != StatusNeedsUpdate {
+			t.Fatalf("overlap health = %+v", health)
+		}
+		if len(health.Symptoms) != 1 || health.Symptoms[0] != SymptomModel {
+			t.Fatalf("symptoms = %v", health.Symptoms)
+		}
+		if health.Warnings != 1 {
+			t.Fatalf("warnings = %d", health.Warnings)
+		}
+	}
+
+	// Disabling the second mod removes the ambiguity without changing the
+	// first mod's cached bytes; the next report must not keep the old flag.
+	only := []CheckMod{{ID: "first", VPKs: []string{first}, Enabled: true}}
+	report, err = checker.Check("profile", only, nil, CheckOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Mods) != 1 || report.Mods[0].ScopeIncomplete {
+		t.Fatalf("stale overlap = %+v", report.Mods)
 	}
 }

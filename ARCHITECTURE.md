@@ -375,8 +375,12 @@ ProfilePage；列表里没有它也能打开详情。详情面板因此还可能
 缓存当作空缓存。
 
 `internal/modcompat` 把一个模组的 VPK 与 `internal/source2` 的游戏索引对照，
-只读地产生 `Repairs` / `Warnings` / `Fixed`；`internal/overlay` 把修复后的
-资源打包成独立 VPK。包与回执的命名、默认与配置档后缀、`pak01_dir.vpk` 文件名
+只读地产生 `Repairs` / `Warnings` / `AssetWarnings` / `Fixed`。结构检查覆盖
+模型骨架、骨骼重映射、网格挂点与碰撞盒、动画接口字段、资源引用和材质接口；有安全修复
+的项进入 `Repairs`，其余进入 `AssetWarnings` 并映射到对应症状。跨模组的同一
+模型路径在检查编排层统一检测，只进入报告而不写缓存（是否冲突取决于当前安装
+的其它模组），并禁止对冲突模组做单模组修复。
+`internal/overlay` 把修复后的资源打包成独立 VPK。包与回执的命名、默认与配置档后缀、`pak01_dir.vpk` 文件名
 都照原版：
 
 - 后缀：默认配置档 `default`，其它配置档是 `hex(SHA-256(folder)[:8])`。

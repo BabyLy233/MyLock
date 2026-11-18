@@ -38,7 +38,8 @@ file records the source path and baseline commit in its header.
 | `localization_overlay/model_camera/contract.rs` | `port/camera/contract.go` |
 | `localization_overlay/camera_controls.rs` | `port/camera/controls.go` |
 | `localization_overlay/model_text.rs` | `port/modeltext/` |
-| `localization_overlay/asset_compatibility.rs` (camera subset) | `port/compat/` |
+| `localization_overlay/asset_compatibility.rs` (skeleton, remapping, mesh, reference subset) | `port/compat/`, `internal/modcompat/analyze.go` |
+| `localization_overlay/material_compatibility/interface.rs` | `port/compat/material.go` |
 | `localization_overlay/animation_skeleton.rs` (pose subset) | `port/rig/` |
 | `localization_overlay/animation_model_evidence.rs` (rig subset) | `port/rig/` |
 | `mod_manager/mod_health.rs` | `port/health/model.go` |
