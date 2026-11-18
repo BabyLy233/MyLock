@@ -518,6 +518,10 @@ Mygo 的版本固定在 `go.mod` 的 tool 指令里，通过 `go tool mygo` 调�
   （`ui` 的测试视图允许像用户一样点击），用 `waitFor` 等后台协程发布结果。
   `launch_test.go` 用一个假的 Steam 启动脚本来读回 `steam://` 地址。
   `game.running` 是字段而不是直接调用，测试可以替换进程检测的结果。
+- `internal/modcompat/corpus_test.go` 默认跳过。设置 `MYLOCK_TEST_CITADEL`
+  指向游戏的 `citadel` 目录后，会在真实安装上解码并学习英雄/技能数据表；
+  再加 `MYLOCK_TEST_MOD_VPK` 指向一个模组 VPK，会对它跑完整的兼容性分析，
+  并确认每个修复后的文件仍是可解析的资源。游戏资产不进入仓库。
 
 ## 扩展指引
 
