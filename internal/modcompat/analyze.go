@@ -10,6 +10,7 @@ import (
 	"github.com/BabyLy233/mylock/third_party/deadlock-mod-manager/port/camera"
 	"github.com/BabyLy233/mylock/third_party/deadlock-mod-manager/port/compat"
 	"github.com/BabyLy233/mylock/third_party/deadlock-mod-manager/port/kv3"
+	"github.com/BabyLy233/mylock/third_party/deadlock-mod-manager/port/material"
 	"github.com/BabyLy233/mylock/third_party/deadlock-mod-manager/port/modelsounds"
 	"github.com/BabyLy233/mylock/third_party/deadlock-mod-manager/port/resource"
 	"github.com/BabyLy233/mylock/third_party/deadlock-mod-manager/port/vpk"
@@ -37,6 +38,7 @@ const (
 	RepairCameraInterface       RepairKind = RepairKind(camera.RepairInterface)
 	RepairCameraControls        RepairKind = RepairKind(camera.RepairControls)
 	RepairTaggedSounds          RepairKind = "TaggedSounds"
+	RepairMaterialBindings      RepairKind = "MaterialBindings"
 )
 
 // Repair is one safe repair the analyzer can apply.
@@ -94,6 +96,11 @@ type modelSource struct {
 	archive *vpk.Archive
 }
 
+type materialCandidate struct {
+	path    string
+	vpkPath string
+}
+
 // Analyze compares every model in the mod's VPKs with the current game model.
 // VPK order is load order: the first VPK providing a path wins.
 func Analyze(modID string, vpkPaths []string, game *source2.GameIndex, mode Mode) (Analysis, error) {
@@ -106,6 +113,8 @@ func Analyze(modID string, vpkPaths []string, game *source2.GameIndex, mode Mode
 	seen := make(map[string]struct{})
 	modPaths := make(map[string]struct{})
 	modArchives := make(map[string]*vpk.Archive)
+	var materialCandidates []materialCandidate
+	seenMaterials := make(map[string]struct{})
 	var models []modelSource
 	var assets []modelSource
 	hasAnimationEntries := false
@@ -120,6 +129,14 @@ func Analyze(modID string, vpkPaths []string, game *source2.GameIndex, mode Mode
 			modPaths[normalized] = struct{}{}
 			if _, ok := modArchives[normalized]; !ok {
 				modArchives[normalized] = archive
+			}
+			if _, ok := material.SourceRole(normalized); ok {
+				if _, dup := seenMaterials[normalized]; !dup {
+					seenMaterials[normalized] = struct{}{}
+					materialCandidates = append(materialCandidates, materialCandidate{
+						path: normalized, vpkPath: vpkPath,
+					})
+				}
 			}
 			if isAnimationPath(path) {
 				hasAnimationEntries = true
@@ -150,7 +167,7 @@ func Analyze(modID string, vpkPaths []string, game *source2.GameIndex, mode Mode
 			return nil, nil
 		}
 		if archive, ok := modArchives[strings.ToLower(path)]; ok {
-			return archive.Read(path)
+			return archive.ReadLimited(path, maxModelBytes)
 		}
 		if game != nil {
 			if data, ok := game.GameBytes(path); ok {
@@ -160,6 +177,7 @@ func Analyze(modID string, vpkPaths []string, game *source2.GameIndex, mode Mode
 		return nil, nil
 	}
 
+	repairedPaths := make(map[string]struct{})
 	for _, source := range models {
 		modBytes, err := source.archive.ReadLimited(source.path, maxModelBytes)
 		if err != nil {
@@ -212,10 +230,15 @@ func Analyze(modID string, vpkPaths []string, game *source2.GameIndex, mode Mode
 		}
 		analysis.AssetWarnings = append(analysis.AssetWarnings, structuralModelWarnings(
 			modID, source.vpkPath, source.path, fixed, base, hasBase, exists)...)
+		if changed {
+			repairedPaths[source.path] = struct{}{}
+		}
 		if mode == Fix && changed {
 			analysis.Fixed[source.path] = fixed
 		}
 	}
+
+	applyMaterialBindings(&analysis, modID, materialCandidates, readResource, game, repairedPaths, mode)
 
 	for _, source := range assets {
 		data, err := source.archive.ReadLimited(source.path, maxModelBytes)
@@ -237,6 +260,80 @@ func Analyze(modID string, vpkPaths []string, game *source2.GameIndex, mode Mode
 		}
 	}
 	return analysis, nil
+}
+
+// materialSnapshot resolves resources in the mod's load order for the material
+// recipe.
+type materialSnapshot struct {
+	game *source2.GameIndex
+	read func(string) ([]byte, error)
+}
+
+func (s materialSnapshot) GameBytes(name string) ([]byte, bool, error) {
+	if s.game == nil {
+		return nil, false, nil
+	}
+	data, ok := s.game.GameBytes(name)
+	return data, ok, nil
+}
+
+func (s materialSnapshot) Resolve(name string) ([]byte, error) {
+	return s.read(name)
+}
+
+// applyMaterialBindings runs the reviewed static-glow migration. A partial role
+// set, split source archives or any failed precondition yields warnings on the
+// authored materials and never half a repair.
+func applyMaterialBindings(analysis *Analysis, modID string, candidates []materialCandidate, read func(string) ([]byte, error), game *source2.GameIndex, repairedPaths map[string]struct{}, mode Mode) {
+	if len(candidates) == 0 {
+		return
+	}
+	warn := func(detail string) {
+		for _, candidate := range candidates {
+			analysis.AssetWarnings = append(analysis.AssetWarnings, AssetWarning{
+				ModID: modID, SourceVPK: candidate.vpkPath, FilePath: candidate.path,
+				Kind: compat.WarningMaterialMapping, Detail: detail,
+			})
+		}
+	}
+	if len(candidates) != 4 {
+		warn("The four material roles must resolve from one source archive; partial or competing overrides cannot be migrated")
+		return
+	}
+	sourceVPK := candidates[0].vpkPath
+	for _, candidate := range candidates[1:] {
+		if candidate.vpkPath != sourceVPK {
+			warn("The four material roles must resolve from one source archive; partial or competing overrides cannot be migrated")
+			return
+		}
+	}
+	paths := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		paths = append(paths, candidate.path)
+	}
+	generated, err := material.BuildMinionGlow(
+		materialSnapshot{game: game, read: read}, paths)
+	if err != nil {
+		warn(err.Error())
+		return
+	}
+	for path := range generated {
+		if _, taken := repairedPaths[path]; taken {
+			warn("Another compatibility repair owns " + path)
+			return
+		}
+	}
+	for path, data := range generated {
+		if mode == Fix {
+			analysis.Fixed[path] = data
+		}
+		if strings.HasSuffix(path, ".vmdl_c") {
+			analysis.Repairs = append(analysis.Repairs, Repair{
+				ModID: modID, SourceVPK: sourceVPK, FilePath: path,
+				Kind: RepairMaterialBindings,
+			})
+		}
+	}
 }
 
 var mdatKind = [4]byte{'M', 'D', 'A', 'T'}

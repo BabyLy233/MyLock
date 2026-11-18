@@ -4,6 +4,7 @@ package modhealth
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/BabyLy233/mylock/internal/modcompat"
 	"github.com/BabyLy233/mylock/third_party/deadlock-mod-manager/port/camera"
@@ -135,6 +136,9 @@ func FindingsFromAnalysis(analysis modcompat.Analysis) Findings {
 		}
 	}
 	for _, warning := range analysis.AssetWarnings {
+		if informationalAssetWarning(warning) {
+			continue
+		}
 		if symptom := assetWarningSymptom(warning.Kind); symptom != "" {
 			remaining[symptom] = struct{}{}
 		}
@@ -151,12 +155,31 @@ func FindingsFromAnalysis(analysis modcompat.Analysis) Findings {
 	}
 }
 
+// informationalAssetWarning reports differences that only change how a mod
+// looks or that merely describe retired references. They stay listed in review
+// but do not mark the mod as needing an update.
+func informationalAssetWarning(warning modcompat.AssetWarning) bool {
+	detail := strings.ToLower(warning.Detail)
+	switch warning.Kind {
+	case compat.WarningMaterialInterface:
+		return true
+	case compat.WarningMissingResource:
+		return strings.HasSuffix(detail, ".vtex") || strings.HasSuffix(detail, ".vtex_c") ||
+			strings.HasSuffix(detail, ".vanmgrph")
+	case compat.WarningInvalidAttachment, compat.WarningMissingCameraAttachments:
+		return strings.HasPrefix(warning.Detail, "portrait_")
+	}
+	return false
+}
+
 func repairSymptom(kind modcompat.RepairKind) Symptom {
 	switch kind {
 	case modcompat.RepairCameraAttachmentFrame, modcompat.RepairCameraInterface, modcompat.RepairCameraControls:
 		return SymptomCameraAim
 	case modcompat.RepairTaggedSounds:
 		return SymptomAnimations
+	case modcompat.RepairMaterialBindings:
+		return SymptomAppearance
 	}
 	return ""
 }

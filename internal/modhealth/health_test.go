@@ -334,3 +334,31 @@ func TestFindingsFromAnalysisMapsTaggedSoundRepairToAnimations(t *testing.T) {
 		t.Fatalf("remaining symptoms = %v", findings.RemainingSymptoms)
 	}
 }
+
+func TestInformationalAssetWarningsDoNotRequireAnUpdate(t *testing.T) {
+	findings := FindingsFromAnalysis(modcompat.Analysis{
+		ModelsChecked: 1,
+		AssetWarnings: []modcompat.AssetWarning{
+			{Kind: compat.WarningMaterialInterface, Detail: "Authored shader differs"},
+			{Kind: compat.WarningMissingResource, Detail: "materials/a.vtex"},
+			{Kind: compat.WarningMissingCameraAttachments, Detail: "portrait_camera"},
+		},
+	})
+	if findings.Warnings != 3 || findings.NeedsUpdate || len(findings.RemainingSymptoms) != 0 {
+		t.Fatalf("findings = %+v", findings)
+	}
+	if findings.Status(ChoiceUnset) != StatusWorks {
+		t.Fatalf("status = %s", findings.Status(ChoiceUnset))
+	}
+
+	crash := FindingsFromAnalysis(modcompat.Analysis{
+		ModelsChecked: 1,
+		AssetWarnings: []modcompat.AssetWarning{
+			{Kind: compat.WarningMissingResource, Detail: "models/a.vmdl"},
+		},
+	})
+	if !crash.NeedsUpdate || len(crash.RemainingSymptoms) != 1 ||
+		crash.RemainingSymptoms[0] != SymptomCrashRisk {
+		t.Fatalf("crash findings = %+v", crash)
+	}
+}

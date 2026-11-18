@@ -450,3 +450,230 @@ func TestAnalyzeWarnsAboutUnresolvedMaterialReferences(t *testing.T) {
 		}
 	}
 }
+
+func glowMaterialBytes(t *testing.T, name string, authored bool) []byte {
+	t.Helper()
+	dynamic := kv3.Array(
+		kv3.Object(kv3.Pair{Key: "m_name", Value: kv3.String("g_vColorTint1")}),
+		kv3.Object(kv3.Pair{Key: "m_name", Value: kv3.String("g_flSelfIllumScale1")}),
+	)
+	if authored {
+		dynamic = kv3.Array()
+	}
+	value := kv3.Object(
+		kv3.Pair{Key: "m_materialName", Value: kv3.String(name)},
+		kv3.Pair{Key: "m_shaderName", Value: kv3.String("pbr.vfx")},
+		kv3.Pair{Key: "m_intParams", Value: kv3.Array(kv3.Object(
+			kv3.Pair{Key: "m_name", Value: kv3.String("F_SELF_ILLUM")},
+			kv3.Pair{Key: "m_nValue", Value: kv3.Int(1)},
+		))},
+		kv3.Pair{Key: "m_floatParams", Value: kv3.Array(
+			kv3.Object(
+				kv3.Pair{Key: "m_name", Value: kv3.String("g_flSelfIllumScale1")},
+				kv3.Pair{Key: "m_flValue", Value: kv3.Double(0.5)},
+			),
+			kv3.Object(
+				kv3.Pair{Key: "m_name", Value: kv3.String("g_flSelfIllumAlbedoFactor1")},
+				kv3.Pair{Key: "m_flValue", Value: kv3.Double(0.4)},
+			),
+		)},
+		kv3.Pair{Key: "m_vectorParams", Value: kv3.Array(kv3.Object(
+			kv3.Pair{Key: "m_name", Value: kv3.String("g_vSelfIllumTint1")},
+			kv3.Pair{Key: "m_value", Value: kv3.Array(
+				kv3.Double(1), kv3.Double(1), kv3.Double(1), kv3.Double(1),
+			)},
+		))},
+		kv3.Pair{Key: "m_textureParams", Value: kv3.Array(kv3.Object(
+			kv3.Pair{Key: "m_name", Value: kv3.String("g_tSelfIllumMask")},
+			kv3.Pair{Key: "m_pValue", Value: kv3.String("materials/default/white.vtex")},
+		))},
+		kv3.Pair{Key: "m_dynamicParams", Value: dynamic},
+	)
+	raw, err := resource.Build([]resource.BuildResult{
+		{Kind: resource.BlockTypeData, Payload: kv3.Encode(&value, kv3.Format{})},
+		{Kind: resource.BlockTypeRERL, Payload: []byte{8, 0, 0, 0, 0, 0, 0, 0}},
+	}, nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
+func glowUnitModel(t *testing.T, materialName string) []byte {
+	t.Helper()
+	groups := []kv3.Value{kv3.String("body")}
+	for _, group := range []string{
+		"head_health_@0_#&high", "head_health_@1_#&mid", "head_health_@2_#&low",
+	} {
+		groups = append(groups, kv3.String(group))
+	}
+	data := kv3.Object(
+		kv3.Pair{Key: "m_materialGroups", Value: kv3.Array(kv3.Object(
+			kv3.Pair{Key: "m_name", Value: kv3.String("default")},
+			kv3.Pair{Key: "m_materials", Value: kv3.Array(kv3.String("body.vmat"))},
+		))},
+		kv3.Pair{Key: "m_meshGroups", Value: kv3.Array(groups...)},
+		kv3.Pair{Key: "m_refMeshGroupMasks", Value: kv3.Array(
+			kv3.UInt(1), kv3.UInt(2), kv3.UInt(4), kv3.UInt(8),
+		)},
+	)
+	control := kv3.Object(kv3.Pair{Key: "embedded_meshes", Value: kv3.Array(
+		kv3.Object(
+			kv3.Pair{Key: "m_nMeshIndex", Value: kv3.Int(0)},
+			kv3.Pair{Key: "m_nDataBlock", Value: kv3.Int(3)},
+		),
+		kv3.Object(
+			kv3.Pair{Key: "m_nMeshIndex", Value: kv3.Int(1)},
+			kv3.Pair{Key: "m_nDataBlock", Value: kv3.Int(4)},
+		),
+		kv3.Object(
+			kv3.Pair{Key: "m_nMeshIndex", Value: kv3.Int(2)},
+			kv3.Pair{Key: "m_nDataBlock", Value: kv3.Int(5)},
+		),
+		kv3.Object(
+			kv3.Pair{Key: "m_nMeshIndex", Value: kv3.Int(3)},
+			kv3.Pair{Key: "m_nDataBlock", Value: kv3.Int(6)},
+		),
+	)})
+	mesh := kv3.Object(kv3.Pair{Key: "m_sceneObjects", Value: kv3.Array(kv3.Object(
+		kv3.Pair{Key: "m_drawCalls", Value: kv3.Array(kv3.Object(
+			kv3.Pair{Key: "m_material", Value: kv3.String(materialName)},
+		))},
+	))})
+	meshBytes := kv3.Encode(&mesh, kv3.Format{})
+	blocks := []resource.BuildResult{
+		{Kind: resource.BlockTypeData, Payload: kv3.Encode(&data, kv3.Format{})},
+		{Kind: resource.BlockTypeRERL, Payload: []byte{8, 0, 0, 0, 0, 0, 0, 0}},
+		{Kind: [4]byte{'C', 'T', 'R', 'L'}, Payload: kv3.Encode(&control, kv3.Format{})},
+	}
+	for range 4 {
+		blocks = append(blocks, resource.BuildResult{Kind: [4]byte{'M', 'D', 'A', 'T'}, Payload: meshBytes})
+	}
+	raw, err := resource.Build(blocks, nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
+func glowUnitTable(t *testing.T) []byte {
+	t.Helper()
+	unit := func(prefix, amber, sapphire string) kv3.Value {
+		return kv3.Object(
+			kv3.Pair{Key: "m_sDefaultMaterialGroupName", Value: kv3.String(prefix + "_friendly")},
+			kv3.Pair{Key: "m_sEnemyMaterialGroupName", Value: kv3.String(prefix + "_enemy")},
+			kv3.Pair{Key: "m_sTeam1MaterialGroupName", Value: kv3.String(prefix + "_amber")},
+			kv3.Pair{Key: "m_sTeam2MaterialGroupName", Value: kv3.String(prefix + "_sapphire")},
+			kv3.Pair{Key: "m_sAmberModelName", Value: kv3.String(amber)},
+			kv3.Pair{Key: "m_sSapphireModelName", Value: kv3.String(sapphire)},
+		)
+	}
+	value := kv3.Object(
+		kv3.Pair{Key: "trooper_normal", Value: unit("normal",
+			"models/npc_units/troopers/amber_normal.vmdl",
+			"models/npc_units/troopers/sapphire_normal.vmdl")},
+		kv3.Pair{Key: "trooper_medic", Value: unit("medic",
+			"models/npc_units/troopers/amber_medic.vmdl",
+			"models/npc_units/troopers/sapphire_medic.vmdl")},
+		kv3.Pair{Key: "trooper_melee", Value: unit("melee",
+			"models/npc_units/troopers/amber_melee.vmdl",
+			"models/npc_units/troopers/sapphire_melee.vmdl")},
+	)
+	return compiledBlock(t, &value)
+}
+
+func TestAnalyzePublishesMaterialBindings(t *testing.T) {
+	const (
+		oldModel    = "models/npc/trooper/trooper_humanoid.vmdl_c"
+		unitsPath   = "scripts/npc_units.vdata_c"
+		whiteMask   = "materials/default/default_mask_tga_344101f8.vtex_c"
+		amberMat    = "models/npc_units/troopers/amber_trooper_01/materials/amber_trooper_01_wax.vmat"
+		sapphireMat = "models/npc_units/troopers/sapphire_trooper_01/materials/sapphire_trooper_01.vmat"
+		meleeMat    = "models/npc_units/troopers/sapphire_trooper_01_melee/materials/sapphire_trooper_melee_head.vmat"
+	)
+	oldModelValue := kv3.Object(
+		kv3.Pair{Key: "m_materialGroups", Value: kv3.Array(kv3.Object(
+			kv3.Pair{Key: "m_name", Value: kv3.String("default")},
+			kv3.Pair{Key: "m_materials", Value: kv3.Array(kv3.String("body.vmat"))},
+		))},
+	)
+	oldModelMesh := kv3.Object(kv3.Pair{Key: "m_sceneObjects", Value: kv3.Array()})
+	gameEntries := []vpk.PackEntry{
+		{Path: oldModel, Data: compiledWithMesh(t, &oldModelValue, &oldModelMesh)},
+		{Path: unitsPath, Data: glowUnitTable(t)},
+		{Path: whiteMask, Data: []byte("white mask")},
+		{Path: amberMat + "_c", Data: glowMaterialBytes(t, amberMat, false)},
+		{Path: sapphireMat + "_c", Data: glowMaterialBytes(t, sapphireMat, false)},
+		{Path: meleeMat + "_c", Data: glowMaterialBytes(t, meleeMat, false)},
+	}
+	unitModels := []struct{ path, material string }{
+		{"models/npc_units/troopers/amber_normal.vmdl", amberMat},
+		{"models/npc_units/troopers/amber_medic.vmdl", amberMat},
+		{"models/npc_units/troopers/amber_melee.vmdl", amberMat},
+		{"models/npc_units/troopers/sapphire_normal.vmdl", sapphireMat},
+		{"models/npc_units/troopers/sapphire_medic.vmdl", sapphireMat},
+		{"models/npc_units/troopers/sapphire_melee.vmdl", meleeMat},
+	}
+	for _, unit := range unitModels {
+		gameEntries = append(gameEntries, vpk.PackEntry{Path: unit.path + "_c", Data: glowUnitModel(t, unit.material)})
+	}
+	game := gameIndexWith(t, gameEntries)
+
+	authored := glowMaterialBytes(t, "authored.vmat", true)
+	modEntries := make([]vpk.PackEntry, 0, 4)
+	for _, role := range []string{"friendly", "enemy", "amber", "sapphire"} {
+		modEntries = append(modEntries, vpk.PackEntry{
+			Path: "models/npc/trooper/materials/candle_trooper_wax_" + role + ".vmat_c",
+			Data: authored,
+		})
+	}
+	mod := packMod(t, modEntries)
+
+	analysis, err := Analyze("mod", []string{mod}, game, Detect)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repairs := 0
+	for _, repair := range analysis.Repairs {
+		if repair.Kind == RepairMaterialBindings {
+			repairs++
+		}
+	}
+	if repairs != 6 || len(analysis.Fixed) != 0 || len(analysis.AssetWarnings) != 0 {
+		t.Fatalf("analysis = %+v", analysis)
+	}
+
+	analysis, err = Analyze("mod", []string{mod}, game, Fix)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(analysis.Fixed) != 19 {
+		t.Fatalf("fixed = %d", len(analysis.Fixed))
+	}
+}
+
+func TestAnalyzeReportsPartialMaterialRolesWithoutHalfARepair(t *testing.T) {
+	mod := packMod(t, []vpk.PackEntry{{
+		Path: "models/npc/trooper/materials/candle_trooper_wax_friendly.vmat_c",
+		Data: []byte("invalid resource"),
+	}})
+	analysis, err := Analyze("mod", []string{mod}, nil, Detect)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, warning := range analysis.AssetWarnings {
+		if warning.Kind == compat.WarningMaterialMapping &&
+			strings.Contains(warning.Detail, "four material roles") {
+			found = true
+		}
+	}
+	if !found || len(analysis.Fixed) != 0 {
+		t.Fatalf("analysis = %+v", analysis)
+	}
+	for _, repair := range analysis.Repairs {
+		if repair.Kind == RepairMaterialBindings {
+			t.Fatal("partial roles reported a repair")
+		}
+	}
+}
