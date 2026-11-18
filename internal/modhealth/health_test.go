@@ -103,6 +103,44 @@ func TestStampTracksFilesAndBuild(t *testing.T) {
 	}
 }
 
+func TestCheckerInvalidatesWhenTheEnabledScopeChanges(t *testing.T) {
+	dir := t.TempDir()
+	store, err := Open(filepath.Join(dir, "mod-health.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pack := func(name, model string) string {
+		data, err := vpk.Pack([]vpk.PackEntry{{Path: model, Data: []byte("model")}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return writeFile(t, dir, name, data)
+	}
+	first := pack("first_dir.vpk", "models/hero/first.vmdl_c")
+	second := pack("second_dir.vpk", "models/hero/second.vmdl_c")
+	calls := make(map[string]int)
+	checker := NewCheckerWithAnalyzer(store, func(modID string, _ []string, _ *source2.GameIndex, _ modcompat.Scope, _ modcompat.Mode) (modcompat.Analysis, error) {
+		calls[modID]++
+		return modcompat.Analysis{ModelsChecked: 1}, nil
+	})
+	both := []CheckMod{
+		{ID: "first", VPKs: []string{first}, Enabled: true},
+		{ID: "second", VPKs: []string{second}, Enabled: true},
+	}
+	if _, err := checker.Check("profile", both, nil, CheckOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if calls["first"] != 1 || calls["second"] != 1 {
+		t.Fatalf("calls = %v", calls)
+	}
+	if _, err := checker.Check("profile", both[:1], nil, CheckOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if calls["first"] != 2 {
+		t.Fatalf("first mod was not rechecked after the scope changed: %v", calls)
+	}
+}
+
 func TestCheckerCachesSkipsAndForces(t *testing.T) {
 	dir := t.TempDir()
 	cachePath := filepath.Join(dir, "mod-health.json")
@@ -113,7 +151,7 @@ func TestCheckerCachesSkipsAndForces(t *testing.T) {
 	vpk := writeFile(t, dir, "mod.vpk", []byte("mod"))
 	build := uint32(100)
 	calls := 0
-	checker := NewCheckerWithAnalyzer(store, func(string, []string, *source2.GameIndex, modcompat.Mode) (modcompat.Analysis, error) {
+	checker := NewCheckerWithAnalyzer(store, func(string, []string, *source2.GameIndex, modcompat.Scope, modcompat.Mode) (modcompat.Analysis, error) {
 		calls++
 		return modcompat.Analysis{
 			ModelsChecked: 1,
@@ -178,7 +216,7 @@ func TestCheckerDropsResultsWhenFilesChangeDuringAnalysis(t *testing.T) {
 		t.Fatal(err)
 	}
 	vpk := writeFile(t, dir, "mod.vpk", []byte("mod"))
-	checker := NewCheckerWithAnalyzer(store, func(_ string, vpks []string, _ *source2.GameIndex, _ modcompat.Mode) (modcompat.Analysis, error) {
+	checker := NewCheckerWithAnalyzer(store, func(_ string, vpks []string, _ *source2.GameIndex, _ modcompat.Scope, _ modcompat.Mode) (modcompat.Analysis, error) {
 		if err := os.WriteFile(vpks[0], []byte("changed during analysis"), 0o644); err != nil {
 			t.Fatal(err)
 		}
@@ -201,7 +239,7 @@ func TestCheckerSkipsAnalysisErrorsAndAdvancesBuild(t *testing.T) {
 		t.Fatal(err)
 	}
 	vpk := writeFile(t, dir, "mod.vpk", []byte("mod"))
-	checker := NewCheckerWithAnalyzer(store, func(string, []string, *source2.GameIndex, modcompat.Mode) (modcompat.Analysis, error) {
+	checker := NewCheckerWithAnalyzer(store, func(string, []string, *source2.GameIndex, modcompat.Scope, modcompat.Mode) (modcompat.Analysis, error) {
 		return modcompat.Analysis{}, errors.New("bad mod")
 	})
 	build := uint32(100)
@@ -283,7 +321,7 @@ func TestOverlappingModelsMarkBothModsIncomplete(t *testing.T) {
 	}
 	first := packModel("first_dir.vpk")
 	second := packModel("second_dir.vpk")
-	checker := NewCheckerWithAnalyzer(store, func(string, []string, *source2.GameIndex, modcompat.Mode) (modcompat.Analysis, error) {
+	checker := NewCheckerWithAnalyzer(store, func(string, []string, *source2.GameIndex, modcompat.Scope, modcompat.Mode) (modcompat.Analysis, error) {
 		return modcompat.Analysis{ModelsChecked: 1}, nil
 	})
 	mods := []CheckMod{
@@ -331,6 +369,20 @@ func TestFindingsFromAnalysisMapsTaggedSoundRepairToAnimations(t *testing.T) {
 		t.Fatalf("fix symptoms = %v", findings.FixSymptoms)
 	}
 	if len(findings.RemainingSymptoms) != 1 || findings.RemainingSymptoms[0] != SymptomAnimations {
+		t.Fatalf("remaining symptoms = %v", findings.RemainingSymptoms)
+	}
+}
+
+func TestFindingsFromAnalysisMapsModelRelocationToModel(t *testing.T) {
+	findings := FindingsFromAnalysis(modcompat.Analysis{
+		ModelsChecked: 1,
+		Repairs:       []modcompat.Repair{{Kind: modcompat.RepairModelRelocation}},
+		AssetWarnings: []modcompat.AssetWarning{{Kind: compat.WarningModelMapping}},
+	})
+	if len(findings.FixSymptoms) != 1 || findings.FixSymptoms[0] != SymptomModel {
+		t.Fatalf("fix symptoms = %v", findings.FixSymptoms)
+	}
+	if len(findings.RemainingSymptoms) != 1 || findings.RemainingSymptoms[0] != SymptomModel {
 		t.Fatalf("remaining symptoms = %v", findings.RemainingSymptoms)
 	}
 }

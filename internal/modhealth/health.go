@@ -180,6 +180,8 @@ func repairSymptom(kind modcompat.RepairKind) Symptom {
 		return SymptomAnimations
 	case modcompat.RepairMaterialBindings:
 		return SymptomAppearance
+	case modcompat.RepairModelRelocation:
+		return SymptomModel
 	}
 	return ""
 }

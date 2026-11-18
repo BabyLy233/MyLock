@@ -29,7 +29,7 @@ func writeGameVPK(t *testing.T, install *game.Install) {
 
 // fakeCompatibility answers every mod with one camera repair, so the app's
 // check, fix and restore flow can run without real compiled models.
-func fakeCompatibility(modID string, _ []string, _ *source2.GameIndex, mode modcompat.Mode) (modcompat.Analysis, error) {
+func fakeCompatibility(modID string, _ []string, _ *source2.GameIndex, _ modcompat.Scope, mode modcompat.Mode) (modcompat.Analysis, error) {
 	analysis := modcompat.Analysis{
 		ModelsChecked: 1,
 		Checks:        append([]string(nil), modcompat.SupportedChecks...),
@@ -190,16 +190,16 @@ func TestHealthCheckIsRefusedWhileTheGameRuns(t *testing.T) {
 }
 
 func TestHealthStatusBranchesShowEveryState(t *testing.T) {
-	if got, _ := healthLine(modhealth.Health{Status: modhealth.StatusFixable, Checks: modcompat.SupportedChecks, Symptoms: []modhealth.Symptom{modhealth.SymptomCameraAim}}); got != "可修复：相机/瞄准（未检查：模型、游戏数据）" {
+	if got, _ := healthLine(modhealth.Health{Status: modhealth.StatusFixable, Checks: modcompat.SupportedChecks, Symptoms: []modhealth.Symptom{modhealth.SymptomCameraAim}}); got != "可修复：相机/瞄准（未检查：游戏数据）" {
 		t.Fatalf("fixable line = %q", got)
 	}
-	if got, _ := healthLine(modhealth.Health{Status: modhealth.StatusFixed, Checks: modcompat.SupportedChecks, Symptoms: []modhealth.Symptom{modhealth.SymptomCameraAim}}); got != "已修复：相机/瞄准（未检查：模型、游戏数据）" {
+	if got, _ := healthLine(modhealth.Health{Status: modhealth.StatusFixed, Checks: modcompat.SupportedChecks, Symptoms: []modhealth.Symptom{modhealth.SymptomCameraAim}}); got != "已修复：相机/瞄准（未检查：游戏数据）" {
 		t.Fatalf("fixed line = %q", got)
 	}
-	if got, _ := healthLine(modhealth.Health{Status: modhealth.StatusNeedsUpdate, Checks: modcompat.SupportedChecks, Symptoms: []modhealth.Symptom{modhealth.SymptomCrashRisk}}); got != "需要更新：崩溃风险（未检查：模型、游戏数据）" {
+	if got, _ := healthLine(modhealth.Health{Status: modhealth.StatusNeedsUpdate, Checks: modcompat.SupportedChecks, Symptoms: []modhealth.Symptom{modhealth.SymptomCrashRisk}}); got != "需要更新：崩溃风险（未检查：游戏数据）" {
 		t.Fatalf("needs-update line = %q", got)
 	}
-	if got, _ := healthLine(modhealth.Health{Status: modhealth.StatusOriginalFiles, Checks: modcompat.SupportedChecks}); got != "使用原文件（未检查：模型、游戏数据）" {
+	if got, _ := healthLine(modhealth.Health{Status: modhealth.StatusOriginalFiles, Checks: modcompat.SupportedChecks}); got != "使用原文件（未检查：游戏数据）" {
 		t.Fatalf("original line = %q", got)
 	}
 }

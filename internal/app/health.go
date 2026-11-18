@@ -338,10 +338,18 @@ func (a *app) rebuildOverlayLocked(install *game.Install, profile addons.Profile
 		}
 	}
 	analyze := a.analyzer()
+	files := make([]modcompat.ModFiles, 0, len(selected))
+	for _, mod := range selected {
+		files = append(files, modcompat.ModFiles{ID: mod.ID, VPKs: mod.VpkPaths})
+	}
+	scopes, err := modcompat.Scopes(files)
+	if err != nil {
+		return err
+	}
 	var sources []overlay.Source
 	anyFixed := false
 	for _, mod := range selected {
-		analysis, err := analyze(mod.ID, mod.VpkPaths, gameIndex, modcompat.Fix)
+		analysis, err := analyze(mod.ID, mod.VpkPaths, gameIndex, scopes[mod.ID], modcompat.Fix)
 		if err != nil {
 			return err
 		}

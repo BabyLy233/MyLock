@@ -47,6 +47,11 @@ file records the source path and baseline commit in its header.
 | `localization_overlay/material_compatibility/minion_glow.rs` | `port/material/minion_glow.go` |
 | `localization_overlay/animation_skeleton.rs` (pose subset) | `port/rig/` |
 | `localization_overlay/animation_model_evidence.rs` (rig subset) | `port/rig/` |
+| `localization_overlay/animation_poses.rs` (reference-pose consistency) | `port/animation/proof.go` |
+| `localization_overlay/model_animation.rs` (`prove_current_bindings` subset) | `port/animation/proof.go` |
+| `localization_overlay/model_animation/scaled_rig.rs` | `port/animation/proof.go` |
+| `localization_overlay/model_relocation.rs` (archived bindings subset) | `port/relocation/`, `internal/modcompat/relocation.go` |
+| `assets/hero-model-bindings.json` | `port/relocation/hero-model-bindings.json` |
 | `mod_manager/mod_health.rs` | `port/health/model.go` |
 | `mod_manager/manager/localization/health.rs` | `internal/modhealth/check.go` |
 | `mod_manager/manager/localization/receipt.rs` | `port/overlay/receipt.go`, `internal/overlay/apply.go` |
@@ -72,6 +77,9 @@ The differences are limited to Go idioms and the boundaries of this project:
   dropped.
 - File-system access is kept out of `port/`; callers pass bytes or readers.
   Limits on untrusted input live in `internal/source2`.
+- Model relocation currently consults only the archived hero bindings. The
+  upstream learned `VdataHistory` index is not ported yet, so an old model whose
+  binding is only known from learned history is not relocated.
 
 Test fixtures are translated from the upstream `tests.rs` modules. Real game
 assets are never committed; the optional corpus tests use

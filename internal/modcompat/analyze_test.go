@@ -30,7 +30,7 @@ func TestAnalyzeReportsSupportedChecksAndEmptyFindings(t *testing.T) {
 	mod := packMod(t, []vpk.PackEntry{
 		{Path: "materials/hero.vmat_c", Data: []byte("material")},
 	})
-	analysis, err := Analyze("mod", []string{mod}, nil, Detect)
+	analysis, err := Analyze("mod", []string{mod}, nil, Scope{}, Detect)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,7 +43,7 @@ func TestAnalyzeReportsSupportedChecksAndEmptyFindings(t *testing.T) {
 }
 
 func TestAnalyzeRejectsAnUnreadableMod(t *testing.T) {
-	if _, err := Analyze("mod", []string{filepath.Join(t.TempDir(), "missing.vpk")}, nil, Detect); err == nil {
+	if _, err := Analyze("mod", []string{filepath.Join(t.TempDir(), "missing.vpk")}, nil, Scope{}, Detect); err == nil {
 		t.Fatal("missing VPK accepted")
 	}
 }
@@ -52,7 +52,7 @@ func TestAnalyzeFixModeReturnsAMap(t *testing.T) {
 	mod := packMod(t, []vpk.PackEntry{
 		{Path: "scripts/hero.txt", Data: []byte("data")},
 	})
-	analysis, err := Analyze("mod", []string{mod}, &source2.GameIndex{}, Fix)
+	analysis, err := Analyze("mod", []string{mod}, &source2.GameIndex{}, Scope{}, Fix)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -133,7 +133,7 @@ func TestAnalyzeReportsStructuralModelWarnings(t *testing.T) {
 	mod := packMod(t, []vpk.PackEntry{
 		{Path: "models/hero/hero.vmdl_c", Data: compiledWithMesh(t, &model, &mesh)},
 	})
-	analysis, err := Analyze("mod", []string{mod}, nil, Detect)
+	analysis, err := Analyze("mod", []string{mod}, nil, Scope{}, Detect)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -186,7 +186,7 @@ func TestAnalyzeReportsSkeletonAndMeshWarnings(t *testing.T) {
 		{Path: "models/hero/hero.vnmskel_c", Data: compiledBlock(t, &skeleton)},
 		{Path: "models/hero/hero.vmesh_c", Data: compiledBlock(t, &mesh)},
 	})
-	analysis, err := Analyze("mod", []string{mod}, nil, Detect)
+	analysis, err := Analyze("mod", []string{mod}, nil, Scope{}, Detect)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -237,7 +237,7 @@ func TestAnalyzeReportsMaterialInterfaceDifferences(t *testing.T) {
 	const path = "materials/hero/hero.vmat_c"
 	game := gameIndexWith(t, []vpk.PackEntry{{Path: path, Data: compiledBlock(t, &current)}})
 	mod := packMod(t, []vpk.PackEntry{{Path: path, Data: compiledBlock(t, &source)}})
-	analysis, err := Analyze("mod", []string{mod}, game, Detect)
+	analysis, err := Analyze("mod", []string{mod}, game, Scope{}, Detect)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -250,7 +250,7 @@ func TestAnalyzeReportsMaterialInterfaceDifferences(t *testing.T) {
 	}
 
 	same := packMod(t, []vpk.PackEntry{{Path: path, Data: compiledBlock(t, &current)}})
-	analysis, err = Analyze("mod", []string{same}, game, Detect)
+	analysis, err = Analyze("mod", []string{same}, game, Scope{}, Detect)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -323,7 +323,7 @@ func TestAnalyzeRepairsTaggedSoundBindings(t *testing.T) {
 		{Path: customTable + "_c", Data: soundTable(t, "CTaggedSound_t")},
 	})
 
-	analysis, err := Analyze("mod", []string{mod}, game, Detect)
+	analysis, err := Analyze("mod", []string{mod}, game, Scope{}, Detect)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -342,7 +342,7 @@ func TestAnalyzeRepairsTaggedSoundBindings(t *testing.T) {
 		}
 	}
 
-	analysis, err = Analyze("mod", []string{mod}, game, Fix)
+	analysis, err = Analyze("mod", []string{mod}, game, Scope{}, Fix)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -377,7 +377,7 @@ func TestAnalyzeWarnsWhenTaggedSoundBindingsCannotBeRepaired(t *testing.T) {
 		{Path: modelPath, Data: soundModel(t,
 			soundText(soundBinding("CitadelTaggedSoundSettings_t", missingTable)), nil)},
 	})
-	analysis, err := Analyze("mod", []string{mod}, game, Detect)
+	analysis, err := Analyze("mod", []string{mod}, game, Scope{}, Detect)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -421,7 +421,7 @@ func TestAnalyzeWarnsAboutUnresolvedMaterialReferences(t *testing.T) {
 		t.Fatal(err)
 	}
 	mod := packMod(t, []vpk.PackEntry{{Path: materialPath, Data: raw}})
-	analysis, err := Analyze("mod", []string{mod}, nil, Detect)
+	analysis, err := Analyze("mod", []string{mod}, nil, Scope{}, Detect)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -440,7 +440,7 @@ func TestAnalyzeWarnsAboutUnresolvedMaterialReferences(t *testing.T) {
 		{Path: materialPath, Data: raw},
 		{Path: missingTexture + "_c", Data: []byte("texture")},
 	})
-	analysis, err = Analyze("mod", []string{withTexture}, nil, Detect)
+	analysis, err = Analyze("mod", []string{withTexture}, nil, Scope{}, Detect)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -629,7 +629,7 @@ func TestAnalyzePublishesMaterialBindings(t *testing.T) {
 	}
 	mod := packMod(t, modEntries)
 
-	analysis, err := Analyze("mod", []string{mod}, game, Detect)
+	analysis, err := Analyze("mod", []string{mod}, game, Scope{}, Detect)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -643,7 +643,7 @@ func TestAnalyzePublishesMaterialBindings(t *testing.T) {
 		t.Fatalf("analysis = %+v", analysis)
 	}
 
-	analysis, err = Analyze("mod", []string{mod}, game, Fix)
+	analysis, err = Analyze("mod", []string{mod}, game, Scope{}, Fix)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -657,7 +657,7 @@ func TestAnalyzeReportsPartialMaterialRolesWithoutHalfARepair(t *testing.T) {
 		Path: "models/npc/trooper/materials/candle_trooper_wax_friendly.vmat_c",
 		Data: []byte("invalid resource"),
 	}})
-	analysis, err := Analyze("mod", []string{mod}, nil, Detect)
+	analysis, err := Analyze("mod", []string{mod}, nil, Scope{}, Detect)
 	if err != nil {
 		t.Fatal(err)
 	}

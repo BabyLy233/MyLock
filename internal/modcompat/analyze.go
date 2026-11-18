@@ -39,6 +39,7 @@ const (
 	RepairCameraControls        RepairKind = RepairKind(camera.RepairControls)
 	RepairTaggedSounds          RepairKind = "TaggedSounds"
 	RepairMaterialBindings      RepairKind = "MaterialBindings"
+	RepairModelRelocation       RepairKind = "ModelRelocation"
 )
 
 // Repair is one safe repair the analyzer can apply.
@@ -88,7 +89,7 @@ type Analysis struct {
 }
 
 // SupportedChecks are the health categories the analyzer covers today.
-var SupportedChecks = []string{"cameraAim", "crashRisk", "animations", "appearance"}
+var SupportedChecks = []string{"cameraAim", "crashRisk", "animations", "appearance", "model"}
 
 type modelSource struct {
 	path    string
@@ -103,7 +104,7 @@ type materialCandidate struct {
 
 // Analyze compares every model in the mod's VPKs with the current game model.
 // VPK order is load order: the first VPK providing a path wins.
-func Analyze(modID string, vpkPaths []string, game *source2.GameIndex, mode Mode) (Analysis, error) {
+func Analyze(modID string, vpkPaths []string, game *source2.GameIndex, scope Scope, mode Mode) (Analysis, error) {
 	var analysis Analysis
 	analysis.Checks = append(analysis.Checks, SupportedChecks...)
 	if mode == Fix {
@@ -238,6 +239,8 @@ func Analyze(modID string, vpkPaths []string, game *source2.GameIndex, mode Mode
 		}
 	}
 
+	applyRelocation(&analysis, modID, models, game, modPaths, modArchives,
+		readResource, exists, hasAnimationEntries, scope, repairedPaths, mode)
 	applyMaterialBindings(&analysis, modID, materialCandidates, readResource, game, repairedPaths, mode)
 
 	for _, source := range assets {
@@ -602,10 +605,18 @@ func warningDetail(kind camera.WarningKind) string {
 }
 
 func isAnimationPath(path string) bool {
-	p := strings.ToLower(path)
-	return strings.HasSuffix(p, ".vnmskel_c") ||
-		strings.HasSuffix(p, ".vnmgraph_c") ||
-		strings.HasSuffix(p, ".vnmclip_c")
+	p := camera.NormalizePath(path)
+	if strings.HasPrefix(p, "animations/") || strings.HasPrefix(p, "animgraphs/") {
+		return true
+	}
+	for _, suffix := range []string{
+		".vanim_c", ".vnmskel_c", ".vnmgraph_c", ".vnmclip_c", ".vagrp_c", ".vseq_c", ".vanmgrph_c",
+	} {
+		if strings.HasSuffix(p, suffix) {
+			return true
+		}
+	}
+	return false
 }
 
 // ModelPaths lists the normalized model paths a mod provides. Two mods in one

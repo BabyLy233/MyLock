@@ -10,7 +10,7 @@ import (
 )
 
 // Analyzer is the per-mod analysis function; tests can replace it.
-type Analyzer func(modID string, vpks []string, game *source2.GameIndex, mode modcompat.Mode) (modcompat.Analysis, error)
+type Analyzer func(modID string, vpks []string, game *source2.GameIndex, scope modcompat.Scope, mode modcompat.Mode) (modcompat.Analysis, error)
 
 // CheckMod is one installed mod to check.
 type CheckMod struct {
@@ -54,6 +54,13 @@ func (c *Checker) Check(profile string, mods []CheckMod, game *source2.GameIndex
 
 	installed := make([]Installed, 0, len(mods))
 	entries := make(map[string]Cached)
+	files := make([]modcompat.ModFiles, 0, len(mods))
+	for _, mod := range mods {
+		if mod.Enabled {
+			files = append(files, modcompat.ModFiles{ID: mod.ID, VPKs: mod.VPKs})
+		}
+	}
+	scopes, scopeErr := modcompat.Scopes(files)
 	type analyzed struct {
 		key      HealthKey
 		analysis modcompat.Analysis
@@ -62,6 +69,10 @@ func (c *Checker) Check(profile string, mods []CheckMod, game *source2.GameIndex
 	total := len(mods)
 	checked := 0
 	for _, mod := range mods {
+		scope := scopes[mod.ID]
+		if scopeErr != nil {
+			scope = modcompat.Scope{Unknown: true}
+		}
 		key, err := Stamp(mod.VPKs, opts.Build, RepairRevision)
 		if err != nil {
 			checked++
@@ -70,6 +81,7 @@ func (c *Checker) Check(profile string, mods []CheckMod, game *source2.GameIndex
 			}
 			continue
 		}
+		key.Scope = scope.Fingerprint()
 		installed = append(installed, Installed{ID: mod.ID, Key: key, Choice: mod.Choice})
 		if !opts.Force {
 			if cached, ok := c.store.Get(profile, mod.ID, key); ok {
@@ -81,7 +93,7 @@ func (c *Checker) Check(profile string, mods []CheckMod, game *source2.GameIndex
 				continue
 			}
 		}
-		analysis, err := c.analyze(mod.ID, mod.VPKs, game, modcompat.Detect)
+		analysis, err := c.analyze(mod.ID, mod.VPKs, game, scope, modcompat.Detect)
 		if err != nil {
 			checked++
 			if opts.OnProgress != nil {
@@ -90,6 +102,7 @@ func (c *Checker) Check(profile string, mods []CheckMod, game *source2.GameIndex
 			continue
 		}
 		restamped, err := Stamp(mod.VPKs, opts.Build, RepairRevision)
+		restamped.Scope = key.Scope
 		if err != nil || !key.Equal(restamped) {
 			_ = c.store.Forget(profile, mod.ID)
 			checked++

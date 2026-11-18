@@ -14,9 +14,9 @@ const (
 	// SchemaVersion is bumped when the cache layout changes incompatibly.
 	SchemaVersion = 1
 	// RulesRevision is bumped when status, symptom or coverage rules change.
-	RulesRevision = 6
+	RulesRevision = 7
 	// RepairRevision is bumped when the repair rules change.
-	RepairRevision = 3
+	RepairRevision = 4
 )
 
 // FileStamp identifies a VPK by size and modification time, not by name:
@@ -32,6 +32,10 @@ type HealthKey struct {
 	GameBuild *uint32     `json:"gameBuild,omitempty"`
 	Revision  uint32      `json:"revision"`
 	Rules     uint32      `json:"rules"`
+	// Scope fingerprints the other enabled mods. Relocation depends on which
+	// model paths they provide, so enabling or disabling one must invalidate
+	// this mod's cached verdict.
+	Scope string `json:"scope,omitempty"`
 }
 
 // Stamp builds a HealthKey from the mod's VPKs.
@@ -62,7 +66,7 @@ func (k HealthKey) Equal(other HealthKey) bool {
 		}
 	}
 	return equalBuild(k.GameBuild, other.GameBuild) &&
-		k.Revision == other.Revision && k.Rules == other.Rules
+		k.Revision == other.Revision && k.Rules == other.Rules && k.Scope == other.Scope
 }
 
 func equalBuild(a, b *uint32) bool {
