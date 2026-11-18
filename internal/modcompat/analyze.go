@@ -36,14 +36,15 @@ const (
 type RepairKind string
 
 const (
-	RepairCameraAttachmentFrame RepairKind = RepairKind(camera.RepairAttachmentFrame)
-	RepairCameraInterface       RepairKind = RepairKind(camera.RepairInterface)
-	RepairCameraControls        RepairKind = RepairKind(camera.RepairControls)
-	RepairTaggedSounds          RepairKind = "TaggedSounds"
-	RepairMaterialBindings      RepairKind = "MaterialBindings"
-	RepairModelRelocation       RepairKind = "ModelRelocation"
-	RepairAnimationInterface    RepairKind = "AnimationInterface"
-	RepairAnimationSkeleton     RepairKind = "AnimationSkeleton"
+	RepairCameraAttachmentFrame    RepairKind = RepairKind(camera.RepairAttachmentFrame)
+	RepairCameraInterface          RepairKind = RepairKind(camera.RepairInterface)
+	RepairCameraControls           RepairKind = RepairKind(camera.RepairControls)
+	RepairTaggedSounds             RepairKind = "TaggedSounds"
+	RepairMaterialBindings         RepairKind = "MaterialBindings"
+	RepairModelRelocation          RepairKind = "ModelRelocation"
+	RepairAnimationInterface       RepairKind = "AnimationInterface"
+	RepairAnimationSkeleton        RepairKind = "AnimationSkeleton"
+	RepairAnimationSkeletonRebased RepairKind = "AnimationSkeletonRebased"
 )
 
 // Repair is one safe repair the analyzer can apply.
@@ -322,6 +323,11 @@ func repairSkeleton(analysis *Analysis, modID string, source modelSource, data [
 		return data
 	}
 	fixed, ok := animation.RefreshSkeleton(data, base, extension)
+	kind := RepairAnimationSkeleton
+	if !ok {
+		fixed, ok = animation.RebaseSkeleton(data, base, extension)
+		kind = RepairAnimationSkeletonRebased
+	}
 	if ok && bytes.Equal(fixed, data) {
 		return data
 	}
@@ -331,7 +337,7 @@ func repairSkeleton(analysis *Analysis, modID string, source modelSource, data [
 		repairedPaths[source.path] = struct{}{}
 		analysis.Repairs = append(analysis.Repairs, Repair{
 			ModID: modID, SourceVPK: source.vpkPath, FilePath: source.path,
-			Kind: RepairAnimationSkeleton,
+			Kind: kind,
 		})
 		if mode == Fix {
 			analysis.Fixed[source.path] = fixed

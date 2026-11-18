@@ -45,9 +45,10 @@ file records the source path and baseline commit in its header.
 | `localization_overlay/material_compatibility/interface.rs` | `port/compat/material.go` |
 | `localization_overlay/material_compatibility.rs` (dependency validation, texture runtime equivalence) | `internal/modcompat/analyze.go`, `port/material/minion_glow.go` |
 | `localization_overlay/material_compatibility/minion_glow.rs` | `port/material/minion_glow.go` |
-| `localization_overlay/animation_skeleton.rs` (`equivalent_rigs`, `equivalent_layout`, `canonical_masks`, pose subset) | `port/animation/skeleton.go`, `port/rig/` |
+| `localization_overlay/animation_skeleton.rs` (`equivalent_rigs`, `equivalent_layout`, `canonical_masks`, rebase path) | `port/animation/skeleton.go`, `port/animation/rebase.go`, `port/rig/` |
+| `localization_overlay/animation_masks.rs` | `port/animation/masks.go` |
 | `localization_overlay/animation_model_evidence.rs` (rig subset) | `port/rig/` |
-| `localization_overlay/animation_poses.rs` (reference-pose consistency) | `port/animation/proof.go` |
+| `localization_overlay/animation_poses.rs` (reference-pose consistency and preserve) | `port/animation/proof.go`, `port/animation/rebase.go` |
 | `localization_overlay/animation_contract.rs` (dependency closure subset) | `internal/modcompat/animation_contract.go` |
 | `localization_overlay/model_animation.rs` (`prove_current_bindings` and `restore_bindings_from` subsets) | `port/animation/` |
 | `localization_overlay/model_animation/sampled_controls.rs` | `port/animation/restore.go` |
@@ -89,10 +90,12 @@ The differences are limited to Go idioms and the boundaries of this project:
   references, retiring unavailable legacy selectors and appending missing
   identity sampled controls. The upstream deformation-rig rebase path is not
   ported, so a model that needs it is declined instead.
-- Only the semantic skeleton refresh is ported (`AnimationSkeleton`), where the
-  existing game skeleton bytes are reused. The rebased path
-  (`AnimationSkeletonRebased`) and its mask/pose preservation are not ported;
-  skeletons that need a rebase are declined.
+- Skeleton refreshes use the semantic-equivalence path (`AnimationSkeleton`) or
+  the rebase path (`AnimationSkeletonRebased`), which preserves authored primary
+  mask weights and reference poses. Masks with secondary weight lists or custom
+  metadata are declined. The model-evidence path is not ported, so a refresh
+  only runs when no enabled mod ships animation overrides that could sample the
+  skeleton.
 
 Test fixtures are translated from the upstream `tests.rs` modules. Real game
 assets are never committed; the optional corpus tests use

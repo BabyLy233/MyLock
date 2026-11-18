@@ -35,6 +35,7 @@ func maskValue(id string, bones []string, weights []float64) kv3.Value {
 			kv3.Pair{Key: "m_boneIDs", Value: kv3.Array(names...)},
 			kv3.Pair{Key: "m_weights", Value: kv3.Array(values...)},
 		)},
+		kv3.Pair{Key: "m_secondaryWeightLists", Value: kv3.Array()},
 	)
 }
 
