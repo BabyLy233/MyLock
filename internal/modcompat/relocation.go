@@ -43,7 +43,8 @@ func (s animationSource) FromMod(name string) bool {
 func applyRelocation(analysis *Analysis, modID string, models []modelSource, game *source2.GameIndex,
 	modPaths map[string]struct{}, modArchives map[string]*vpk.Archive,
 	read func(string) ([]byte, error), exists func(string) bool,
-	hasAnimationEntries bool, scope Scope, repairedPaths map[string]struct{}, mode Mode) {
+	hasAnimationEntries bool, scope Scope, repairedPaths map[string]struct{},
+	effective map[string]effectiveModel, mode Mode) {
 	if game == nil || len(models) == 0 {
 		return
 	}
@@ -224,6 +225,7 @@ func applyRelocation(analysis *Analysis, modID string, models []modelSource, gam
 			Kind: RepairModelRelocation,
 		})
 		repairedPaths[target] = struct{}{}
+		effective[target] = effectiveModel{data: fixed, vpkPath: source.vpkPath}
 		if mode == Fix {
 			analysis.Fixed[target] = fixed
 		}

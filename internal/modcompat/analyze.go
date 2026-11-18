@@ -98,6 +98,12 @@ type modelSource struct {
 	archive *vpk.Archive
 }
 
+// effectiveModel is the bytes the game will load for a path after repairs.
+type effectiveModel struct {
+	data    []byte
+	vpkPath string
+}
+
 type materialCandidate struct {
 	path    string
 	vpkPath string
@@ -119,6 +125,7 @@ func Analyze(modID string, vpkPaths []string, game *source2.GameIndex, scope Sco
 	seenMaterials := make(map[string]struct{})
 	var models []modelSource
 	var assets []modelSource
+	effective := make(map[string]effectiveModel)
 	hasAnimationEntries := false
 	for _, vpkPath := range vpkPaths {
 		archive, err := vpk.Open(vpkPath)
@@ -160,7 +167,20 @@ func Analyze(modID string, vpkPaths []string, game *source2.GameIndex, scope Sco
 			models = append(models, modelSource{path: entry.FullPath, vpkPath: vpkPath, archive: archive})
 		}
 	}
-	exists := func(name string) bool { return resourceExists(name, modPaths, game) }
+	exists := func(name string) bool {
+		if resourceExists(name, modPaths, game) {
+			return true
+		}
+		path, ok := source2.ResourcePath(name)
+		if !ok {
+			return false
+		}
+		if _, ok := scope.OtherModelPaths[path]; ok {
+			return true
+		}
+		_, ok = scope.OtherAnimationPaths[path]
+		return ok
+	}
 	// readResource resolves resources the way the load order does: the mod's
 	// first VPK wins, then the game. A missing resource is (nil, nil).
 	readResource := func(name string) ([]byte, error) {
@@ -230,6 +250,7 @@ func Analyze(modID string, vpkPaths []string, game *source2.GameIndex, scope Sco
 				})
 			}
 		}
+		effective[camera.NormalizePath(source.path)] = effectiveModel{data: fixed, vpkPath: source.vpkPath}
 		analysis.AssetWarnings = append(analysis.AssetWarnings, structuralModelWarnings(
 			modID, source.vpkPath, source.path, fixed, base, hasBase, exists)...)
 		if changed {
@@ -241,8 +262,9 @@ func Analyze(modID string, vpkPaths []string, game *source2.GameIndex, scope Sco
 	}
 
 	applyRelocation(&analysis, modID, models, game, modPaths, modArchives,
-		readResource, exists, hasAnimationEntries, scope, repairedPaths, mode)
-	applyMaterialBindings(&analysis, modID, materialCandidates, readResource, game, repairedPaths, mode)
+		readResource, exists, hasAnimationEntries, scope, repairedPaths, effective, mode)
+	applyMaterialBindings(&analysis, modID, materialCandidates, readResource, game, repairedPaths, effective, mode)
+	applyAnimationContract(&analysis, modID, effective, readResource, game, modArchives, scope)
 
 	for _, source := range assets {
 		data, err := source.archive.ReadLimited(source.path, maxModelBytes)
@@ -288,7 +310,7 @@ func (s materialSnapshot) Resolve(name string) ([]byte, error) {
 // applyMaterialBindings runs the reviewed static-glow migration. A partial role
 // set, split source archives or any failed precondition yields warnings on the
 // authored materials and never half a repair.
-func applyMaterialBindings(analysis *Analysis, modID string, candidates []materialCandidate, read func(string) ([]byte, error), game *source2.GameIndex, repairedPaths map[string]struct{}, mode Mode) {
+func applyMaterialBindings(analysis *Analysis, modID string, candidates []materialCandidate, read func(string) ([]byte, error), game *source2.GameIndex, repairedPaths map[string]struct{}, effective map[string]effectiveModel, mode Mode) {
 	if len(candidates) == 0 {
 		return
 	}
@@ -332,6 +354,7 @@ func applyMaterialBindings(analysis *Analysis, modID string, candidates []materi
 			analysis.Fixed[path] = data
 		}
 		if strings.HasSuffix(path, ".vmdl_c") {
+			effective[path] = effectiveModel{data: data, vpkPath: sourceVPK}
 			analysis.Repairs = append(analysis.Repairs, Repair{
 				ModID: modID, SourceVPK: sourceVPK, FilePath: path,
 				Kind: RepairMaterialBindings,

@@ -24,6 +24,10 @@ type Scope struct {
 	// OtherModelPaths are normalized model paths provided by other enabled
 	// mods. Relocating a model onto one of them would override that mod.
 	OtherModelPaths map[string]struct{}
+	// OtherAnimationPaths are animation resources provided by other enabled
+	// mods. Without their bytes, dependency checks must decline instead of
+	// reporting a false missing resource.
+	OtherAnimationPaths map[string]struct{}
 	// RegistryModified reports that another enabled mod overrides the hero
 	// registry, so relocation targets cannot be trusted without its bytes.
 	RegistryModified bool
@@ -35,11 +39,18 @@ type Scope struct {
 // Fingerprint returns a stable cache-key value for the scope. The empty scope
 // has an empty fingerprint.
 func (s Scope) Fingerprint() string {
-	if len(s.OtherModelPaths) == 0 && !s.RegistryModified && !s.Unknown {
+	if len(s.OtherModelPaths) == 0 && len(s.OtherAnimationPaths) == 0 &&
+		!s.RegistryModified && !s.Unknown {
 		return ""
 	}
 	h := sha256.New()
 	for _, path := range slices.Sorted(maps.Keys(s.OtherModelPaths)) {
+		h.Write([]byte("model:"))
+		h.Write([]byte(path))
+		h.Write([]byte{0})
+	}
+	for _, path := range slices.Sorted(maps.Keys(s.OtherAnimationPaths)) {
+		h.Write([]byte("animation:"))
 		h.Write([]byte(path))
 		h.Write([]byte{0})
 	}
@@ -50,8 +61,9 @@ func (s Scope) Fingerprint() string {
 // Scopes computes the cross-mod scope for every mod in one load order.
 func Scopes(mods []ModFiles) (map[string]Scope, error) {
 	type scanned struct {
-		models   map[string]struct{}
-		registry bool
+		models     map[string]struct{}
+		animations map[string]struct{}
+		registry   bool
 	}
 	entries := make(map[string]scanned, len(mods))
 	for _, mod := range mods {
@@ -60,25 +72,33 @@ func Scopes(mods []ModFiles) (map[string]Scope, error) {
 			return nil, err
 		}
 		models := make(map[string]struct{})
+		animations := make(map[string]struct{})
 		registry := false
 		for _, path := range paths {
 			if camera.IsModelPath(path) {
 				models[path] = struct{}{}
 			}
+			if isAnimationPath(path) {
+				animations[path] = struct{}{}
+			}
 			if path == relocation.HeroesVDataPath {
 				registry = true
 			}
 		}
-		entries[mod.ID] = scanned{models: models, registry: registry}
+		entries[mod.ID] = scanned{models: models, animations: animations, registry: registry}
 	}
 	scopes := make(map[string]Scope, len(mods))
 	for _, mod := range mods {
-		scope := Scope{OtherModelPaths: make(map[string]struct{})}
+		scope := Scope{
+			OtherModelPaths:     make(map[string]struct{}),
+			OtherAnimationPaths: make(map[string]struct{}),
+		}
 		for _, other := range mods {
 			if other.ID == mod.ID {
 				continue
 			}
 			maps.Copy(scope.OtherModelPaths, entries[other.ID].models)
+			maps.Copy(scope.OtherAnimationPaths, entries[other.ID].animations)
 			if entries[other.ID].registry {
 				scope.RegistryModified = true
 			}

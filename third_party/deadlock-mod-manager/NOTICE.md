@@ -48,6 +48,7 @@ file records the source path and baseline commit in its header.
 | `localization_overlay/animation_skeleton.rs` (pose subset) | `port/rig/` |
 | `localization_overlay/animation_model_evidence.rs` (rig subset) | `port/rig/` |
 | `localization_overlay/animation_poses.rs` (reference-pose consistency) | `port/animation/proof.go` |
+| `localization_overlay/animation_contract.rs` (dependency closure subset) | `internal/modcompat/animation_contract.go` |
 | `localization_overlay/model_animation.rs` (`prove_current_bindings` and `restore_bindings_from` subsets) | `port/animation/` |
 | `localization_overlay/model_animation/sampled_controls.rs` | `port/animation/restore.go` |
 | `localization_overlay/model_animation/metadata.rs` | `port/animation/restore.go` |

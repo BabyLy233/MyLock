@@ -13,6 +13,7 @@ func TestScopesCollectOtherModelsAndRegistryOverrides(t *testing.T) {
 	})
 	second := packMod(t, []vpk.PackEntry{
 		{Path: "models/hero/second.vmdl_c", Data: []byte("b")},
+		{Path: "animgraphs/second.vnmgraph_c", Data: []byte("graph")},
 		{Path: "scripts/heroes.vdata_c", Data: []byte("registry")},
 	})
 	scopes, err := Scopes([]ModFiles{
@@ -24,6 +25,9 @@ func TestScopesCollectOtherModelsAndRegistryOverrides(t *testing.T) {
 	}
 	if _, ok := scopes["first"].OtherModelPaths["models/hero/second.vmdl_c"]; !ok {
 		t.Fatalf("first scope = %+v", scopes["first"])
+	}
+	if _, ok := scopes["first"].OtherAnimationPaths["animgraphs/second.vnmgraph_c"]; !ok {
+		t.Fatalf("first animation scope = %+v", scopes["first"])
 	}
 	if !scopes["first"].RegistryModified {
 		t.Fatal("registry override was not reported")
