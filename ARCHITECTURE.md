@@ -334,6 +334,7 @@ ProfilePage；列表里没有它也能打开详情。详情面板因此还可能
 | `profiles.json` | 同上 | 具名配置档的列表 |
 | `library.json` | 同上 | 按模组 ID 记录的商店信息、安装时间、安装文件与手动角色覆盖 |
 | `images/` | 平台缓存目录下的 `mylock/` | 图片字节，可随时删除 |
+| `vdata-history.bin` | 平台缓存目录下的 `mylock/compatibility/<citadel 路径的 SHA-256>/` | 学到的游戏数据表历史，按安装目录区分 |
 
 所有 JSON 文件都通过「写临时文件再 rename」原子替换，不会留下半个文件。
 
@@ -399,7 +400,10 @@ overlay，原模组文件不改。依赖、模板、角色或命名空间校验�
 `hero-model-bindings.json`；采样骨骼层级不同时，`port/animation` 的
 `model_animation/rig_rebase` 路径会以当前游戏模型为底补齐控制骨、重算局部
 变换，并用原模型空间绑定帧、网格 `inverseBindPose`、相机挂点和碰撞盒逐项
-复核；任何一步无法证明就不迁移。
+复核；任何一步无法证明就不迁移。迁移补全动画绑定或重排骨架后，相机修复会收到
+这份动画证据（`camera.ModelOptions.AllowScaled/SampledBones`）：相机点依赖链
+由当前动画骨架按名字提供时不再要求姿态证明，整体等比缩放的骨架也可通过
+`port/rig` 的一致缩放检查。
 动画依赖契约（`internal/modcompat/animation_contract.go`）从每个模型声明的
 骨骼和动画图出发，遍历 `m_resources`、片段绑定和 `m_skeleton`，检查资源是否
 存在/可读、骨骼是否有效、片段轨道数是否等于骨骼数；无法确定的布局只记为未

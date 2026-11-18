@@ -326,3 +326,77 @@ func clone(v *kv3.Value) kv3.Value {
 	}
 	return out
 }
+
+// ScaledPosesCompatible accepts a uniform size change across the whole sampled
+// chain when every position and rotation stays consistent with one scale.
+func ScaledPosesCompatible(poses [][2]kv3.Value) bool {
+	pairs := make([][2][8]float64, 0, len(poses))
+	for _, pair := range poses {
+		oldPose, ok := poseValues(&pair[0])
+		if !ok {
+			return false
+		}
+		currentPose, ok := poseValues(&pair[1])
+		if !ok {
+			return false
+		}
+		pairs = append(pairs, [2][8]float64{oldPose, currentPose})
+	}
+	numerator := 0.0
+	denominator := 0.0
+	for _, pair := range pairs {
+		for i := 0; i < 3; i++ {
+			numerator += pair[0][i] * pair[1][i]
+			denominator += pair[1][i] * pair[1][i]
+		}
+	}
+	if denominator <= 1e-12 {
+		return false
+	}
+	scale := numerator / denominator
+	if math.IsNaN(scale) || math.IsInf(scale, 0) || scale < 0.98 || scale > 1.02 {
+		return false
+	}
+	for _, pair := range pairs {
+		positionsMatch := true
+		for i := 0; i < 3; i++ {
+			if math.Abs(pair[0][i]-pair[1][i]*scale) > 0.002 {
+				positionsMatch = false
+				break
+			}
+		}
+		rotationAndScale := pair[1]
+		copy(rotationAndScale[:3], pair[0][:3])
+		oldValue := poseValue(pair[0])
+		modifiedValue := poseValue(rotationAndScale)
+		match, comparable := EquivalentPose(&oldValue, &modifiedValue)
+		if !positionsMatch || !comparable || !match {
+			return false
+		}
+	}
+	return true
+}
+
+func poseValues(pose *kv3.Value) ([8]float64, bool) {
+	var out [8]float64
+	values, ok := pose.AsArray()
+	if !ok || len(values) != 8 {
+		return out, false
+	}
+	for i := range values {
+		value, ok := values[i].AsFloat()
+		if !ok || math.IsNaN(value) || math.IsInf(value, 0) {
+			return out, false
+		}
+		out[i] = value
+	}
+	return out, true
+}
+
+func poseValue(values [8]float64) kv3.Value {
+	items := make([]kv3.Value, len(values))
+	for i, value := range values {
+		items[i] = kv3.Double(value)
+	}
+	return kv3.Array(items...)
+}

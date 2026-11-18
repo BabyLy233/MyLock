@@ -29,7 +29,7 @@ type Analysis struct {
 // Repair chains the attachment-frame migration and the camera interface or
 // control repair. It returns the repaired bytes and the repairs applied.
 // changed is false when nothing could be repaired safely.
-func Repair(source, base []byte, allowControls func(*kv3.Value) bool) (out []byte, kinds []RepairKind, warnings []WarningKind, changed bool) {
+func Repair(source, base []byte, options ModelOptions) (out []byte, kinds []RepairKind, warnings []WarningKind, changed bool) {
 	input := source
 	if frameOut, frameChanged, err := RepairFrame(source, base); err != nil {
 		warnings = append(warnings, WarningOutdatedAttachments)
@@ -38,7 +38,7 @@ func Repair(source, base []byte, allowControls func(*kv3.Value) bool) (out []byt
 		kinds = append(kinds, RepairAttachmentFrame)
 		changed = true
 	}
-	if modelOut, kind, ok := RepairModelCamera(input, base, allowControls); ok {
+	if modelOut, kind, ok := RepairModelCameraWith(input, base, options); ok {
 		input = modelOut
 		kinds = append(kinds, kind)
 		changed = true
@@ -48,7 +48,7 @@ func Repair(source, base []byte, allowControls func(*kv3.Value) bool) (out []byt
 
 // Analyze inspects a model without writing anything. It runs the repair in
 // memory to decide whether a safe fix exists.
-func Analyze(source, base []byte, allowControls func(*kv3.Value) bool) Analysis {
+func Analyze(source, base []byte, options ModelOptions) Analysis {
 	var analysis Analysis
 	_, model, _, err := DecodeCompiled(source)
 	if err != nil {
@@ -91,7 +91,7 @@ func Analyze(source, base []byte, allowControls func(*kv3.Value) bool) Analysis 
 		}
 	}
 
-	out, kinds, warnings, changed := Repair(source, base, allowControls)
+	out, kinds, warnings, changed := Repair(source, base, options)
 	_ = out
 	analysis.Warnings = append(analysis.Warnings, warnings...)
 	if changed {

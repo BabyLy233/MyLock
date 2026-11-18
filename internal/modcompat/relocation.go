@@ -189,17 +189,22 @@ func applyRelocation(analysis *Analysis, modID string, models []modelSource, gam
 			return err == nil && bytes != nil
 		}
 		restored := false
+		animated := false
 		animationKind := RepairAnimationInterface
+		var sampledBones map[string]struct{}
 		beforeAnimation := modBytes
 		if prepared, ok := animation.RestoreBindings(modBytes, targetBase, resolve, available); ok {
 			beforeAnimation = prepared
 			restored = true
+			animated = true
 		} else if skeleton, ok := targetSkeleton(targetBase, resolve); ok {
 			if rebased, ok := animation.RebaseModelRig(modBytes, targetBase, &skeleton); ok {
 				if prepared, ok := animation.RestoreBindings(rebased, targetBase, resolve, available); ok {
 					beforeAnimation = prepared
 					restored = true
+					animated = true
 					animationKind = RepairAnimationRigRebase
+					sampledBones, _ = camera.SampledBoneIDs(&skeleton)
 				} else {
 					warn(source, path, fmt.Sprintf(
 						"Historical hero binding maps this model to current hero model %s, but animation preservation could not be verified. Rebased animation bindings could not be restored",
@@ -222,9 +227,14 @@ func applyRelocation(analysis *Analysis, modID string, models []modelSource, gam
 		allowControls := func(vanilla *kv3.Value) bool {
 			return !hasAnimationEntries && gameSkeletonReference(vanilla)
 		}
-		cameraResult := camera.Analyze(fixed, targetBase, allowControls)
+		options := camera.ModelOptions{
+			AllowControls: allowControls,
+			AllowScaled:   animated,
+			SampledBones:  sampledBones,
+		}
+		cameraResult := camera.Analyze(fixed, targetBase, options)
 		if cameraResult.Repairable {
-			if repaired, _, _, ok := camera.Repair(fixed, targetBase, allowControls); ok {
+			if repaired, _, _, ok := camera.Repair(fixed, targetBase, options); ok {
 				fixed = repaired
 			}
 		}

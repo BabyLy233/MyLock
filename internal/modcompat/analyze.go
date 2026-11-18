@@ -249,7 +249,7 @@ func Analyze(modID string, vpkPaths []string, game *source2.GameIndex, scope Sco
 			allowControls := func(vanilla *kv3.Value) bool {
 				return !hasAnimationEntries && gameSkeletonReference(vanilla)
 			}
-			result := camera.Analyze(modBytes, base, allowControls)
+			result := camera.Analyze(modBytes, base, camera.ModelOptions{AllowControls: allowControls})
 			for _, kind := range result.RepairKinds {
 				analysis.Repairs = append(analysis.Repairs, Repair{
 					ModID: modID, SourceVPK: source.vpkPath, FilePath: source.path,
@@ -264,7 +264,7 @@ func Analyze(modID string, vpkPaths []string, game *source2.GameIndex, scope Sco
 			// The analyzers inspect the repaired bytes, as the upstream overlay
 			// does: warnings must describe what the game will actually load.
 			if result.Repairable {
-				if repaired, _, _, ok := camera.Repair(modBytes, base, allowControls); ok {
+				if repaired, _, _, ok := camera.Repair(modBytes, base, camera.ModelOptions{AllowControls: allowControls}); ok {
 					fixed = repaired
 					changed = true
 				}

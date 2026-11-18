@@ -354,10 +354,25 @@ func numericSettings(field string) bool {
 	return true
 }
 
+// ModelOptions carries the evidence the camera repair may use beyond the two
+// model files. AllowScaled accepts a model whose animation bindings were
+// restored or rebased, and SampledBones names the bones the current animation
+// skeleton supplies, which then need no camera pose proof.
+type ModelOptions struct {
+	AllowControls func(*kv3.Value) bool
+	AllowScaled   bool
+	SampledBones  map[string]struct{}
+}
+
 // RepairModelCamera adds the camera interface, or the camera points and
 // control bones, from the current game model. It returns ok=false when the
 // repair cannot be proven safe.
 func RepairModelCamera(source, base []byte, allowControls func(*kv3.Value) bool) ([]byte, RepairKind, bool) {
+	return RepairModelCameraWith(source, base, ModelOptions{AllowControls: allowControls})
+}
+
+// RepairModelCameraWith is RepairModelCamera with animation evidence.
+func RepairModelCameraWith(source, base []byte, options ModelOptions) ([]byte, RepairKind, bool) {
 	format, model, encoding, err := DecodeCompiled(source)
 	if err != nil {
 		return nil, "", false
@@ -468,16 +483,19 @@ func RepairModelCamera(source, base []byte, allowControls func(*kv3.Value) bool)
 
 	settingsOnly := len(missing) == 1 && missing[0] == "CitadelCameraSettings_t" && !pointsMissing
 	compatible := settingsOnly
+	if !compatible && options.AllowScaled {
+		compatible, _ = compatibleCameraDependencies(&model, &vanilla, base, options.SampledBones)
+	}
 	if !compatible {
 		oldRig, ok1 := model.Get("m_modelSkeleton")
 		currentRig, ok2 := vanilla.Get("m_modelSkeleton")
 		if ok1 && ok2 {
-			compatible, _ = compatibleRigs(oldRig, currentRig, false)
+			compatible, _ = compatibleRigs(oldRig, currentRig, options.AllowScaled)
 		}
 	}
 	authoredAttachments := containsString(missing, "AttachmentCameraData") &&
 		contractSatisfied(sourceResource, &model, base, cameraText)
-	allow := allowControls != nil && allowControls(&vanilla)
+	allow := options.AllowControls != nil && options.AllowControls(&vanilla)
 	if !compatible && !authoredAttachments && !allow {
 		return nil, "", false
 	}
@@ -911,6 +929,8 @@ func compatibleRigs(old, current *kv3.Value, allowScaled bool) (bool, bool) {
 		values = append(values, rotation...)
 		return kv3.Value{Kind: kv3.KindArray, Array: values}, true
 	}
+	allEquivalent := true
+	poses := make([][2]kv3.Value, 0, len(b))
 	for j, name := range b {
 		i, ok := indices[name]
 		if !ok {
@@ -926,14 +946,127 @@ func compatibleRigs(old, current *kv3.Value, allowScaled bool) (bool, bool) {
 		if !ok1 || !ok2 {
 			return false, false
 		}
-		equal, valid := rig.EquivalentPose(&oldPose, &currentPose)
-		if !valid || !equal {
-			if allowScaled {
-				// Scaled-pose equivalence is not ported yet; be conservative.
+		poses = append(poses, [2]kv3.Value{oldPose, currentPose})
+		if equal, valid := rig.EquivalentPose(&oldPose, &currentPose); !valid || !equal {
+			allEquivalent = false
+		}
+	}
+	// A preserved bind is the common case; a uniform size change across the
+	// whole sampled chain is the only other accepted difference.
+	return allEquivalent || allowScaled && rig.ScaledPosesCompatible(poses), true
+}
+
+// compatibleCameraDependencies proves the bones the current camera points
+// depend on without comparing the whole rig. It is the scaled-rebase path:
+// the authored bind frames stay, while the current animation skeleton supplies
+// the sampled world pose.
+func compatibleCameraDependencies(source, current *kv3.Value, base []byte,
+	sampledBones map[string]struct{}) (bool, bool) {
+	resourceValue, err := resource.Parse(base)
+	if err != nil {
+		return false, false
+	}
+	raw, ok := resourceValue.FindBlock(mdat)
+	if !ok {
+		return false, false
+	}
+	mesh, err := kv3.Decode(raw)
+	if err != nil {
+		return false, false
+	}
+	required, ok := RequiredBones(current, &mesh)
+	if !ok {
+		return false, false
+	}
+	return CompatibleNamedCameraBones(source, current, required, sampledBones)
+}
+
+// CompatibleNamedCameraBones checks the camera dependency chain by bone name.
+// A bone the current animation skeleton samples needs no pose proof; every
+// other bone, and every shared ancestor, must keep an equivalent pose.
+func CompatibleNamedCameraBones(source, current *kv3.Value,
+	required, sampledBones map[string]struct{}) (bool, bool) {
+	oldRig, ok := rig.Parse(source)
+	if !ok {
+		return false, false
+	}
+	currentRig, ok := rig.Parse(current)
+	if !ok {
+		return false, false
+	}
+	oldNames := make(map[string]string)
+	for _, name := range oldRig.Names() {
+		oldNames[strings.ToLower(name)] = name
+	}
+	currentNames := make(map[string]string)
+	for _, name := range currentRig.Names() {
+		currentNames[strings.ToLower(name)] = name
+	}
+	type visited struct {
+		name    string
+		sampled bool
+	}
+	checked := make(map[visited]struct{})
+	for name := range required {
+		a, ok := oldNames[name]
+		if !ok {
+			return false, false
+		}
+		b, ok := currentNames[name]
+		if !ok {
+			return false, false
+		}
+		_, sampled := sampledBones[name]
+		for a != "" {
+			key := visited{name: a, sampled: sampled}
+			if _, seen := checked[key]; seen {
+				break
+			}
+			checked[key] = struct{}{}
+			if !strings.EqualFold(a, b) {
 				return false, true
 			}
-			return false, true
+			if !sampled {
+				oldPose, ok1 := oldRig.Pose(a)
+				currentPose, ok2 := currentRig.Pose(b)
+				if !ok1 || !ok2 {
+					return false, false
+				}
+				equal, valid := rig.EquivalentPose(&oldPose, &currentPose)
+				if !valid || !equal {
+					return false, true
+				}
+			}
+			a, ok = oldRig.Parent(a)
+			if !ok {
+				return false, false
+			}
+			b, ok = currentRig.Parent(b)
+			if !ok {
+				return false, false
+			}
+			if (a == "") != (b == "") {
+				return false, true
+			}
 		}
 	}
 	return true, true
+}
+
+// SampledBoneIDs returns a skeleton's bone ids lowercased, which is the set
+// the animation system supplies by name.
+func SampledBoneIDs(skeleton *kv3.Value) (map[string]struct{}, bool) {
+	ids, ok := fieldArray(skeleton, "m_boneIDs")
+	if !ok {
+		return nil, false
+	}
+	out := make(map[string]struct{}, len(ids))
+	for i := range ids {
+		name, ok := ids[i].AsString()
+		if !ok {
+			return nil, false
+		}
+		out[strings.ToLower(name)] = struct{}{}
+	}
+	return out, true
 }

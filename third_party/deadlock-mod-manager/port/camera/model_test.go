@@ -12,6 +12,7 @@ import (
 
 	"github.com/BabyLy233/mylock/third_party/deadlock-mod-manager/port/kv3"
 	"github.com/BabyLy233/mylock/third_party/deadlock-mod-manager/port/resource"
+	"github.com/BabyLy233/mylock/third_party/deadlock-mod-manager/port/rig"
 )
 
 func TestPartialCameraInterfaceRestoresSettings(t *testing.T) {
@@ -115,7 +116,7 @@ func TestAnalyzeReportsRepairableFrame(t *testing.T) {
 		point("standing_pivot", "root_motion", [3]float64{1, 2, 3}, identity),
 		point("crouching_pivot", "root_motion", [3]float64{4, 5, 6}, identity),
 	))
-	analysis := Analyze(source, base, nil)
+	analysis := Analyze(source, base, ModelOptions{})
 	if !analysis.Repairable {
 		t.Fatalf("analysis = %+v", analysis)
 	}
@@ -165,5 +166,61 @@ func TestCameraDataNamesComeFromTheInterface(t *testing.T) {
 	}
 	if !strings.Contains(text, "alternate_form_camera") {
 		t.Fatal("test fixture broken")
+	}
+}
+
+func rigModel(names []string, parents []int64, rootPosition [3]float64) kv3.Value {
+	skeletonValue := skeleton(names, parents)
+	for i := range skeletonValue.Object {
+		if skeletonValue.Object[i].Key != "m_bonePosParent" {
+			continue
+		}
+		positions := append([]kv3.Value(nil), skeletonValue.Object[i].Value.Array...)
+		positions[0] = numbers(rootPosition[0], rootPosition[1], rootPosition[2])
+		skeletonValue.Object[i].Value = kv3.Array(positions...)
+	}
+	return kv3.Object(kv3.Pair{Key: "m_modelSkeleton", Value: skeletonValue})
+}
+
+func TestCompatibleNamedCameraBonesTrustsSampledBones(t *testing.T) {
+	authored := rigModel([]string{"root", "head"}, []int64{-1, 0}, [3]float64{1, 0, 0})
+	current := rigModel([]string{"root", "head"}, []int64{-1, 0}, [3]float64{0, 0, 0})
+	head := map[string]struct{}{"head": {}}
+	both := map[string]struct{}{"head": {}, "root": {}}
+
+	if ok, valid := CompatibleNamedCameraBones(&authored, &current, head, nil); !valid || ok {
+		t.Fatal("an unsampled pose difference was accepted")
+	}
+	if ok, valid := CompatibleNamedCameraBones(&authored, &current, head, head); !valid || !ok {
+		t.Fatal("a sampled head did not satisfy its own chain")
+	}
+	// A sampled head must not exempt an unsampled shared root.
+	if ok, _ := CompatibleNamedCameraBones(&authored, &current, both, head); ok {
+		t.Fatal("an unsampled shared ancestor was exempted")
+	}
+	if ok, _ := CompatibleNamedCameraBones(&authored, &current, both, both); !ok {
+		t.Fatal("a fully sampled chain was rejected")
+	}
+}
+
+func TestScaledPoseCameraDependencyAcceptsAUniformResize(t *testing.T) {
+	authored := rigModel([]string{"root", "head"}, []int64{-1, 0}, [3]float64{1, 0, 0})
+	current := rigModel([]string{"root", "head"}, []int64{-1, 0}, [3]float64{0.99, 0, 0})
+	required := map[string]struct{}{"head": {}}
+	if ok, _ := CompatibleNamedCameraBones(&authored, &current, required, nil); ok {
+		t.Fatal("a plain pose difference was accepted")
+	}
+	oldRig, ok := rig.Parse(&authored)
+	if !ok {
+		t.Fatal("authored rig does not parse")
+	}
+	currentRig, ok := rig.Parse(&current)
+	if !ok {
+		t.Fatal("current rig does not parse")
+	}
+	oldPose, _ := oldRig.Pose("root")
+	currentPose, _ := currentRig.Pose("root")
+	if !rig.ScaledPosesCompatible([][2]kv3.Value{{oldPose, currentPose}}) {
+		t.Fatal("the scaled rig evidence was rejected")
 	}
 }

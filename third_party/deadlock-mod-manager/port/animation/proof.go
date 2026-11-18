@@ -596,51 +596,11 @@ func length(values []float64) float64 {
 // ScaledPosesCompatible accepts a uniform size change across the whole sampled
 // chain when every position and rotation stays consistent with one scale.
 func ScaledPosesCompatible(poses []Pose) bool {
-	pairs := make([][2][8]float64, 0, len(poses))
+	pairs := make([][2]kv3.Value, 0, len(poses))
 	for i := range poses {
-		oldPose, ok := poseNumbers(&poses[i].Old)
-		if !ok {
-			return false
-		}
-		currentPose, ok := poseNumbers(&poses[i].Current)
-		if !ok {
-			return false
-		}
-		pairs = append(pairs, [2][8]float64{oldPose, currentPose})
+		pairs = append(pairs, [2]kv3.Value{poses[i].Old, poses[i].Current})
 	}
-	numerator := 0.0
-	denominator := 0.0
-	for _, pair := range pairs {
-		for i := 0; i < 3; i++ {
-			numerator += pair[0][i] * pair[1][i]
-			denominator += pair[1][i] * pair[1][i]
-		}
-	}
-	if denominator <= 1e-12 {
-		return false
-	}
-	scale := numerator / denominator
-	if math.IsNaN(scale) || math.IsInf(scale, 0) || scale < 0.98 || scale > 1.02 {
-		return false
-	}
-	for _, pair := range pairs {
-		positionsMatch := true
-		for i := 0; i < 3; i++ {
-			if math.Abs(pair[0][i]-pair[1][i]*scale) > 0.002 {
-				positionsMatch = false
-				break
-			}
-		}
-		rotationAndScale := pair[1]
-		copy(rotationAndScale[:3], pair[0][:3])
-		oldValue := numbersValue(pair[0])
-		modifiedValue := numbersValue(rotationAndScale)
-		match, comparable := rig.EquivalentPose(&oldValue, &modifiedValue)
-		if !positionsMatch || !comparable || !match {
-			return false
-		}
-	}
-	return true
+	return rig.ScaledPosesCompatible(pairs)
 }
 
 func numbersValue(values [8]float64) kv3.Value {

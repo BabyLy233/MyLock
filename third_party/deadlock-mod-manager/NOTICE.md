@@ -129,6 +129,11 @@ The differences are limited to Go idioms and the boundaries of this project:
   deformation-rig rebase path rebuilds it from the current game rig while
   preserving authored bind frames, meshes, camera attachments and hitboxes;
   any step that cannot be proven declines the relocation.
+- The camera interface repair takes the same animation evidence as upstream
+  through `camera.ModelOptions`: after a relocation restored or rebased the
+  animation rig, a camera point whose dependency chain is supplied by the
+  current animation skeleton needs no pose proof, and a uniform resize that
+  `scaled_rig` accepts is honoured by the whole-rig comparison.
 - Skeleton refreshes use the semantic-equivalence path (`AnimationSkeleton`) or
   the rebase path (`AnimationSkeletonRebased`), which preserves authored primary
   mask weights and reference poses. Masks with secondary weight lists or custom
