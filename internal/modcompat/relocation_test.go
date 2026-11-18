@@ -6,8 +6,10 @@ import (
 	"testing"
 
 	"github.com/BabyLy233/mylock/internal/source2"
+	"github.com/BabyLy233/mylock/third_party/deadlock-mod-manager/port/camera"
 	"github.com/BabyLy233/mylock/third_party/deadlock-mod-manager/port/compat"
 	"github.com/BabyLy233/mylock/third_party/deadlock-mod-manager/port/kv3"
+	"github.com/BabyLy233/mylock/third_party/deadlock-mod-manager/port/resource"
 	"github.com/BabyLy233/mylock/third_party/deadlock-mod-manager/port/vpk"
 )
 
@@ -66,6 +68,18 @@ func heroSkeleton(t *testing.T) []byte {
 	return compiledBlock(t, &skeleton)
 }
 
+func heroBytes(t *testing.T, value kv3.Value) []byte {
+	t.Helper()
+	raw, err := resource.Build([]resource.BuildResult{
+		{Kind: resource.BlockTypeData, Payload: kv3.Encode(&value, kv3.Format{})},
+		{Kind: resource.BlockTypeRERL, Payload: []byte{8, 0, 0, 0, 0, 0, 0, 0}},
+	}, nil, 12)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
 func heroRegistryBytes(t *testing.T, row, model string) []byte {
 	t.Helper()
 	value := kv3.Object(kv3.Pair{Key: row, Value: kv3.Object(
@@ -78,8 +92,8 @@ func relocationGame(t *testing.T) *source2.GameIndex {
 	t.Helper()
 	return gameIndexWith(t, []vpk.PackEntry{
 		{Path: "scripts/heroes.vdata_c", Data: heroRegistryBytes(t, "hero_hornet", currentHornet)},
-		{Path: retiredHornet, Data: compiledBlock(t, new(heroModel(t, true)))},
-		{Path: currentHornet, Data: compiledBlock(t, new(heroModel(t, true)))},
+		{Path: retiredHornet, Data: heroBytes(t, heroModel(t, true))},
+		{Path: currentHornet, Data: heroBytes(t, heroModel(t, true))},
 		{Path: "models/rig.vnmskel_c", Data: heroSkeleton(t)},
 		{Path: "animgraphs/current.vnmgraph_c", Data: []byte("available graph")},
 	})
@@ -87,7 +101,7 @@ func relocationGame(t *testing.T) *source2.GameIndex {
 
 func TestAnalyzeRelocatesRetiredHeroModels(t *testing.T) {
 	game := relocationGame(t)
-	source := compiledBlock(t, new(heroModel(t, true)))
+	source := heroBytes(t, heroModel(t, true))
 	mod := packMod(t, []vpk.PackEntry{{Path: retiredHornet, Data: source}})
 	analysis, err := Analyze("mod", []string{mod}, game, Scope{}, Fix)
 	if err != nil {
@@ -111,25 +125,85 @@ func TestAnalyzeRelocatesRetiredHeroModels(t *testing.T) {
 	}
 }
 
-func TestAnalyzeDeclinesRelocationWithoutCurrentBindings(t *testing.T) {
+func TestAnalyzeRestoresAnimationBindingsAndRelocates(t *testing.T) {
 	game := relocationGame(t)
-	source := compiledBlock(t, new(heroModel(t, false)))
+	source := heroBytes(t, heroModel(t, false))
+	mod := packMod(t, []vpk.PackEntry{{Path: retiredHornet, Data: source}})
+	analysis, err := Analyze("mod", []string{mod}, game, Scope{}, Fix)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixed, ok := analysis.Fixed[currentHornet]
+	if !ok {
+		t.Fatalf("relocation missing: warnings=%+v", analysis.AssetWarnings)
+	}
+	_, actual, _, err := camera.DecodeCompiled(fixed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{"m_vecNmSkeletonRefs", "m_animGraph2Refs"} {
+		if _, ok := actual.Get(field); !ok {
+			t.Fatalf("%s missing from the relocated model", field)
+		}
+	}
+	found := false
+	for _, repair := range analysis.Repairs {
+		if repair.Kind == RepairAnimationInterface && repair.FilePath == currentHornet {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("animation repair missing: %+v", analysis.Repairs)
+	}
+}
+
+func TestAnalyzeDeclinesRelocationWhenTheSampledRigDoesNotMatch(t *testing.T) {
+	game := relocationGame(t)
+	current := heroModel(t, true)
+	setRelocationHeadPosition(t, &current, [3]float64{5, 0, 0})
+	game = gameIndexWith(t, []vpk.PackEntry{
+		{Path: "scripts/heroes.vdata_c", Data: heroRegistryBytes(t, "hero_hornet", currentHornet)},
+		{Path: retiredHornet, Data: heroBytes(t, heroModel(t, true))},
+		{Path: currentHornet, Data: heroBytes(t, current)},
+		{Path: "models/rig.vnmskel_c", Data: heroSkeleton(t)},
+		{Path: "animgraphs/current.vnmgraph_c", Data: []byte("available graph")},
+	})
+	source := heroBytes(t, heroModel(t, false))
 	mod := packMod(t, []vpk.PackEntry{{Path: retiredHornet, Data: source}})
 	analysis, err := Analyze("mod", []string{mod}, game, Scope{}, Fix)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := analysis.Fixed[currentHornet]; ok {
-		t.Fatal("model without current bindings was relocated")
+		t.Fatal("model with a mismatched sampled rig was relocated")
 	}
 	if !hasWarning(analysis.AssetWarnings, compat.WarningModelMapping) {
 		t.Fatalf("warnings = %+v", analysis.AssetWarnings)
 	}
 }
 
+func setRelocationHeadPosition(t *testing.T, model *kv3.Value, position [3]float64) {
+	t.Helper()
+	skeleton, ok := model.Get("m_modelSkeleton")
+	if !ok {
+		t.Fatal("missing skeleton")
+	}
+	positionsValue, ok := skeleton.Get("m_bonePosParent")
+	if !ok {
+		t.Fatal("missing bone positions")
+	}
+	positions, ok := positionsValue.AsArray()
+	if !ok || len(positions) < 2 {
+		t.Fatal("invalid bone positions")
+	}
+	positions[1] = kv3.Array(
+		kv3.Double(position[0]), kv3.Double(position[1]), kv3.Double(position[2]),
+	)
+}
+
 func TestAnalyzeDeclinesRelocationWhenTheModShipsAnimations(t *testing.T) {
 	game := relocationGame(t)
-	source := compiledBlock(t, new(heroModel(t, true)))
+	source := heroBytes(t, heroModel(t, true))
 	mod := packMod(t, []vpk.PackEntry{
 		{Path: retiredHornet, Data: source},
 		{Path: "animations/custom.vnmclip_c", Data: []byte("clip")},
@@ -148,7 +222,7 @@ func TestAnalyzeDeclinesRelocationWhenTheModShipsAnimations(t *testing.T) {
 
 func TestAnalyzeDeclinesRelocationOntoAnotherModsModel(t *testing.T) {
 	game := relocationGame(t)
-	source := compiledBlock(t, new(heroModel(t, true)))
+	source := heroBytes(t, heroModel(t, true))
 	mod := packMod(t, []vpk.PackEntry{{Path: retiredHornet, Data: source}})
 	scope := Scope{OtherModelPaths: map[string]struct{}{currentHornet: {}}}
 	analysis, err := Analyze("mod", []string{mod}, game, scope, Fix)
@@ -165,10 +239,10 @@ func TestAnalyzeDeclinesRelocationOntoAnotherModsModel(t *testing.T) {
 
 func TestAnalyzeDoesNotRelocateWhenTheModShipsTheCurrentModel(t *testing.T) {
 	game := relocationGame(t)
-	source := compiledBlock(t, new(heroModel(t, true)))
+	source := heroBytes(t, heroModel(t, true))
 	mod := packMod(t, []vpk.PackEntry{
 		{Path: retiredHornet, Data: source},
-		{Path: currentHornet, Data: compiledBlock(t, new(heroModel(t, true)))},
+		{Path: currentHornet, Data: heroBytes(t, heroModel(t, true))},
 	})
 	analysis, err := Analyze("mod", []string{mod}, game, Scope{}, Fix)
 	if err != nil {
@@ -184,7 +258,7 @@ func TestAnalyzeDoesNotRelocateWhenTheModShipsTheCurrentModel(t *testing.T) {
 
 func TestAnalyzeDeclinesRelocationWithAModifiedHeroRegistry(t *testing.T) {
 	game := relocationGame(t)
-	source := compiledBlock(t, new(heroModel(t, true)))
+	source := heroBytes(t, heroModel(t, true))
 	mod := packMod(t, []vpk.PackEntry{
 		{Path: retiredHornet, Data: source},
 		{Path: "scripts/heroes.vdata_c", Data: heroRegistryBytes(t, "hero_hornet", "models/other/other.vmdl")},
@@ -203,7 +277,7 @@ func TestAnalyzeDeclinesRelocationWithAModifiedHeroRegistry(t *testing.T) {
 
 func TestAnalyzeRelocatesWithAnUnchangedHeroRegistryOverride(t *testing.T) {
 	game := relocationGame(t)
-	source := compiledBlock(t, new(heroModel(t, true)))
+	source := heroBytes(t, heroModel(t, true))
 	mod := packMod(t, []vpk.PackEntry{
 		{Path: retiredHornet, Data: source},
 		{Path: "scripts/heroes.vdata_c", Data: heroRegistryBytes(t, "hero_hornet", currentHornet)},
@@ -219,7 +293,7 @@ func TestAnalyzeRelocatesWithAnUnchangedHeroRegistryOverride(t *testing.T) {
 
 func TestAnalyzeDeclinesRelocationWhenTheScopeIsUnknown(t *testing.T) {
 	game := relocationGame(t)
-	source := compiledBlock(t, new(heroModel(t, true)))
+	source := heroBytes(t, heroModel(t, true))
 	mod := packMod(t, []vpk.PackEntry{{Path: retiredHornet, Data: source}})
 	analysis, err := Analyze("mod", []string{mod}, game, Scope{Unknown: true}, Fix)
 	if err != nil {

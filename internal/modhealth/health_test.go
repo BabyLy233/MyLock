@@ -362,7 +362,10 @@ func TestOverlappingModelsMarkBothModsIncomplete(t *testing.T) {
 func TestFindingsFromAnalysisMapsTaggedSoundRepairToAnimations(t *testing.T) {
 	findings := FindingsFromAnalysis(modcompat.Analysis{
 		ModelsChecked: 1,
-		Repairs:       []modcompat.Repair{{Kind: modcompat.RepairTaggedSounds}},
+		Repairs: []modcompat.Repair{
+			{Kind: modcompat.RepairTaggedSounds},
+			{Kind: modcompat.RepairAnimationInterface},
+		},
 		AssetWarnings: []modcompat.AssetWarning{{Kind: compat.WarningMissingSoundBindings}},
 	})
 	if len(findings.FixSymptoms) != 1 || findings.FixSymptoms[0] != SymptomAnimations {

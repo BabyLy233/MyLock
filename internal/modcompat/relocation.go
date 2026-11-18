@@ -143,13 +143,22 @@ func applyRelocation(analysis *Analysis, modID string, models []modelSource, gam
 				"Historical hero binding maps this model to current hero model %s, but animation preservation could not be verified. Invalid model data", target))
 			continue
 		}
-		if err := animation.ProveCurrentBindings(&old, &current, false, resolve); err != nil {
+		available := func(name string) bool {
+			bytes, err := resolve.Resolve(name)
+			return err == nil && bytes != nil
+		}
+		restored := false
+		beforeAnimation := modBytes
+		if prepared, ok := animation.RestoreBindings(modBytes, targetBase, resolve, available); ok {
+			beforeAnimation = prepared
+			restored = true
+		} else if err := animation.ProveCurrentBindings(&old, &current, false, resolve); err != nil {
 			warn(source, path, fmt.Sprintf(
 				"Historical hero binding maps this model to current hero model %s, but animation preservation could not be verified. %s",
 				target, err))
 			continue
 		}
-		fixed := modBytes
+		fixed := beforeAnimation
 		allowControls := func(vanilla *kv3.Value) bool {
 			return !hasAnimationEntries && gameSkeletonReference(vanilla)
 		}
@@ -198,6 +207,12 @@ func applyRelocation(analysis *Analysis, modID string, models []modelSource, gam
 			analysis.Repairs = append(analysis.Repairs, Repair{
 				ModID: modID, SourceVPK: source.vpkPath, FilePath: target,
 				Kind: RepairTaggedSounds,
+			})
+		}
+		if restored {
+			analysis.Repairs = append(analysis.Repairs, Repair{
+				ModID: modID, SourceVPK: source.vpkPath, FilePath: target,
+				Kind: RepairAnimationInterface,
 			})
 		}
 		analysis.Repairs = append(analysis.Repairs, Repair{

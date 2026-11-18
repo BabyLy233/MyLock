@@ -48,7 +48,9 @@ file records the source path and baseline commit in its header.
 | `localization_overlay/animation_skeleton.rs` (pose subset) | `port/rig/` |
 | `localization_overlay/animation_model_evidence.rs` (rig subset) | `port/rig/` |
 | `localization_overlay/animation_poses.rs` (reference-pose consistency) | `port/animation/proof.go` |
-| `localization_overlay/model_animation.rs` (`prove_current_bindings` subset) | `port/animation/proof.go` |
+| `localization_overlay/model_animation.rs` (`prove_current_bindings` and `restore_bindings_from` subsets) | `port/animation/` |
+| `localization_overlay/model_animation/sampled_controls.rs` | `port/animation/restore.go` |
+| `localization_overlay/model_animation/metadata.rs` | `port/animation/restore.go` |
 | `localization_overlay/model_animation/scaled_rig.rs` | `port/animation/proof.go` |
 | `localization_overlay/model_relocation.rs` (archived bindings subset) | `port/relocation/`, `internal/modcompat/relocation.go` |
 | `assets/hero-model-bindings.json` | `port/relocation/hero-model-bindings.json` |
@@ -80,6 +82,10 @@ The differences are limited to Go idioms and the boundaries of this project:
 - Model relocation currently consults only the archived hero bindings. The
   upstream learned `VdataHistory` index is not ported yet, so an old model whose
   binding is only known from learned history is not relocated.
+- Animation bindings are restored by copying the current graph and skeleton
+  references, retiring unavailable legacy selectors and appending missing
+  identity sampled controls. The upstream deformation-rig rebase path is not
+  ported, so a model that needs it is declined instead.
 
 Test fixtures are translated from the upstream `tests.rs` modules. Real game
 assets are never committed; the optional corpus tests use

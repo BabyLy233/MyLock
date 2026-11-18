@@ -40,6 +40,7 @@ const (
 	RepairTaggedSounds          RepairKind = "TaggedSounds"
 	RepairMaterialBindings      RepairKind = "MaterialBindings"
 	RepairModelRelocation       RepairKind = "ModelRelocation"
+	RepairAnimationInterface    RepairKind = "AnimationInterface"
 )
 
 // Repair is one safe repair the analyzer can apply.
