@@ -50,7 +50,7 @@ file records the source path and baseline commit in its header.
 | `localization_overlay/animation_masks.rs` | `port/animation/masks.go` |
 | `localization_overlay/animation_clips.rs` | `port/animation/clips.go`, `internal/modcompat/clips.go` |
 | `localization_overlay/animation_clips/layout.rs`, `animation_clips/layout/tree.rs` | `port/animation/clips_layout.go`, `port/animation/clips_tree.go` |
-| `localization_overlay/animation_model_evidence.rs` (rig subset) | `port/rig/` |
+| `localization_overlay/animation_model_evidence.rs` (rig subset, animation input provenance and dependency walk) | `port/rig/`, `internal/modcompat/animation_inputs.go` |
 | `localization_overlay/animation_poses.rs` (reference-pose consistency and preserve) | `port/animation/proof.go`, `port/animation/rebase.go` |
 | `localization_overlay/animation_contract.rs` (dependency closure subset) | `internal/modcompat/animation_contract.go` |
 | `localization_overlay/model_animation.rs` (`prove_current_bindings` and `restore_bindings_from` subsets) | `port/animation/` |
@@ -159,9 +159,13 @@ The differences are limited to Go idioms and the boundaries of this project:
 - Skeleton refreshes use the semantic-equivalence path (`AnimationSkeleton`) or
   the rebase path (`AnimationSkeletonRebased`), which preserves authored primary
   mask weights and reference poses. Masks with secondary weight lists or custom
-  metadata are declined. The model-evidence path is not ported, so a refresh
-  only runs when no enabled mod ships animation overrides that could sample the
-  skeleton.
+  metadata are declined. The animation dependency proof (`AnimationInputs` and
+  its graph/clip walk) is ported: camera controls and binding restoration are
+  allowed when every enabled override is proven outside the model's graph
+  closure and skeleton, and a skeleton refresh runs only when no override can
+  sample that skeleton. The model-evidence acceptance of added or removed bones
+  (`ModelEvidence`) is not ported, so a changed bone set still declines with a
+  warning.
 
 Test fixtures are translated from the upstream `tests.rs` modules. Real game
 assets are never committed; the optional corpus tests use

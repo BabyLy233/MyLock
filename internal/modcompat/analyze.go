@@ -154,8 +154,6 @@ func Analyze(modID string, vpkPaths []string, game *source2.GameIndex, scope Sco
 	var models []modelSource
 	var assets []modelSource
 	effective := make(map[string]effectiveModel)
-	hasAnimationEntries := false
-	hasAnimationOverrides := false
 	for _, vpkPath := range vpkPaths {
 		archive, err := vpk.Open(vpkPath)
 		if err != nil {
@@ -175,13 +173,6 @@ func Analyze(modID string, vpkPaths []string, game *source2.GameIndex, scope Sco
 					materialCandidates = append(materialCandidates, materialCandidate{
 						path: normalized, vpkPath: vpkPath,
 					})
-				}
-			}
-			if isAnimationPath(path) {
-				hasAnimationEntries = true
-				if !strings.HasSuffix(normalized, ".vnmskel_c") ||
-					strings.HasPrefix(normalized, "animations/") || strings.HasPrefix(normalized, "animgraphs/") {
-					hasAnimationOverrides = true
 				}
 			}
 			if !camera.IsModelPath(path) {
@@ -234,6 +225,10 @@ func Analyze(modID string, vpkPaths []string, game *source2.GameIndex, scope Sco
 	}
 
 	repairedPaths := make(map[string]struct{})
+	// Animation provenance decides which camera and binding repairs are safe
+	// when other mods supply animations.
+	animation := newAnimationInputs(scope, modID, modPaths)
+	animationRead := newAnimationResolver(scope, modID, modArchives, game)
 	for _, source := range models {
 		modBytes, err := source.archive.ReadLimited(source.path, maxModelBytes)
 		if err != nil {
@@ -250,7 +245,7 @@ func Analyze(modID string, vpkPaths []string, game *source2.GameIndex, scope Sco
 		if hasBase {
 			analysis.ModelsChecked++
 			allowControls := func(vanilla *kv3.Value) bool {
-				return !hasAnimationEntries && gameSkeletonReference(vanilla)
+				return animation.permitsCameraControls(vanilla, modID, animationRead)
 			}
 			result := camera.Analyze(modBytes, base, camera.ModelOptions{AllowControls: allowControls})
 			for _, kind := range result.RepairKinds {
@@ -296,7 +291,7 @@ func Analyze(modID string, vpkPaths []string, game *source2.GameIndex, scope Sco
 	}
 
 	relocated := applyRelocation(&analysis, modID, models, game, modPaths, modArchives,
-		readResource, exists, hasAnimationEntries, scope, repairedPaths, effective, mode)
+		readResource, exists, animation, animationRead, scope, repairedPaths, effective, mode)
 	applyMaterialBindings(&analysis, modID, materialCandidates, readResource, game, repairedPaths, effective, mode)
 	if err := applyData(&analysis, modID, modPaths, modArchives, modVPKs, game, scope, mode); err != nil {
 		return Analysis{}, err
@@ -319,7 +314,7 @@ func Analyze(modID string, vpkPaths []string, game *source2.GameIndex, scope Sco
 		case strings.HasSuffix(path, ".vnmskel_c"):
 			_, competing := scope.OtherAnimationPaths[path]
 			data = repairSkeleton(&analysis, modID, source, data, game,
-				!hasAnimationOverrides && len(scope.OtherAnimationPaths) == 0,
+				!animation.needsDependencyProof(modID),
 				scope.Unknown || competing, mode, effective, repairedPaths)
 			analysis.AssetWarnings = append(analysis.AssetWarnings,
 				skeletonWarnings(modID, source.vpkPath, source.path, data)...)
@@ -820,23 +815,4 @@ func ModelPaths(vpkPaths []string) ([]string, error) {
 		}
 	}
 	return paths, nil
-}
-
-// gameSkeletonReference reports whether the game model references exactly one
-// NV skeleton and no mod-provided animation data is involved.
-func gameSkeletonReference(model *kv3.Value) bool {
-	refsV, ok := model.Get("m_vecNmSkeletonRefs")
-	if !ok {
-		return false
-	}
-	refs, ok := refsV.AsArray()
-	if !ok || len(refs) != 1 {
-		return false
-	}
-	name, ok := refs[0].AsString()
-	if !ok {
-		return false
-	}
-	normalized, ok := source2.ResourcePath(name)
-	return ok && strings.HasSuffix(normalized, ".vnmskel_c")
 }

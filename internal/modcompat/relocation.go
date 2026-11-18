@@ -77,7 +77,8 @@ func targetSkeleton(base []byte, resolve animation.Source) (kv3.Value, bool) {
 func applyRelocation(analysis *Analysis, modID string, models []modelSource, game *source2.GameIndex,
 	modPaths map[string]struct{}, modArchives map[string]*vpk.Archive,
 	read func(string) ([]byte, error), exists func(string) bool,
-	hasAnimationEntries bool, scope Scope, repairedPaths map[string]struct{},
+	hasAnimationInputs animationInputs, animationRead animationResolver,
+	scope Scope, repairedPaths map[string]struct{},
 	effective map[string]effectiveModel, mode Mode) map[string]struct{} {
 	historical := make(map[string]struct{})
 	if game == nil || len(models) == 0 {
@@ -164,11 +165,6 @@ func applyRelocation(analysis *Analysis, modID string, models []modelSource, gam
 				"Model relocation to %s is blocked because the current hero model is unavailable", target))
 			continue
 		}
-		if hasAnimationEntries {
-			warn(source, path, fmt.Sprintf(
-				"Historical hero binding maps this model to current hero model %s, but animation preservation could not be verified. Enabled animation overrides require dependency proof before restoring bindings", target))
-			continue
-		}
 		modBytes, err := source.archive.ReadLimited(source.path, maxModelBytes)
 		if err != nil {
 			analysis.AssetWarnings = append(analysis.AssetWarnings, AssetWarning{
@@ -182,6 +178,11 @@ func applyRelocation(analysis *Analysis, modID string, models []modelSource, gam
 		if oldErr != nil || currentErr != nil {
 			warn(source, path, fmt.Sprintf(
 				"Historical hero binding maps this model to current hero model %s, but animation preservation could not be verified. Invalid model data", target))
+			continue
+		}
+		if hasAnimationInputs.blocksModelBindings(&current, modID, animationRead) {
+			warn(source, path, fmt.Sprintf(
+				"Historical hero binding maps this model to current hero model %s, but animation preservation could not be verified. Enabled animation overrides require dependency proof before restoring bindings", target))
 			continue
 		}
 		available := func(name string) bool {
@@ -225,7 +226,7 @@ func applyRelocation(analysis *Analysis, modID string, models []modelSource, gam
 		}
 		fixed := beforeAnimation
 		allowControls := func(vanilla *kv3.Value) bool {
-			return !hasAnimationEntries && gameSkeletonReference(vanilla)
+			return hasAnimationInputs.permitsCameraControls(vanilla, modID, animationRead)
 		}
 		options := camera.ModelOptions{
 			AllowControls: allowControls,

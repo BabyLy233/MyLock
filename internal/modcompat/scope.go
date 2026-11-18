@@ -20,6 +20,14 @@ type ModFiles struct {
 	VPKs []string
 }
 
+// AnimationSource is the archive copy the load order resolves for one
+// animation resource. ModID is the winning mod.
+type AnimationSource struct {
+	ModID string
+	VPK   string
+	Entry string
+}
+
 // Scope describes the other enabled mods that share this mod's load order.
 // Repairs must not change which mod the game loads.
 type Scope struct {
@@ -30,6 +38,12 @@ type Scope struct {
 	// mods. Without their bytes, dependency checks must decline instead of
 	// reporting a false missing resource.
 	OtherAnimationPaths map[string]struct{}
+	// OtherAnimationOwners names the mod each of those paths resolves to.
+	OtherAnimationOwners map[string]string
+	// AnimationSources is the effective animation provider map for the whole
+	// load order. It is shared read-only and lets the animation proofs decode
+	// the files the game actually loads.
+	AnimationSources map[string]AnimationSource
 	// RegistryModified reports that another enabled mod overrides the hero
 	// registry, so relocation targets cannot be trusted without its bytes.
 	RegistryModified bool
@@ -63,6 +77,8 @@ func (s Scope) Fingerprint() string {
 	for _, path := range slices.Sorted(maps.Keys(s.OtherAnimationPaths)) {
 		h.Write([]byte("animation:"))
 		h.Write([]byte(path))
+		h.Write([]byte("="))
+		h.Write([]byte(s.OtherAnimationOwners[path]))
 		h.Write([]byte{0})
 	}
 	fmt.Fprintf(h, "registry=%t unknown=%t profileData=%t", s.RegistryModified, s.Unknown, s.ProfileData)
@@ -217,35 +233,57 @@ func Scopes(mods []ModFiles) (map[string]Scope, error) {
 	type scanned struct {
 		models     map[string]struct{}
 		animations map[string]struct{}
+		sources    map[string]AnimationSource
 		registry   bool
 	}
 	entries := make(map[string]scanned, len(mods))
 	for _, mod := range mods {
-		paths, err := archivePaths(mod.VPKs)
-		if err != nil {
-			return nil, err
+		scannedMod := scanned{
+			models:     make(map[string]struct{}),
+			animations: make(map[string]struct{}),
+			sources:    make(map[string]AnimationSource),
 		}
-		models := make(map[string]struct{})
-		animations := make(map[string]struct{})
-		registry := false
-		for _, path := range paths {
-			if camera.IsModelPath(path) {
-				models[path] = struct{}{}
+		for _, vpkPath := range mod.VPKs {
+			archive, err := vpk.Open(vpkPath)
+			if err != nil {
+				return nil, fmt.Errorf("reading %s: %w", vpkPath, err)
 			}
-			if isAnimationPath(path) {
-				animations[path] = struct{}{}
-			}
-			if path == relocation.HeroesVDataPath {
-				registry = true
+			for _, entry := range archive.Entries {
+				path := camera.NormalizePath(entry.FullPath)
+				if camera.IsModelPath(path) {
+					scannedMod.models[path] = struct{}{}
+				}
+				if isAnimationPath(path) {
+					scannedMod.animations[path] = struct{}{}
+					if _, taken := scannedMod.sources[path]; !taken {
+						scannedMod.sources[path] = AnimationSource{
+							ModID: mod.ID, VPK: vpkPath, Entry: entry.FullPath,
+						}
+					}
+				}
+				if path == relocation.HeroesVDataPath {
+					scannedMod.registry = true
+				}
 			}
 		}
-		entries[mod.ID] = scanned{models: models, animations: animations, registry: registry}
+		entries[mod.ID] = scannedMod
+	}
+	// The first mod of the load order wins a path, as the game loads it.
+	globalSources := make(map[string]AnimationSource)
+	for _, mod := range mods {
+		for path, source := range entries[mod.ID].sources {
+			if _, taken := globalSources[path]; !taken {
+				globalSources[path] = source
+			}
+		}
 	}
 	scopes := make(map[string]Scope, len(mods))
 	for _, mod := range mods {
 		scope := Scope{
-			OtherModelPaths:     make(map[string]struct{}),
-			OtherAnimationPaths: make(map[string]struct{}),
+			OtherModelPaths:      make(map[string]struct{}),
+			OtherAnimationPaths:  make(map[string]struct{}),
+			OtherAnimationOwners: make(map[string]string),
+			AnimationSources:     globalSources,
 		}
 		for _, other := range mods {
 			if other.ID == mod.ID {
@@ -256,6 +294,9 @@ func Scopes(mods []ModFiles) (map[string]Scope, error) {
 			if entries[other.ID].registry {
 				scope.RegistryModified = true
 			}
+		}
+		for path := range scope.OtherAnimationPaths {
+			scope.OtherAnimationOwners[path] = globalSources[path].ModID
 		}
 		scopes[mod.ID] = scope
 	}
