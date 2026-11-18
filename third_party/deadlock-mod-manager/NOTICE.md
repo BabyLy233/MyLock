@@ -59,6 +59,10 @@ file records the source path and baseline commit in its header.
 | `localization_overlay/model_animation/scaled_rig.rs` | `port/animation/proof.go` |
 | `localization_overlay/model_relocation.rs` (archived bindings and prop-model subset) | `port/relocation/`, `internal/modcompat/relocation.go`, `internal/modcompat/references.go` |
 | `assets/hero-model-bindings.json` | `port/relocation/hero-model-bindings.json` |
+| `localization_overlay/compiled_resource.rs` | `port/compiled/` |
+| `localization_overlay/vdata_compatibility.rs`, `vdata_compatibility/{semantics,inheritance,reference_fallback}.rs` | `port/vdata/`, `internal/modcompat/data.go` |
+| `localization_overlay/enum_compatibility.rs`, `enum_maps.rs`, `hero_rebase.rs` | `port/vdata/` |
+| `mod_manager/localization_overlay.rs` (compiled-data table model, source collection, merge, hero IDs) | `port/vdata/`, `internal/modcompat/data.go` |
 | `mod_manager/vdata_history.rs` (observed strings, baseline matching, recording) | `port/history/` |
 | `assets/vdata-history.bin` | `port/history/vdata-history.bin` |
 | `mod_manager/mod_health.rs` | `port/health/model.go` |
@@ -91,6 +95,12 @@ The differences are limited to Go idioms and the boundaries of this project:
   delta recording with the same 64-build compaction. Model relocation consults
   the learned string bindings before the archived JSON; the data compatibility
   path uses the baseline match to tell authored edits from compiler noise.
+- Game-data compatibility merges every enabled mod's `scripts/*.vdata_c` table
+  with the current game table at profile level, then writes one merged table
+  into the overlay. Hero rows, inherited definitions, enum aliases, retired
+  enum-map keys and hero IDs follow the upstream rules; rows or dependencies
+  that cannot be proven are reported instead of being retained. Localization
+  `.txt` merging and HUD checks are not ported yet.
 - Animation bindings are restored by copying the current graph and skeleton
   references, retiring unavailable legacy selectors and appending missing
   identity sampled controls. When the sampled hierarchy differs, the

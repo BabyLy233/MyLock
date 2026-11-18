@@ -10,6 +10,7 @@ import (
 	"github.com/BabyLy233/mylock/internal/source2"
 	"github.com/BabyLy233/mylock/third_party/deadlock-mod-manager/port/camera"
 	"github.com/BabyLy233/mylock/third_party/deadlock-mod-manager/port/compat"
+	"github.com/BabyLy233/mylock/third_party/deadlock-mod-manager/port/vdata"
 	"github.com/BabyLy233/mylock/third_party/deadlock-mod-manager/port/vpk"
 )
 
@@ -451,5 +452,39 @@ func TestInformationalAssetWarningsDoNotRequireAnUpdate(t *testing.T) {
 	if !crash.NeedsUpdate || len(crash.RemainingSymptoms) != 1 ||
 		crash.RemainingSymptoms[0] != SymptomCrashRisk {
 		t.Fatalf("crash findings = %+v", crash)
+	}
+}
+
+func TestGameDataRepairsAndWarningsMapToTheGameDataSymptom(t *testing.T) {
+	findings := FindingsFromAnalysis(modcompat.Analysis{
+		ModelsChecked: 1,
+		Repairs: []modcompat.Repair{
+			{Kind: modcompat.RepairEnumMapEntry},
+			{Kind: modcompat.RepairHeroDevelopmentState},
+		},
+		DataRepairs: []vdata.DataRepair{
+			{Kind: vdata.RepairEnumMapEntry},
+			{Kind: vdata.RepairHeroDevelopmentState},
+		},
+		DataWarnings: []vdata.DataWarning{
+			{Kind: vdata.WarningMissingDefinition},
+		},
+	})
+	if findings.Repairs != 2 || findings.Warnings != 1 {
+		t.Fatalf("findings = %+v", findings)
+	}
+	if len(findings.FixSymptoms) != 1 || findings.FixSymptoms[0] != SymptomGameData {
+		t.Fatalf("fix symptoms = %v", findings.FixSymptoms)
+	}
+	if len(findings.RemainingSymptoms) != 1 || findings.RemainingSymptoms[0] != SymptomGameData {
+		t.Fatalf("remaining = %v", findings.RemainingSymptoms)
+	}
+	for _, kind := range []modcompat.RepairKind{
+		modcompat.RepairInheritedDefinition, modcompat.RepairRetainedDependency,
+		modcompat.RepairCurrentReference, modcompat.RepairRestoredGameData,
+	} {
+		if got := repairSymptom(kind); got != SymptomGameData {
+			t.Fatalf("%s = %s", kind, got)
+		}
 	}
 }

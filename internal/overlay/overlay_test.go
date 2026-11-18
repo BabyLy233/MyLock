@@ -215,3 +215,25 @@ func TestApplyRejectsMismatchedOutputPath(t *testing.T) {
 		t.Fatal("mismatched output accepted")
 	}
 }
+
+func TestBuildWithDataIncludesMergedTablesAndRefusesCollisions(t *testing.T) {
+	f := setup(t)
+	build := uint32(100)
+	merged := map[string][]byte{"scripts/heroes.vdata_c": []byte("merged table")}
+	plan, err := BuildWithData(f.citadel, f.output, &build, []Source{
+		{ModID: "a", VPKs: []string{f.mod}, CompatibilityEnabled: true},
+	}, merged)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(plan.Files["scripts/heroes.vdata_c"], merged["scripts/heroes.vdata_c"]) {
+		t.Fatalf("merged file = %q", plan.Files["scripts/heroes.vdata_c"])
+	}
+	_, err = BuildWithData(f.citadel, f.output, &build, []Source{
+		{ModID: "a", VPKs: []string{f.mod}, CompatibilityEnabled: true,
+			Fixed: map[string][]byte{"scripts/heroes.vdata_c": []byte("mod table")}},
+	}, merged)
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("collision error = %v", err)
+	}
+}

@@ -34,13 +34,17 @@ type Scope struct {
 	// Unknown reports that another enabled mod could not be scanned. Repairs
 	// that depend on the rest of the load order must decline.
 	Unknown bool
+	// ProfileData reports that game-data tables are merged across the whole
+	// profile. The per-mod analysis still reports findings but leaves the merged
+	// bytes to the profile-level merger.
+	ProfileData bool
 }
 
 // Fingerprint returns a stable cache-key value for the scope. The empty scope
 // has an empty fingerprint.
 func (s Scope) Fingerprint() string {
 	if len(s.OtherModelPaths) == 0 && len(s.OtherAnimationPaths) == 0 &&
-		!s.RegistryModified && !s.Unknown {
+		!s.RegistryModified && !s.Unknown && !s.ProfileData {
 		return ""
 	}
 	h := sha256.New()
@@ -54,7 +58,7 @@ func (s Scope) Fingerprint() string {
 		h.Write([]byte(path))
 		h.Write([]byte{0})
 	}
-	fmt.Fprintf(h, "registry=%t unknown=%t", s.RegistryModified, s.Unknown)
+	fmt.Fprintf(h, "registry=%t unknown=%t profileData=%t", s.RegistryModified, s.Unknown, s.ProfileData)
 	return hex.EncodeToString(h.Sum(nil))
 }
 

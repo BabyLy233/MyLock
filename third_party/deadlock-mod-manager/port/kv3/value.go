@@ -273,6 +273,32 @@ func Equal(a, b *Value) bool {
 	return false
 }
 
+// Seg addresses one member of a Value. Field paths in a table row are made of
+// key segments; array elements add index segments. It mirrors the original
+// kv3::Seg used by the patch and data-compatibility code.
+type Seg struct {
+	Kind  SegKind
+	Key   string
+	Index uint64
+}
+
+// SegKind says whether a segment descends into an object member or an array
+// element.
+type SegKind uint8
+
+const (
+	// SegKey descends into the named object member.
+	SegKey SegKind = iota
+	// SegIndex descends into the numbered array element.
+	SegIndex
+)
+
+// KeySeg returns an object-member path segment.
+func KeySeg(key string) Seg { return Seg{Key: key} }
+
+// IndexSeg returns an array-element path segment.
+func IndexSeg(index uint64) Seg { return Seg{Kind: SegIndex, Index: index} }
+
 // Encoding is the wire encoding metadata for one decoded Value node.
 type Encoding struct {
 	DataType uint8

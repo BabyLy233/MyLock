@@ -15,6 +15,7 @@ import (
 	"github.com/BabyLy233/mylock/third_party/deadlock-mod-manager/port/material"
 	"github.com/BabyLy233/mylock/third_party/deadlock-mod-manager/port/modelsounds"
 	"github.com/BabyLy233/mylock/third_party/deadlock-mod-manager/port/resource"
+	"github.com/BabyLy233/mylock/third_party/deadlock-mod-manager/port/vdata"
 	"github.com/BabyLy233/mylock/third_party/deadlock-mod-manager/port/vpk"
 )
 
@@ -47,6 +48,13 @@ const (
 	RepairAnimationSkeletonRebased RepairKind = "AnimationSkeletonRebased"
 	RepairAnimationClipTracks      RepairKind = "AnimationClipTracks"
 	RepairAnimationRigRebase       RepairKind = "AnimationRigRebase"
+	// Data repairs keep the original serialized names.
+	RepairHeroDevelopmentState RepairKind = RepairKind(vdata.RepairHeroDevelopmentState)
+	RepairInheritedDefinition  RepairKind = RepairKind(vdata.RepairInheritedDefinition)
+	RepairRetainedDependency   RepairKind = RepairKind(vdata.RepairRetainedDependency)
+	RepairCurrentReference     RepairKind = RepairKind(vdata.RepairCurrentReference)
+	RepairEnumMapEntry         RepairKind = RepairKind(vdata.RepairEnumMapEntry)
+	RepairRestoredGameData     RepairKind = RepairKind(vdata.RepairRestoredGameData)
 )
 
 // Repair is one safe repair the analyzer can apply.
@@ -87,8 +95,8 @@ type Analysis struct {
 	Checks []string
 	// ModelsChecked is the number of model files compared with the game.
 	ModelsChecked int
-	// AssetsChecked is the number of model, mesh, skeleton and material
-	// resources that received the structural checks.
+	// AssetsChecked is the number of model, mesh, skeleton, material and
+	// game-data table resources that received the structural checks.
 	AssetsChecked int
 	// ScopeIncomplete marks a mod whose files another enabled mod also
 	// provides: its findings cannot be repaired on its own.
@@ -99,10 +107,14 @@ type Analysis struct {
 	// PropModels are warned models that are not a hero's model. Hero camera,
 	// animation and model-mapping warnings on them do not affect mod health.
 	PropModels []string
+	// DataRepairs are merged-table repairs; DataWarnings are table problems
+	// without a proven repair. Both map to the gameData health category.
+	DataRepairs  []vdata.DataRepair
+	DataWarnings []vdata.DataWarning
 }
 
 // SupportedChecks are the health categories the analyzer covers today.
-var SupportedChecks = []string{"cameraAim", "crashRisk", "animations", "appearance", "model"}
+var SupportedChecks = []string{"cameraAim", "crashRisk", "animations", "appearance", "model", "gameData"}
 
 type modelSource struct {
 	path    string
@@ -283,6 +295,9 @@ func Analyze(modID string, vpkPaths []string, game *source2.GameIndex, scope Sco
 	relocated := applyRelocation(&analysis, modID, models, game, modPaths, modArchives,
 		readResource, exists, hasAnimationEntries, scope, repairedPaths, effective, mode)
 	applyMaterialBindings(&analysis, modID, materialCandidates, readResource, game, repairedPaths, effective, mode)
+	if err := applyData(&analysis, modID, modPaths, modArchives, modVPKs, game, scope, mode); err != nil {
+		return Analysis{}, err
+	}
 
 	for _, source := range assets {
 		data, err := source.archive.ReadLimited(source.path, maxModelBytes)

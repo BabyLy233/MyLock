@@ -11,6 +11,9 @@ import (
 	"github.com/BabyLy233/mylock/internal/modcompat"
 	"github.com/BabyLy233/mylock/internal/modhealth"
 	"github.com/BabyLy233/mylock/internal/source2"
+	"github.com/BabyLy233/mylock/third_party/deadlock-mod-manager/port/camera"
+	"github.com/BabyLy233/mylock/third_party/deadlock-mod-manager/port/kv3"
+	"github.com/BabyLy233/mylock/third_party/deadlock-mod-manager/port/resource"
 	"github.com/BabyLy233/mylock/third_party/deadlock-mod-manager/port/vpk"
 )
 
@@ -190,16 +193,16 @@ func TestHealthCheckIsRefusedWhileTheGameRuns(t *testing.T) {
 }
 
 func TestHealthStatusBranchesShowEveryState(t *testing.T) {
-	if got, _ := healthLine(modhealth.Health{Status: modhealth.StatusFixable, Checks: modcompat.SupportedChecks, Symptoms: []modhealth.Symptom{modhealth.SymptomCameraAim}}); got != "可修复：相机/瞄准（未检查：游戏数据）" {
+	if got, _ := healthLine(modhealth.Health{Status: modhealth.StatusFixable, Checks: modcompat.SupportedChecks, Symptoms: []modhealth.Symptom{modhealth.SymptomCameraAim}}); got != "可修复：相机/瞄准" {
 		t.Fatalf("fixable line = %q", got)
 	}
-	if got, _ := healthLine(modhealth.Health{Status: modhealth.StatusFixed, Checks: modcompat.SupportedChecks, Symptoms: []modhealth.Symptom{modhealth.SymptomCameraAim}}); got != "已修复：相机/瞄准（未检查：游戏数据）" {
+	if got, _ := healthLine(modhealth.Health{Status: modhealth.StatusFixed, Checks: modcompat.SupportedChecks, Symptoms: []modhealth.Symptom{modhealth.SymptomCameraAim}}); got != "已修复：相机/瞄准" {
 		t.Fatalf("fixed line = %q", got)
 	}
-	if got, _ := healthLine(modhealth.Health{Status: modhealth.StatusNeedsUpdate, Checks: modcompat.SupportedChecks, Symptoms: []modhealth.Symptom{modhealth.SymptomCrashRisk}}); got != "需要更新：崩溃风险（未检查：游戏数据）" {
+	if got, _ := healthLine(modhealth.Health{Status: modhealth.StatusNeedsUpdate, Checks: modcompat.SupportedChecks, Symptoms: []modhealth.Symptom{modhealth.SymptomCrashRisk}}); got != "需要更新：崩溃风险" {
 		t.Fatalf("needs-update line = %q", got)
 	}
-	if got, _ := healthLine(modhealth.Health{Status: modhealth.StatusOriginalFiles, Checks: modcompat.SupportedChecks}); got != "使用原文件（未检查：游戏数据）" {
+	if got, _ := healthLine(modhealth.Health{Status: modhealth.StatusOriginalFiles, Checks: modcompat.SupportedChecks}); got != "使用原文件" {
 		t.Fatalf("original line = %q", got)
 	}
 }
@@ -218,4 +221,117 @@ func TestHealthLineNamesAnOverlappingModel(t *testing.T) {
 	if !strings.Contains(line, "无法单独修复") {
 		t.Fatalf("line = %q", line)
 	}
+}
+
+func compiledTable(t *testing.T, value kv3.Value) []byte {
+	t.Helper()
+	data, err := resource.Build([]resource.BuildResult{
+		{Kind: resource.BlockTypeData, Payload: kv3.Encode(&value, kv3.Format{})},
+	}, nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
+func TestHealthFixMergesGameDataIntoTheOverlay(t *testing.T) {
+	a := newApp()
+	a.running = func() bool { return false }
+	install, profile := fakeGame(t)
+	addMod(t, profile, "mod", "hero.vpk")
+	if err := profile.SetEnabled("mod", true); err != nil {
+		t.Fatal(err)
+	}
+	gameRow := kv3.Object(
+		kv3.Pair{Key: "_class", Value: kv3.String("CitadelHeroData_t")},
+		kv3.Pair{Key: "m_mapStandardLevelUpUpgrades", Value: kv3.Object(
+			kv3.Pair{Key: "MODIFIER_VALUE_HEALTH", Value: kv3.Double(10)},
+		)},
+	)
+	authoredRow := kv3.Object(
+		kv3.Pair{Key: "_class", Value: kv3.String("CitadelHeroData_t")},
+		kv3.Pair{Key: "m_mapStandardLevelUpUpgrades", Value: kv3.Object(
+			kv3.Pair{Key: "MODIFIER_VALUE_HEALTH", Value: kv3.Double(20)},
+			kv3.Pair{Key: "MODIFIER_VALUE_RETIRED", Value: kv3.Double(0.625)},
+		)},
+	)
+	gameTable := kv3.Object(kv3.Pair{Key: "hero_one", Value: gameRow})
+	modTable := kv3.Object(kv3.Pair{Key: "hero_one", Value: authoredRow})
+	gameData, err := vpk.Pack([]vpk.PackEntry{
+		{Path: "models/heroes/hero/hero.vmdl_c", Data: []byte("game model")},
+		{Path: "scripts/heroes.vdata_c", Data: compiledTable(t, gameTable)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(install.CitadelDir(), "pak01_dir.vpk"), gameData, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	modData, err := vpk.Pack([]vpk.PackEntry{
+		{Path: "scripts/heroes.vdata_c", Data: compiledTable(t, modTable)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(profile.Dir, "pak01_dir.vpk"), modData, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mods, err := profile.Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.install, a.mods = install, mods
+	store, err := modhealth.Open(filepath.Join(t.TempDir(), "mod-health.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.health.checker = modhealth.NewCheckerWithAnalyzer(store, modcompat.Analyze)
+	a.health.analyze = modcompat.Analyze
+	settingsPath(t, a)
+
+	a.checkHealth(false)
+	waitHealth(t, a, modhealth.StatusPartlyFixable)
+	health := a.healthState().byID["mod"]
+	if !containsSymptom(health.FixSymptoms, modhealth.SymptomGameData) ||
+		!containsSymptom(health.RemainingSymptoms, modhealth.SymptomGameData) {
+		t.Fatalf("health = %+v", health)
+	}
+
+	a.fixCompatibility([]string{"mod"})
+	overlayPath := overlayVPKPath(install, profile)
+	waitFor(t, "the compatibility package", func() bool {
+		a.mu.Lock()
+		busy := a.health.busy
+		a.mu.Unlock()
+		return !busy && fileExists(overlayPath)
+	})
+	archive, err := vpk.Open(overlayPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := archive.Read("scripts/heroes.vdata_c")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, root, _, err := camera.DecodeCompiled(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	row, _ := root.Get("hero_one")
+	mapping, _ := row.Get("m_mapStandardLevelUpUpgrades")
+	if len(mapping.Object) != 1 {
+		t.Fatalf("merged map = %+v", mapping)
+	}
+	if healthValue, _ := mapping.Get("MODIFIER_VALUE_HEALTH"); healthValue.Double != 20 {
+		t.Fatalf("health = %v", healthValue)
+	}
+}
+
+func containsSymptom(symptoms []modhealth.Symptom, want modhealth.Symptom) bool {
+	for _, symptom := range symptoms {
+		if symptom == want {
+			return true
+		}
+	}
+	return false
 }

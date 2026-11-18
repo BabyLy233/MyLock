@@ -139,6 +139,13 @@ func FindingsFromAnalysis(analysis modcompat.Analysis) Findings {
 		}
 	}
 	warnings := 0
+	for range analysis.DataRepairs {
+		fixSet[SymptomGameData] = struct{}{}
+	}
+	for range analysis.DataWarnings {
+		warnings++
+		remaining[SymptomGameData] = struct{}{}
+	}
 	for _, warning := range analysis.Warnings {
 		if _, skipped := unloaded[camera.NormalizePath(warning.FilePath)]; skipped {
 			continue
@@ -230,6 +237,10 @@ func repairSymptom(kind modcompat.RepairKind) Symptom {
 		return SymptomAppearance
 	case modcompat.RepairModelRelocation:
 		return SymptomModel
+	case modcompat.RepairHeroDevelopmentState, modcompat.RepairInheritedDefinition,
+		modcompat.RepairRetainedDependency, modcompat.RepairCurrentReference,
+		modcompat.RepairEnumMapEntry, modcompat.RepairRestoredGameData:
+		return SymptomGameData
 	}
 	return ""
 }

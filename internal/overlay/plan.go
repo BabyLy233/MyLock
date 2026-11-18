@@ -29,7 +29,7 @@ const (
 	Generator = "mylock"
 	// Revision is the receipt revision. Bump it when repair rules or output
 	// semantics change, so installed overlays are rebuilt.
-	Revision uint32 = 6
+	Revision uint32 = 7
 )
 
 // ErrConflict is returned when two mods would contribute the same resource
@@ -106,6 +106,14 @@ type Result struct {
 // mods are refused rather than silently resolved: the combined analysis
 // reports them as scope-incomplete.
 func Build(citadelDir, outputPath string, build *uint32, sources []Source) (*Plan, error) {
+	return BuildWithData(citadelDir, outputPath, build, sources, nil)
+}
+
+// BuildWithData is Build plus profile-wide merged files, such as game-data
+// tables that no single mod owns. A shared file may not collide with a mod's
+// repaired file.
+func BuildWithData(citadelDir, outputPath string, build *uint32, sources []Source,
+	shared map[string][]byte) (*Plan, error) {
 	key := Key{OutputPath: outputPath, GameBuild: build}
 	plan := &Plan{Key: key, Files: make(map[string][]byte)}
 	owners := make(map[string]string)
@@ -141,6 +149,18 @@ func Build(citadelDir, outputPath string, build *uint32, sources []Source) (*Pla
 		}
 		plan.Repairs = append(plan.Repairs, source.Repairs...)
 		plan.Warnings = append(plan.Warnings, source.Warnings...)
+	}
+	for path, data := range shared {
+		normalized, ok := vpk.NormalizeResourcePath(path)
+		if !ok {
+			return nil, fmt.Errorf("unsafe resource path %q in merged game data", path)
+		}
+		ownerKey := strings.ToLower(normalized)
+		if owner, exists := owners[ownerKey]; exists {
+			return nil, fmt.Errorf("%w: mod %s and merged game data both provide %s", ErrConflict, owner, normalized)
+		}
+		owners[ownerKey] = ""
+		plan.Files[normalized] = data
 	}
 	sort.Strings(compatibility)
 	plan.Key.CompatibilityModIDs = compatibility

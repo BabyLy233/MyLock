@@ -346,12 +346,33 @@ func (a *app) rebuildOverlayLocked(install *game.Install, profile addons.Profile
 	if err != nil {
 		return err
 	}
-	var sources []overlay.Source
-	anyFixed := false
+	dataInputs := make([]modcompat.DataInput, 0, len(selected))
 	for _, mod := range selected {
-		analysis, err := analyze(mod.ID, mod.VpkPaths, gameIndex, scopes[mod.ID], modcompat.Fix)
+		dataInputs = append(dataInputs, modcompat.DataInput{ModID: mod.ID, VPKs: mod.VpkPaths})
+	}
+	data, err := modcompat.FixData(dataInputs, gameIndex)
+	if err != nil {
+		return err
+	}
+	dataWarnings := make(map[string][]overlay.Warning)
+	for _, warning := range data.Warnings {
+		dataWarnings[warning.ModID] = append(dataWarnings[warning.ModID], overlay.Warning{
+			ModID: warning.ModID, Path: warning.FilePath, Kind: string(warning.Kind), Detail: warning.Detail,
+		})
+	}
+	var sources []overlay.Source
+	anyFixed := len(data.Files) > 0
+	for _, mod := range selected {
+		scope := scopes[mod.ID]
+		scope.ProfileData = true
+		analysis, err := analyze(mod.ID, mod.VpkPaths, gameIndex, scope, modcompat.Fix)
 		if err != nil {
 			return err
+		}
+		for path := range analysis.Fixed {
+			if modcompat.IsDataTablePath(path) {
+				delete(analysis.Fixed, path)
+			}
 		}
 		source := overlay.Source{
 			ModID:                mod.ID,
@@ -370,6 +391,7 @@ func (a *app) rebuildOverlayLocked(install *game.Install, profile addons.Profile
 				Kind: string(warning.Kind), Detail: warning.Detail,
 			})
 		}
+		source.Warnings = append(source.Warnings, dataWarnings[mod.ID]...)
 		if len(analysis.Fixed) > 0 {
 			anyFixed = true
 		}
@@ -378,7 +400,7 @@ func (a *app) rebuildOverlayLocked(install *game.Install, profile addons.Profile
 	if len(sources) == 0 || !anyFixed {
 		return overlay.Remove(vpkPath)
 	}
-	plan, err := overlay.Build(install.CitadelDir(), vpkPath, install.ClientVersion(), sources)
+	plan, err := overlay.BuildWithData(install.CitadelDir(), vpkPath, install.ClientVersion(), sources, data.Files)
 	if err != nil {
 		return err
 	}

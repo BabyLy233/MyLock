@@ -30,30 +30,23 @@ const (
 	maxRetainedBuilds = 64
 )
 
-// Seg addresses one member of a KV3 value. Field paths in a table row are made
-// of key segments; array elements add index segments.
-type Seg struct {
-	Kind  SegKind
-	Key   string
-	Index uint64
-}
+// Seg is a path into a KV3 value. The data-compatibility code shares the same
+// path type, so the aliases keep the history API in its original vocabulary.
+type Seg = kv3.Seg
 
-// SegKind says whether a segment descends into an object member or an array
-// element.
-type SegKind uint8
+// SegKind selects key and index path segments.
+type SegKind = kv3.SegKind
 
 const (
-	// SegKey descends into the named object member.
-	SegKey SegKind = iota
-	// SegIndex descends into the numbered array element.
-	SegIndex
+	SegKey   = kv3.SegKey
+	SegIndex = kv3.SegIndex
 )
 
 // KeySeg returns an object-member path segment.
-func KeySeg(key string) Seg { return Seg{Key: key} }
+func KeySeg(key string) Seg { return kv3.KeySeg(key) }
 
 // IndexSeg returns an array-element path segment.
-func IndexSeg(index uint64) Seg { return Seg{Kind: SegIndex, Index: index} }
+func IndexSeg(index uint64) Seg { return kv3.IndexSeg(index) }
 
 // FingerprintChange is one row or field update inside a recorded build.
 type FingerprintChange struct {
@@ -107,6 +100,15 @@ type BaselineMatch struct {
 	fields         map[fingerprint]fingerprint
 	exact          bool
 }
+
+// Version returns the matched build version.
+func (b *BaselineMatch) Version() uint32 { return b.BuildVersion }
+
+// ComparableCount returns the number of rows the match was scored on.
+func (b *BaselineMatch) ComparableCount() int { return b.ComparableRows }
+
+// ChangedCount returns the number of rows that differ from the recorded build.
+func (b *BaselineMatch) ChangedCount() int { return b.ChangedRows }
 
 // ContainsRow reports whether the recorded build has the row.
 func (b *BaselineMatch) ContainsRow(rowName string) bool {
