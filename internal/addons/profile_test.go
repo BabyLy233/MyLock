@@ -3,6 +3,7 @@ package addons
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 )
@@ -360,5 +361,34 @@ func TestSetCompatibilityWritesBothChoicesOnce(t *testing.T) {
 	}
 	if err := p.SetCompatibility([]string{"missing"}, true); err == nil {
 		t.Fatal("unknown mod accepted")
+	}
+}
+
+// Archives the manifest does not name still load, so the compatibility code
+// has to know about them before it decides what it may rewrite.
+func TestUnmanagedVpksListsMountedArchivesNoEntryClaims(t *testing.T) {
+	_, addonsDir := citadel(t)
+	p := Open(addonsDir)
+	m := New()
+	m.Mods["owned"] = Entry{Enabled: true, Shard: 1, CurrentVpks: []string{"pak01_dir.vpk"}}
+	m.Mods["off"] = Entry{DisabledVpks: []string{"off_skin.vpk"}}
+	if err := m.Save(p.ManifestPath()); err != nil {
+		t.Fatal(err)
+	}
+	touch(t, p.Dir, "pak01_dir.vpk")
+	touch(t, p.Dir, "pak02_dir.vpk")
+	touch(t, p.Dir, "off_skin.vpk")
+	touch(t, p.ShardDir(2), "pak03_dir.vpk")
+
+	unmanaged, err := p.UnmanagedVpks()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		filepath.Join(p.Dir, "pak02_dir.vpk"),
+		filepath.Join(p.ShardDir(2), "pak03_dir.vpk"),
+	}
+	if !slices.Equal(unmanaged, want) {
+		t.Fatalf("unmanaged = %v, want %v", unmanaged, want)
 	}
 }

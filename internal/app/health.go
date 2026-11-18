@@ -343,6 +343,28 @@ func (a *app) analyzer() modhealth.Analyzer {
 	return modcompat.Analyze
 }
 
+// profileModFiles lists every archive the game loads for a profile. Archives
+// the manifest does not own come first, which treats them as the winning
+// provider: that can decline a repair, but never lets the overlay overwrite a
+// file the app did not install.
+func profileModFiles(profile addons.Profile, mods []addons.Mod) ([]modcompat.ModFiles, error) {
+	unmanaged, err := profile.UnmanagedVpks()
+	if err != nil {
+		return nil, err
+	}
+	files := make([]modcompat.ModFiles, 0, len(unmanaged)+len(mods))
+	for _, path := range unmanaged {
+		files = append(files, modcompat.ModFiles{ID: "unmanaged:" + path, VPKs: []string{path}})
+	}
+	for _, mod := range mods {
+		if len(mod.VpkPaths) == 0 {
+			continue
+		}
+		files = append(files, modcompat.ModFiles{ID: mod.ID, VPKs: mod.VpkPaths})
+	}
+	return files, nil
+}
+
 // rebuildOverlayLocked builds and publishes the compatibility package for the
 // profile's opt-in mods. It must be called with profileWriteMu held. With
 // nothing left to fix it removes the package instead, so a launch falls back to
@@ -371,12 +393,9 @@ func (a *app) rebuildOverlayLocked(install *game.Install, profile addons.Profile
 	// Resources another installed mod also ships are left as the game loads
 	// them: rewriting a shared file would change that mod without its owner
 	// opting in.
-	allFiles := make([]modcompat.ModFiles, 0, len(mods))
-	for _, mod := range mods {
-		if len(mod.VpkPaths) == 0 {
-			continue
-		}
-		allFiles = append(allFiles, modcompat.ModFiles{ID: mod.ID, VPKs: mod.VpkPaths})
+	allFiles, err := profileModFiles(profile, mods)
+	if err != nil {
+		return err
 	}
 	selectedIDs := make(map[string]struct{}, len(selected))
 	for _, mod := range selected {
@@ -589,12 +608,12 @@ func sharedFixConflict(profile addons.Profile, ids []string) error {
 	}
 	var allFiles []modcompat.ModFiles
 	selected := make(map[string]struct{}, len(ids))
+	allFiles, err = profileModFiles(profile, mods)
+	if err != nil {
+		return err
+	}
 	for _, mod := range mods {
-		if len(mod.VpkPaths) == 0 {
-			continue
-		}
-		allFiles = append(allFiles, modcompat.ModFiles{ID: mod.ID, VPKs: mod.VpkPaths})
-		if !mod.Enabled {
+		if !mod.Enabled || len(mod.VpkPaths) == 0 {
 			continue
 		}
 		if _, ok := requested[mod.ID]; ok || mod.CompatibilityEnabled {

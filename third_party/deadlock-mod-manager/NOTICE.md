@@ -68,6 +68,7 @@ file records the source path and baseline commit in its header.
 | `mod_manager/vdata_history.rs` (observed strings, baseline matching, recording) | `port/history/` |
 | `localization_overlay/observed_data.rs` (observation cache and learning) | `internal/modcompat/history.go` |
 | `localization_overlay/repair_scope.rs` | `internal/modcompat/scope.go`, `internal/app/health.go` |
+| `manager/localization/inventory.rs` (mounted unmanaged archives) | `internal/addons/profile.go`, `internal/app/health.go` |
 | `mod_manager/manager/localization/history.rs` (learned history path, load, save) | `internal/modcompat/history.go`, `internal/config/history.go` |
 | `assets/vdata-history.bin` | `port/history/vdata-history.bin` |
 | `mod_manager/mod_health.rs` | `port/health/model.go` |

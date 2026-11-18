@@ -1,6 +1,7 @@
 package addons
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -190,6 +191,53 @@ func (p Profile) Read() ([]Mod, error) {
 // choices.
 func (p Profile) InstalledMods() ([]Mod, error) {
 	return p.Read()
+}
+
+// UnmanagedVpks returns the mounted archives in this profile's shard
+// directories that no enabled manifest entry claims. The game loads them even
+// though the app did not install them, so a compatibility package must not
+// overwrite their files unseen.
+func (p Profile) UnmanagedVpks() ([]string, error) {
+	m, err := Load(p.ManifestPath())
+	if err != nil {
+		return nil, err
+	}
+	owned := make(map[string]struct{})
+	for _, entry := range m.Mods {
+		if !entry.Enabled {
+			continue
+		}
+		for _, name := range entry.CurrentVpks {
+			owned[filepath.Join(p.ShardDir(entry.Shard), filepath.Base(name))] = struct{}{}
+		}
+	}
+	var unmanaged []string
+	for shard := uint32(FirstShard); shard <= MaxShards; shard++ {
+		dir := p.ShardDir(shard)
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return nil, fmt.Errorf("reading %s: %w", dir, err)
+		}
+		var names []string
+		for _, entry := range entries {
+			if entry.IsDir() || pakNumber(entry.Name()) == 0 {
+				continue
+			}
+			names = append(names, entry.Name())
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			path := filepath.Join(dir, name)
+			if _, ok := owned[path]; ok {
+				continue
+			}
+			unmanaged = append(unmanaged, path)
+		}
+	}
+	return unmanaged, nil
 }
 
 // mod describes one mod, looking in the directory its files should be in.

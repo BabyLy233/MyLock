@@ -459,3 +459,66 @@ func TestSharedLocalizationIsLeftToTheGameUnlessEveryOwnerOptsIn(t *testing.T) {
 		t.Fatalf("merged token = %q", value)
 	}
 }
+
+func TestUnmanagedVpkProtectsItsSharedLocalization(t *testing.T) {
+	a := newApp()
+	a.running = func() bool { return false }
+	install, profile := fakeGame(t)
+	a.health.analyze = modcompat.Analyze
+	a.health.historyPath = func(string) (string, error) {
+		return filepath.Join(t.TempDir(), "vdata-history.bin"), nil
+	}
+	const textPath = "resource/localization/example/example_english.txt"
+	gameData, err := vpk.Pack([]vpk.PackEntry{
+		{Path: "models/heroes/hero/hero.vmdl_c", Data: []byte("game model")},
+		{Path: textPath, Data: localizationFile("Token_A", "Vanilla", "Token_B", "Keep")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(install.CitadelDir(), "pak01_dir.vpk"), gameData, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	addMod(t, profile, "selected", "mod.vpk")
+	if err := profile.SetEnabled("selected", true); err != nil {
+		t.Fatal(err)
+	}
+	mods, err := profile.Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	selected, err := vpk.Pack([]vpk.PackEntry{
+		{Path: textPath, Data: localizationFile("Token_A", "Authored")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(mods[0].VpkPaths[0], selected, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// A manually installed archive the manifest knows nothing about.
+	loose, err := vpk.Pack([]vpk.PackEntry{
+		{Path: textPath, Data: localizationFile("Token_B", "Loose")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	loosePath := filepath.Join(profile.Dir, "pak05_dir.vpk")
+	if err := os.WriteFile(loosePath, loose, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	a.install, a.mods = install, mods
+	if err := profile.SetCompatibility([]string{"selected"}, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.rebuildOverlayLocked(install, profile); err != nil {
+		t.Fatal(err)
+	}
+	if fileExists(overlayVPKPath(install, profile)) {
+		t.Fatal("merged text overrode a manually installed archive")
+	}
+	if err := sharedFixConflict(profile, []string{"selected"}); err == nil ||
+		!strings.Contains(err.Error(), "unmanaged:") {
+		t.Fatalf("shared fix error = %v", err)
+	}
+}
