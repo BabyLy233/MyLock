@@ -1,9 +1,11 @@
 package modcompat
 
 import (
+	"crypto/sha256"
 	"maps"
 	"slices"
 	"strings"
+	"sync"
 
 	"github.com/BabyLy233/mylock/internal/source2"
 	"github.com/BabyLy233/mylock/third_party/deadlock-mod-manager/port/animation"
@@ -65,6 +67,90 @@ type contractNodeResult struct {
 	node contractNode
 	kind contractIssueKind
 	ok   bool
+}
+
+const (
+	// contractCacheMaxBytes and contractCacheMaxEntries bound the decoded-node
+	// cache. The same game graph or clip is read for every mod that references
+	// it, and its parse result depends only on the bytes and the resource type.
+	contractCacheMaxBytes   = 2 << 20
+	contractCacheMaxEntries = 2048
+)
+
+type contractCacheKey struct {
+	kind   string
+	digest [32]byte
+}
+
+type contractCacheEntry struct {
+	key    contractCacheKey
+	result contractNodeResult
+	size   int
+}
+
+type contractNodeCache struct {
+	mu      sync.Mutex
+	entries []contractCacheEntry
+	bytes   int
+}
+
+var animationNodes contractNodeCache
+
+func (c *contractNodeCache) get(key contractCacheKey) (contractNodeResult, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for index, entry := range c.entries {
+		if entry.key != key {
+			continue
+		}
+		c.entries = append(append(c.entries[:index], c.entries[index+1:]...), entry)
+		return entry.result, true
+	}
+	return contractNodeResult{}, false
+}
+
+func (c *contractNodeCache) insert(key contractCacheKey, result contractNodeResult) {
+	size := 192 + len(result.node.skeleton) + len(result.node.children)*16
+	for _, child := range result.node.children {
+		size += len(child)
+	}
+	if size > contractCacheMaxBytes {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for index, entry := range c.entries {
+		if entry.key == key {
+			c.entries = append(append(c.entries[:index], c.entries[index+1:]...), entry)
+			return
+		}
+	}
+	for c.bytes+size > contractCacheMaxBytes || len(c.entries) >= contractCacheMaxEntries {
+		if len(c.entries) == 0 {
+			break
+		}
+		oldest := c.entries[0]
+		c.entries = c.entries[1:]
+		c.bytes -= oldest.size
+	}
+	c.bytes += size
+	c.entries = append(c.entries, contractCacheEntry{key: key, result: result, size: size})
+}
+
+func cachedContractNode(path string, bytes []byte) contractNodeResult {
+	kind := path
+	if index := strings.LastIndexByte(kind, '.'); index >= 0 {
+		kind = kind[index+1:]
+	}
+	key := contractCacheKey{kind: kind, digest: sha256.Sum256(bytes)}
+	// The parsed node depends on the resource type, not on its provider or
+	// path, so identical bytes may answer for a different file name.
+	if result, ok := animationNodes.get(key); ok {
+		return result
+	}
+	result := decodeContractNode(path, bytes)
+	animationNodes.insert(key, result)
+	return result
 }
 
 // applyAnimationContract checks the effective animation closure of every model.
@@ -287,6 +373,11 @@ func (c *contractChecker) readNode(path string) contractNodeResult {
 		}
 		bytes = data
 	}
+	return cachedContractNode(path, bytes)
+}
+
+func decodeContractNode(path string, bytes []byte) contractNodeResult {
+	fail := func(kind contractIssueKind) contractNodeResult { return contractNodeResult{kind: kind} }
 	_, value, _, err := camera.DecodeCompiled(bytes)
 	if err != nil {
 		return fail(issueUnreadableResource)

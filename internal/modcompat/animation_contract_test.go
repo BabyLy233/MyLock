@@ -1,6 +1,8 @@
 package modcompat
 
 import (
+	"encoding/binary"
+	"strings"
 	"testing"
 
 	"github.com/BabyLy233/mylock/internal/source2"
@@ -185,5 +187,62 @@ func TestAnimationContractSkipsUnsupportedGraphReferences(t *testing.T) {
 	}
 	if len(analysis.AssetWarnings) != 0 {
 		t.Fatalf("warnings = %+v", analysis.AssetWarnings)
+	}
+}
+
+func TestContractCacheInterpretsBytesByResourceType(t *testing.T) {
+	value := kv3.Object(
+		kv3.Pair{Key: "m_skeleton", Value: kv3.String("models/test.vnmskel")},
+		kv3.Pair{Key: "m_resources", Value: kv3.Array()},
+		kv3.Pair{Key: "m_trackCompressionSettings", Value: kv3.Array()},
+	)
+	bytes := compiledBlock(t, ptr(value))
+	clip := cachedContractNode("test.vnmclip_c", bytes)
+	if !clip.ok || clip.node.kind != nodeClip || clip.node.bones != 0 ||
+		clip.node.skeleton != "models/test.vnmskel_c" {
+		t.Fatalf("clip = %+v", clip)
+	}
+	graph := cachedContractNode("test.vnmgraph_c", bytes)
+	if !graph.ok || graph.node.kind != nodeGraph || len(graph.node.children) != 0 {
+		t.Fatalf("graph = %+v", graph)
+	}
+	renamed := cachedContractNode("renamed.vnmclip_c", bytes)
+	if !renamed.ok || renamed.node.kind != nodeClip {
+		t.Fatalf("renamed clip = %+v", renamed)
+	}
+}
+
+func TestContractCacheEvictsMetadataAndLargeGraphs(t *testing.T) {
+	key := func(index int) contractCacheKey {
+		var digest [32]byte
+		binary.LittleEndian.PutUint32(digest[:], uint32(index))
+		return contractCacheKey{kind: "vnmclip_c", digest: digest}
+	}
+	var cache contractNodeCache
+	for index := range contractCacheMaxEntries {
+		cache.insert(key(index), contractNodeResult{node: contractNode{kind: nodeSkeleton, bones: index}})
+	}
+	if _, ok := cache.get(key(0)); !ok {
+		t.Fatal("the oldest entry was dropped before pressure")
+	}
+	cache.insert(key(contractCacheMaxEntries), contractNodeResult{node: contractNode{kind: nodeSkeleton}})
+	if _, ok := cache.get(key(1)); ok {
+		t.Fatal("the oldest entry survived the count limit")
+	}
+	if _, ok := cache.get(key(0)); !ok {
+		t.Fatal("a recently used entry was evicted")
+	}
+	oversized := contractNodeResult{node: contractNode{
+		kind: nodeGraph, children: []string{strings.Repeat("x", contractCacheMaxBytes)},
+	}}
+	cache.insert(key(contractCacheMaxEntries+1), oversized)
+	if _, ok := cache.get(key(contractCacheMaxEntries + 1)); ok {
+		t.Fatal("an oversized graph was retained")
+	}
+	cache.mu.Lock()
+	held := cache.bytes
+	cache.mu.Unlock()
+	if held > contractCacheMaxBytes {
+		t.Fatalf("cache holds %d bytes", held)
 	}
 }

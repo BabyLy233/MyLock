@@ -58,6 +58,7 @@ file records the source path and baseline commit in its header.
 | `localization_overlay/model_animation/metadata.rs` | `port/animation/restore.go` |
 | `localization_overlay/model_animation/scaled_rig.rs` | `port/animation/proof.go` |
 | `localization_overlay/model_relocation.rs` (archived bindings and prop-model subset) | `port/relocation/`, `internal/modcompat/relocation.go`, `internal/modcompat/references.go` |
+| `localization_overlay/animation_contract/cache.rs` | `internal/modcompat/animation_contract.go` |
 | `assets/hero-model-bindings.json` | `port/relocation/hero-model-bindings.json` |
 | `localization_overlay/compiled_resource.rs` | `port/compiled/` |
 | `localization_overlay/vdata_compatibility.rs`, `vdata_compatibility/{semantics,inheritance,reference_fallback}.rs` | `port/vdata/`, `internal/modcompat/data.go` |
