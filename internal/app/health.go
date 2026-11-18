@@ -470,11 +470,10 @@ func (a *app) rebuildOverlayReview(install *game.Install, profile addons.Profile
 		}
 	}
 	analyze := a.analyzer()
-	files := make([]modcompat.ModFiles, 0, len(selected))
-	for _, mod := range selected {
-		files = append(files, modcompat.ModFiles{ID: mod.ID, VPKs: mod.VpkPaths})
-	}
-	scopes, err := modcompat.Scopes(files)
+	// Every enabled archive is part of the load order, not only the selected
+	// ones: animation provenance and relocation targets must see a mod that did
+	// not opt in too.
+	scopes, err := modcompat.Scopes(allFiles)
 	if err != nil {
 		return nil, err
 	}
