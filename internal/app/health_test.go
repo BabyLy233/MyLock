@@ -10,6 +10,7 @@ import (
 	"github.com/BabyLy233/mylock/internal/game"
 	"github.com/BabyLy233/mylock/internal/modcompat"
 	"github.com/BabyLy233/mylock/internal/modhealth"
+	"github.com/BabyLy233/mylock/internal/overlay"
 	"github.com/BabyLy233/mylock/internal/source2"
 	"github.com/BabyLy233/mylock/third_party/deadlock-mod-manager/port/camera"
 	"github.com/BabyLy233/mylock/third_party/deadlock-mod-manager/port/kv3"
@@ -457,6 +458,108 @@ func TestSharedLocalizationIsLeftToTheGameUnlessEveryOwnerOptsIn(t *testing.T) {
 	}
 	if value, _ := parsed.File.Lookup("Token_A"); value != "Authored" {
 		t.Fatalf("merged token = %q", value)
+	}
+}
+
+func TestSavedReviewChoosesTheMergedLocalizationWinner(t *testing.T) {
+	a := newApp()
+	a.running = func() bool { return false }
+	install, profile := fakeGame(t)
+	a.health.analyze = modcompat.Analyze
+	historyPath := filepath.Join(t.TempDir(), "vdata-history.bin")
+	a.health.historyPath = func(string) (string, error) { return historyPath, nil }
+	const textPath = "resource/localization/example/example_english.txt"
+	gameData, err := vpk.Pack([]vpk.PackEntry{{
+		Path: textPath, Data: localizationFile("Token_A", "Vanilla"),
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(install.CitadelDir(), "pak01_dir.vpk"), gameData, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"first", "second"} {
+		addMod(t, profile, id, "mod.vpk")
+		if err := profile.SetEnabled(id, true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mods, err := profile.Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, mod := range mods {
+		value := "First"
+		if mod.ID == "second" {
+			value = "Second"
+		}
+		data, err := vpk.Pack([]vpk.PackEntry{{Path: textPath, Data: localizationFile("Token_A", value)}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(mod.VpkPaths[0], data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a.install, a.mods = install, mods
+	if err := profile.SetCompatibility([]string{"first", "second"}, true); err != nil {
+		t.Fatal(err)
+	}
+	gameIndex, err := a.gameIndexFor(install)
+	if err != nil {
+		t.Fatal(err)
+	}
+	selected, err := profile.Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var chosen []addons.Mod
+	inputs := make([]modcompat.DataInput, 0, len(selected))
+	for _, mod := range selected {
+		if mod.Enabled && mod.CompatibilityEnabled && len(mod.VpkPaths) > 0 {
+			chosen = append(chosen, mod)
+			inputs = append(inputs, modcompat.DataInput{ModID: mod.ID, VPKs: mod.VpkPaths})
+		}
+	}
+	text, err := modcompat.FixLocalization(inputs, gameIndex, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(text.LocalizationConflicts) != 1 {
+		t.Fatalf("conflicts = %+v", text.LocalizationConflicts)
+	}
+	overlayPath := overlayVPKPath(install, profile)
+	reviewed, err := reviewInputs(install, overlayPath, chosen, "", text)
+	if err != nil {
+		t.Fatal(err)
+	}
+	winner := "second"
+	if err := overlay.SaveReview(overlayPath, overlay.Review{
+		Inputs: reviewed,
+		Resolutions: []overlay.Resolution{{
+			ConflictKey: text.LocalizationConflicts[0].Key, WinnerModID: &winner,
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := a.rebuildOverlayLocked(install, profile); err != nil {
+		t.Fatal(err)
+	}
+	archive, err := vpk.Open(overlayPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	value, err := archive.Read(textPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := portlocalization.ParseBytes(value, textPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if token, _ := parsed.File.Lookup("Token_A"); token != "Second" {
+		t.Fatalf("merged token = %q", token)
 	}
 }
 

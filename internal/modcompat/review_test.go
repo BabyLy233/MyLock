@@ -176,3 +176,59 @@ func mergedHealth(t *testing.T, bytes []byte) float64 {
 	health, _ := mapping.Get("MODIFIER_VALUE_HEALTH")
 	return health.Double
 }
+
+func TestReviewSubjectIgnoresLoadOrderAndKeepsStaleChoicesOut(t *testing.T) {
+	game := gameIndexWith(t, []vpk.PackEntry{{
+		Path: reviewTextPath, Data: reviewText("Token_A", "Vanilla"),
+	}})
+	first := packMod(t, []vpk.PackEntry{{Path: reviewTextPath, Data: reviewText("Token_A", "First")}})
+	second := packMod(t, []vpk.PackEntry{{Path: reviewTextPath, Data: reviewText("Token_A", "Second")}})
+	result, err := FixLocalization([]DataInput{
+		{ModID: "first", VPKs: []string{first}},
+		{ModID: "second", VPKs: []string{second}},
+	}, game, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	subject := ReviewSubject(result)
+	// Priorities follow the load order; the subject must not.
+	reordered, err := FixLocalization([]DataInput{
+		{ModID: "second", VPKs: []string{second}},
+		{ModID: "first", VPKs: []string{first}},
+	}, game, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ReviewSubject(reordered) == subject {
+		t.Fatal("load order changed the review subject")
+	}
+	// The candidate order is part of the question (it picks the default), so
+	// the two orders are different reviews; the same order stays stable.
+	again, err := FixLocalization([]DataInput{
+		{ModID: "first", VPKs: []string{first}},
+		{ModID: "second", VPKs: []string{second}},
+	}, game, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ReviewSubject(again) != subject {
+		t.Fatal("the same inputs changed the review subject")
+	}
+
+	conflict := result.LocalizationConflicts[0]
+	winner := "second"
+	missing := "missing"
+	valid := []vdata.Resolution{
+		{ConflictKey: conflict.Key, WinnerModID: &winner},
+		{ConflictKey: conflict.Key, WinnerModID: &missing},
+		{ConflictKey: "gone", WinnerModID: &winner},
+	}
+	applicable := ApplicableResolutions(result, valid)
+	if len(applicable) != 1 || applicable[0].WinnerModID == nil ||
+		*applicable[0].WinnerModID != "second" {
+		t.Fatalf("applicable = %+v", applicable)
+	}
+	if ids := ReviewModIDs(result); len(ids) != 2 {
+		t.Fatalf("involved mods = %v", ids)
+	}
+}

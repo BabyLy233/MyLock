@@ -57,6 +57,9 @@ type Key struct {
 	CompatibilityModIDs []string     `json:"compatibilityModIds"`
 	Mods                []ModStamp   `json:"mods"`
 	BaseGame            []InputStamp `json:"baseGame,omitempty"`
+	// HistoryDigest fingerprints the learned game-data history the package was
+	// merged against. A check can learn new tables without touching a mod.
+	HistoryDigest string `json:"historyDigest,omitempty"`
 }
 
 // Repair is one fixed resource recorded in the receipt.

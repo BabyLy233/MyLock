@@ -237,3 +237,72 @@ func TestBuildWithDataIncludesMergedTablesAndRefusesCollisions(t *testing.T) {
 		t.Fatalf("collision error = %v", err)
 	}
 }
+
+func TestReviewRoundTripsAndMatchesOnlyItsInputs(t *testing.T) {
+	dir := t.TempDir()
+	vpkPath := filepath.Join(dir, "pak01_dir.vpk")
+	winner := "second"
+	review := Review{
+		Inputs: ReviewInputs{
+			Revision: ReviewRevision,
+			Subject:  "subject",
+			Mods: map[string][]InputStamp{
+				"first":  {{Path: "a_dir.vpk", Length: 1, Modified: 2}},
+				"second": {{Path: "b_dir.vpk", Length: 3, Modified: 4}},
+			},
+			BaseGame:      []InputStamp{{Path: "pak01_dir.vpk", Length: 5, Modified: 6}},
+			HistoryDigest: "history",
+		},
+		Resolutions: []Resolution{{ConflictKey: "key", WinnerModID: &winner}},
+	}
+	if err := SaveReview(vpkPath, review); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadReview(vpkPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded == nil || !loaded.Matches(review.Inputs) {
+		t.Fatalf("loaded review = %+v", loaded)
+	}
+	if len(loaded.Resolutions) != 1 || loaded.Resolutions[0].WinnerModID == nil ||
+		*loaded.Resolutions[0].WinnerModID != "second" {
+		t.Fatalf("resolutions = %+v", loaded.Resolutions)
+	}
+
+	changed := review.Inputs
+	changed.Mods = map[string][]InputStamp{
+		"first":  {{Path: "a_dir.vpk", Length: 1, Modified: 2}},
+		"second": {{Path: "b_dir.vpk", Length: 3, Modified: 9}},
+	}
+	if loaded.Matches(changed) {
+		t.Fatal("a changed mod stamp matched the review")
+	}
+	changed = review.Inputs
+	changed.HistoryDigest = "other"
+	if loaded.Matches(changed) {
+		t.Fatal("a changed history matched the review")
+	}
+
+	if err := RemoveReview(vpkPath); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err = LoadReview(vpkPath)
+	if err != nil || loaded != nil {
+		t.Fatalf("review after removal = %+v, %v", loaded, err)
+	}
+}
+
+func TestReviewFromAnotherRevisionIsIgnored(t *testing.T) {
+	dir := t.TempDir()
+	vpkPath := filepath.Join(dir, "pak01_dir.vpk")
+	if err := os.WriteFile(ReviewPath(vpkPath),
+		[]byte(`{"inputs":{"revision":99,"subject":"s","mods":{},"baseGame":[]},"resolutions":[]}`),
+		0o644); err != nil {
+		t.Fatal(err)
+	}
+	review, err := LoadReview(vpkPath)
+	if err != nil || review != nil {
+		t.Fatalf("review = %+v, %v", review, err)
+	}
+}

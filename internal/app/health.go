@@ -1,10 +1,13 @@
 package app
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -19,6 +22,7 @@ import (
 	"github.com/BabyLy233/mylock/internal/overlay"
 	"github.com/BabyLy233/mylock/internal/source2"
 	portoverlay "github.com/BabyLy233/mylock/third_party/deadlock-mod-manager/port/overlay"
+	"github.com/BabyLy233/mylock/third_party/deadlock-mod-manager/port/vdata"
 )
 
 // healthRuntime is the compatibility check's state. It is guarded by a.mu.
@@ -445,6 +449,11 @@ func (a *app) rebuildOverlayLocked(install *game.Install, profile addons.Profile
 	for _, mod := range selected {
 		dataInputs = append(dataInputs, modcompat.DataInput{ModID: mod.ID, VPKs: mod.VpkPaths})
 	}
+	historyDigest := historyFileDigest(historyPath)
+	savedReview, err := overlay.LoadReview(vpkPath)
+	if err != nil {
+		return err
+	}
 	data, err := modcompat.FixData(dataInputs, gameIndex, learned, protected, nil)
 	if err != nil {
 		return err
@@ -452,6 +461,28 @@ func (a *app) rebuildOverlayLocked(install *game.Install, profile addons.Profile
 	text, err := modcompat.FixLocalization(dataInputs, gameIndex, protected, nil)
 	if err != nil {
 		return err
+	}
+	combined := data
+	combined.LocalizationConflicts = text.LocalizationConflicts
+	if savedReview != nil && len(combined.LocalizationConflicts)+len(combined.DataConflicts) > 0 {
+		// The saved answers only count for exactly the findings and files they
+		// covered. A choice whose contender disappeared is stale too.
+		inputs, inputErr := reviewInputs(install, vpkPath, selected, historyDigest, combined)
+		if inputErr != nil {
+			return inputErr
+		}
+		chosen := overlayResolutions(savedReview.Resolutions)
+		applicable := modcompat.ApplicableResolutions(combined, chosen)
+		if savedReview.Matches(inputs) && len(applicable) > 0 && len(applicable) == len(chosen) {
+			data, err = modcompat.FixData(dataInputs, gameIndex, learned, protected, applicable)
+			if err != nil {
+				return err
+			}
+			text, err = modcompat.FixLocalization(dataInputs, gameIndex, protected, applicable)
+			if err != nil {
+				return err
+			}
+		}
 	}
 	shared := make(map[string][]byte, len(data.Files)+len(text.Files))
 	for path, bytes := range data.Files {
@@ -520,8 +551,75 @@ func (a *app) rebuildOverlayLocked(install *game.Install, profile addons.Profile
 	if err != nil {
 		return err
 	}
-	_, err = overlay.Apply(plan, vpkPath)
-	return err
+	plan.Key.HistoryDigest = historyFileDigest(historyPath)
+	if _, err := overlay.Apply(plan, vpkPath); err != nil {
+		return err
+	}
+	if len(combined.LocalizationConflicts)+len(combined.DataConflicts) == 0 {
+		// A review answers questions that no longer exist; keeping it would
+		// only make a later unrelated conflict look reviewed.
+		if err := overlay.RemoveReview(vpkPath); err != nil {
+			log.Printf("removing the compatibility review: %v", err)
+		}
+	}
+	return nil
+}
+
+// historyFileDigest fingerprints the learned history file. A missing file has
+// no digest, which every review built against it shares.
+func historyFileDigest(path string) string {
+	if path == "" {
+		return ""
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	digest := sha256.Sum256(data)
+	return hex.EncodeToString(digest[:])
+}
+
+// reviewInputs describes the mods and game files a set of conflicts was found
+// in, so a saved review is reused only for those exact inputs.
+func reviewInputs(install *game.Install, vpkPath string, selected []addons.Mod,
+	historyDigest string, result modcompat.DataResult) (overlay.ReviewInputs, error) {
+	key := overlay.Key{
+		OutputPath: vpkPath, GameBuild: install.ClientVersion(), HistoryDigest: historyDigest,
+	}
+	for _, mod := range selected {
+		stamps, err := overlay.StampArchives(mod.VpkPaths)
+		if err != nil {
+			return overlay.ReviewInputs{}, err
+		}
+		key.Mods = append(key.Mods, overlay.ModStamp{ModID: mod.ID, Files: stamps})
+	}
+	base, err := overlay.BaseStamps(install.CitadelDir())
+	if err != nil {
+		return overlay.ReviewInputs{}, err
+	}
+	key.BaseGame = base
+	return overlay.ReviewInputs{
+		Revision:      overlay.ReviewRevision,
+		Subject:       modcompat.ReviewSubject(result),
+		Mods:          overlay.ReviewModStamps(key, modcompat.ReviewModIDs(result)),
+		BaseGame:      base,
+		HistoryDigest: historyDigest,
+	}, nil
+}
+
+// overlayResolutions converts saved choices to the merger's type.
+func overlayResolutions(saved []overlay.Resolution) []vdata.Resolution {
+	out := make([]vdata.Resolution, 0, len(saved))
+	for _, resolution := range saved {
+		out = append(out, vdata.Resolution{
+			ConflictKey:     resolution.ConflictKey,
+			WinnerModID:     resolution.WinnerModID,
+			WinnerValue:     resolution.WinnerValue,
+			WinnerSourceVPK: resolution.WinnerSourceVPK,
+			UseVanilla:      resolution.UseVanilla,
+		})
+	}
+	return out
 }
 
 // refreshOverlay rebuilds the package after a manifest change. It must be
