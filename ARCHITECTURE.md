@@ -532,7 +532,13 @@ Mygo 的版本固定在 `go.mod` 的 tool 指令里，通过 `go tool mygo` 调�
 - `internal/modcompat/corpus_test.go` 默认跳过。设置 `MYLOCK_TEST_CITADEL`
   指向游戏的 `citadel` 目录后，会在真实安装上解码并学习英雄/技能数据表；
   再加 `MYLOCK_TEST_MOD_VPK` 指向一个模组 VPK，会对它跑完整的兼容性分析，
-  并确认每个修复后的文件仍是可解析的资源。游戏资产不进入仓库。
+  并确认每个修复后的文件仍是可解析的资源。`MYLOCK_TEST_CORPUS` 可以指向
+  一份与原版相同格式的本地语料清单（id、name、url、archive、sha256、vpks）：
+  每个案例先核对归档摘要，再跑分析与修复，并检查修复后的资源块数不变；
+  `MYLOCK_TEST_CORPUS_ID` 只跑其中一个案例。游戏资产与下载的模组都不进入仓库。
+- `internal/modcompat/benchmark_test.go` 提供开发者基准：合成词条表的配置档
+  合并默认可直接运行；设置前述两个环境变量后，`BenchmarkAnalyzeRealMod` 会
+  在真实安装上测量完整的单模组分析。
 
 ## 扩展指引
 

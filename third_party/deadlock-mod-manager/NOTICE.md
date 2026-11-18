@@ -77,6 +77,8 @@ file records the source path and baseline commit in its header.
 | `mod_manager/mod_health.rs` | `port/health/model.go` |
 | `mod_manager/manager/localization/health.rs` | `internal/modhealth/check.go` |
 | `mod_manager/manager/localization/review.rs` | `internal/overlay/review.go`, `internal/app/health.go` |
+| `localization_overlay/compatibility_corpus.rs` (case manifest, checksum pinning, repaired-resource invariants) | `internal/modcompat/corpus_test.go` |
+| `localization_overlay/profile_benchmark.rs`, `manager/localization/performance.rs` (developer measurements) | `internal/modcompat/benchmark_test.go` |
 | `mod_manager/manager/localization/receipt.rs` | `port/overlay/receipt.go`, `internal/overlay/apply.go` |
 | `mod_manager/manager/localization.rs` (plan key, input stamps) | `internal/overlay/plan.go` |
 | `mod_manager/manager/localization.rs` (overlay naming) | `port/overlay/path.go` |
@@ -163,7 +165,12 @@ The differences are limited to Go idioms and the boundaries of this project:
 
 Test fixtures are translated from the upstream `tests.rs` modules. Real game
 assets are never committed; the optional corpus tests use
-`MYLOCK_TEST_CITADEL` and skip by default.
+`MYLOCK_TEST_CITADEL` and skip by default. `MYLOCK_TEST_CORPUS` names a local
+manifest in the upstream format (id, name, url, archive, sha256, vpks): each
+case is checked against its pinned archive digest and every repaired resource
+must keep a valid container with the same block count. `MYLOCK_TEST_CORPUS_ID`
+runs one case. Go benchmarks cover a synthetic localization merge, and
+`MYLOCK_TEST_MOD_VPK` adds a real-mod analysis benchmark.
 
 ## Updating
 
