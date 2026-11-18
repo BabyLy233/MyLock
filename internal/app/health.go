@@ -445,11 +445,11 @@ func (a *app) rebuildOverlayLocked(install *game.Install, profile addons.Profile
 	for _, mod := range selected {
 		dataInputs = append(dataInputs, modcompat.DataInput{ModID: mod.ID, VPKs: mod.VpkPaths})
 	}
-	data, err := modcompat.FixData(dataInputs, gameIndex, learned, protected)
+	data, err := modcompat.FixData(dataInputs, gameIndex, learned, protected, nil)
 	if err != nil {
 		return err
 	}
-	text, err := modcompat.FixLocalization(dataInputs, gameIndex, protected)
+	text, err := modcompat.FixLocalization(dataInputs, gameIndex, protected, nil)
 	if err != nil {
 		return err
 	}

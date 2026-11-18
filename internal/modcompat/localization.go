@@ -62,8 +62,10 @@ func applyLocalization(analysis *Analysis, modID string, modPaths map[string]str
 
 // FixLocalization merges every enabled mod's localization files against the
 // current game files. The merged text is emitted into the overlay. A path in
-// protected is left as the game loads it.
-func FixLocalization(inputs []DataInput, game *source2.GameIndex, protected map[string]struct{}) (DataResult, error) {
+// protected is left as the game loads it; a resolution overrides the default
+// winner for one conflicting token.
+func FixLocalization(inputs []DataInput, game *source2.GameIndex,
+	protected map[string]struct{}, resolutions []vdata.Resolution) (DataResult, error) {
 	result := DataResult{Files: make(map[string][]byte)}
 	sources := make(map[string][]localization.Source)
 	for priority, input := range inputs {
@@ -98,7 +100,8 @@ func FixLocalization(inputs []DataInput, game *source2.GameIndex, protected map[
 	if err != nil {
 		return result, fmt.Errorf("reading game localization: %w", err)
 	}
-	files, _, err := merger.Render(nil)
+	result.LocalizationConflicts = localizationConflicts(merger)
+	files, _, err := merger.Render(resolutions)
 	if err != nil {
 		return result, fmt.Errorf("merging localization: %w", err)
 	}

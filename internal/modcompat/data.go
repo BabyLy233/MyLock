@@ -178,14 +178,20 @@ type DataResult struct {
 	Files    map[string][]byte
 	Repairs  []vdata.DataRepair
 	Warnings []vdata.DataWarning
+	// LocalizationConflicts and DataConflicts list every choice the merged
+	// package cannot make on the player's behalf. A conflict means the
+	// contributors rewrite the same token, row or field differently.
+	LocalizationConflicts []LocalizationConflict
+	DataConflicts         []CompiledDataConflict
 }
 
 // FixData merges every enabled mod's VData tables against the current game
 // tables. Tables are merged across mods because the game loads one table per
-// path; the first enabled mod's value wins unless a repair proves otherwise.
-// The game tables it reads are learned into hist for later game updates.
-// A path in protected is left as the game loads it.
-func FixData(inputs []DataInput, game *source2.GameIndex, hist *History, protected map[string]struct{}) (DataResult, error) {
+// path; the first enabled mod's value wins unless a resolution or a repair
+// proves otherwise. The game tables it reads are learned into hist for later
+// game updates. A path in protected is left as the game loads it.
+func FixData(inputs []DataInput, game *source2.GameIndex, hist *History,
+	protected map[string]struct{}, resolutions []vdata.Resolution) (DataResult, error) {
 	result := DataResult{Files: make(map[string][]byte)}
 	if game == nil {
 		return result, nil
@@ -262,7 +268,8 @@ func FixData(inputs []DataInput, game *source2.GameIndex, hist *History, protect
 	if len(tables) == 0 {
 		return result, nil
 	}
-	prepared, err := vdata.Prepare(tables, nil)
+	result.DataConflicts = compiledDataConflicts(tables)
+	prepared, err := vdata.Prepare(tables, resolutions)
 	if err != nil {
 		return result, fmt.Errorf("merging game data: %w", err)
 	}
