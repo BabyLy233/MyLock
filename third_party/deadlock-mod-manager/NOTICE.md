@@ -66,6 +66,8 @@ file records the source path and baseline commit in its header.
 | `mod_manager/localization_overlay.rs` (localization parsing, historical index, merge) | `port/localization/`, `internal/modcompat/localization.go` |
 | `assets/localization-history.bin` | `port/localization/localization-history.bin` |
 | `mod_manager/vdata_history.rs` (observed strings, baseline matching, recording) | `port/history/` |
+| `localization_overlay/observed_data.rs` (observation cache and learning) | `internal/modcompat/history.go` |
+| `mod_manager/manager/localization/history.rs` (learned history path, load, save) | `internal/modcompat/history.go`, `internal/config/history.go` |
 | `assets/vdata-history.bin` | `port/history/vdata-history.bin` |
 | `mod_manager/mod_health.rs` | `port/health/model.go` |
 | `mod_manager/manager/localization/health.rs` | `internal/modhealth/check.go` |
@@ -97,6 +99,12 @@ The differences are limited to Go idioms and the boundaries of this project:
   delta recording with the same 64-build compaction. Model relocation consults
   the learned string bindings before the archived JSON; the data compatibility
   path uses the baseline match to tell authored edits from compiler noise.
+- Game tables read by a check or an overlay build are also recorded into a
+  per-install learned history, with the same whole-resource SHA-256 cache and
+  64 MiB / 8-entry bounds. The file lives in the platform cache directory under
+  this project's `mylock` directory (the upstream uses the Tauri bundle id) and
+  is keyed by the citadel path. A check that persists newly learned data
+  reports `HistoryChanged`, which rebuilds the active profile's package.
 - Game-data compatibility merges every enabled mod's `scripts/*.vdata_c` table
   with the current game table at profile level, then writes one merged table
   into the overlay. Hero rows, inherited definitions, enum aliases, retired

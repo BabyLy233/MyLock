@@ -200,6 +200,9 @@ func (v *View) MatchWithEvidence(filePath string, root kv3.Value) (*BaselineMatc
 
 // MatchWithEvidence returns the closest recorded build for an authored table.
 func (i *Index) MatchWithEvidence(filePath string, root kv3.Value) (*BaselineMatch, BaselineEvidence) {
+	if i == nil {
+		return nil, BaselineEvidence{Status: BaselineUnavailable, BuildVersions: []uint32{}}
+	}
 	return i.matchTable(i.tables[normalizePath(filePath)], root)
 }
 
@@ -419,61 +422,6 @@ func containsDouble(value kv3.Value) bool {
 		}
 	}
 	return false
-}
-
-// Record adds one observed table snapshot to the learned history. It returns
-// false when the snapshot adds nothing new apart from string bindings.
-func (i *Index) Record(filePath string, version uint32, root kv3.Value) (bool, error) {
-	if root.Kind != kv3.KindObject {
-		return false, fmt.Errorf("Observed VData root is not an object")
-	}
-	discovery, _ := rowFingerprints(root, modeDiscovery)
-	exact, _ := rowFingerprints(root, modeExact)
-	fields, _ := fieldFingerprints(root, modeExact)
-	bindings := stringBindings(filePath, root)
-	bindingsChanged := false
-	for key, value := range bindings {
-		bindingsChanged = i.add(key, value) || bindingsChanged
-	}
-	if i.tables == nil {
-		i.tables = make(map[string]*tableHistory)
-	}
-	path := normalizePath(filePath)
-	table := i.tables[path]
-	if table == nil {
-		table = &tableHistory{exact: true}
-		i.tables[path] = table
-	}
-	if !table.exact {
-		return false, fmt.Errorf("Observed history must use exact fingerprints")
-	}
-	previousRows := make(map[fingerprint]fingerprint)
-	previousExact := make(map[fingerprint]fingerprint)
-	previousFields := make(map[fingerprint]fingerprint)
-	for _, build := range table.builds {
-		applyChanges(previousRows, build.Rows)
-		applyChanges(previousExact, build.ExactRows)
-		applyChanges(previousFields, build.Fields)
-	}
-	if mapsEqual(previousExact, exact) && mapsEqual(previousFields, fields) {
-		return bindingsChanged, nil
-	}
-	table.builds = append(table.builds, BuildDelta{
-		Version:   version,
-		Rows:      mapChanges(previousRows, discovery),
-		ExactRows: mapChanges(previousExact, exact),
-		Fields:    mapChanges(previousFields, fields),
-	})
-	// Compact the retained prefix into one complete snapshot, keeping the
-	// latest 64 changes.
-	if len(table.builds) > maxRetainedBuilds {
-		oldest := table.builds[0]
-		table.builds = table.builds[1:]
-		combineChanges(oldest.Rows, &table.builds[0].Rows)
-		combineChanges(oldest.ExactRows, &table.builds[0].ExactRows)
-		combineChanges(oldest.Fields, &table.builds[0].Fields)
-	}
-	return true, nil
 }
 
 func combineChanges(old []FingerprintChange, next *[]FingerprintChange) {

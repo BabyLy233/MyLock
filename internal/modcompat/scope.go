@@ -38,6 +38,11 @@ type Scope struct {
 	// profile. The per-mod analysis still reports findings but leaves the merged
 	// bytes to the profile-level merger.
 	ProfileData bool
+	// History is the learned VData history for the installed game. It only
+	// improves baseline matching and records the tables this analysis saw; it
+	// is deliberately not part of Fingerprint, because learning new tables does
+	// not invalidate a verdict about a mod's files.
+	History *History
 }
 
 // Fingerprint returns a stable cache-key value for the scope. The empty scope

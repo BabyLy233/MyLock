@@ -16,8 +16,6 @@ import (
 
 	"github.com/BabyLy233/mylock/internal/source2"
 	"github.com/BabyLy233/mylock/third_party/deadlock-mod-manager/port/camera"
-	"github.com/BabyLy233/mylock/third_party/deadlock-mod-manager/port/history"
-	"github.com/BabyLy233/mylock/third_party/deadlock-mod-manager/port/kv3"
 	"github.com/BabyLy233/mylock/third_party/deadlock-mod-manager/port/vdata"
 	"github.com/BabyLy233/mylock/third_party/deadlock-mod-manager/port/vpk"
 )
@@ -59,10 +57,28 @@ func applyData(analysis *Analysis, modID string, modPaths map[string]struct{},
 			sources[vdata.AbilitiesPath] = tableSource{}
 		}
 	}
+	// Learn the game tables this analysis will read before they are matched:
+	// the author's table may have been written against the build being
+	// observed, and the next game update has to be able to tell. This happens
+	// even for a mod that carries only models: camera models make the hero
+	// registry and abilities worth knowing.
+	sourcePaths := make(map[string]struct{}, len(sources))
+	for path := range sources {
+		sourcePaths[path] = struct{}{}
+	}
+	for _, path := range learningPaths(sourcePaths, modPaths) {
+		base, ok := game.GameBytes(path)
+		if !ok {
+			continue
+		}
+		if _, err := scope.History.Record(path, base); err != nil {
+			return fmt.Errorf("reading game table %s: %w", path, err)
+		}
+	}
 	if len(sources) == 0 {
 		return nil
 	}
-	matcher := dataHistoryMatcher()
+	matcher := scope.History.matcher()
 	var tables []*vdata.Table
 	var paths []string
 	for _, path := range slices.Sorted(maps.Keys(sources)) {
@@ -129,22 +145,26 @@ func applyData(analysis *Analysis, modID string, modPaths map[string]struct{},
 	return nil
 }
 
-// dataHistoryMatcher adapts the shipped VData history to the data merger.
-func dataHistoryMatcher() vdata.HistoryMatcher {
-	index := history.Embedded()
-	return func(filePath string, root kv3.Value) (vdata.BaselineMatch, vdata.BaselineEvidence) {
-		match, evidence := index.MatchWithEvidence(filePath, root)
-		out := vdata.BaselineEvidence{
-			Status:         string(evidence.Status),
-			BuildVersions:  evidence.BuildVersions,
-			ComparableRows: evidence.ComparableRows,
-			ChangedRows:    evidence.ChangedRows,
+// learningPaths returns the game tables worth observing. Besides the tables a
+// mod merges, a mod that carries camera models makes the hero registry and the
+// abilities it references worth learning, even when the mod does not override
+// them: a later update still has to recognise what the mod was built against.
+func learningPaths(sourcePaths, modPaths map[string]struct{}) []string {
+	paths := make(map[string]struct{}, len(sourcePaths)+2)
+	maps.Copy(paths, sourcePaths)
+	for path := range modPaths {
+		if camera.IsModelPath(path) {
+			paths[vdata.HeroesVDataPath] = struct{}{}
+			break
 		}
-		if match == nil {
-			return nil, out
-		}
-		return match, out
 	}
+	if _, ok := paths[vdata.HeroesVDataPath]; ok {
+		paths[vdata.AbilitiesPath] = struct{}{}
+	}
+	if len(paths) == 0 {
+		return nil
+	}
+	return slices.Sorted(maps.Keys(paths))
 }
 
 // DataInput is one enabled mod's archives in load order.
@@ -163,12 +183,14 @@ type DataResult struct {
 // FixData merges every enabled mod's VData tables against the current game
 // tables. Tables are merged across mods because the game loads one table per
 // path; the first enabled mod's value wins unless a repair proves otherwise.
-func FixData(inputs []DataInput, game *source2.GameIndex) (DataResult, error) {
+// The game tables it reads are learned into hist for later game updates.
+func FixData(inputs []DataInput, game *source2.GameIndex, hist *History) (DataResult, error) {
 	result := DataResult{Files: make(map[string][]byte)}
 	if game == nil {
 		return result, nil
 	}
 	sources := make(map[string][]vdata.Source)
+	modPaths := make(map[string]struct{})
 	heroes := false
 	for priority, input := range inputs {
 		for _, vpkPath := range input.VPKs {
@@ -178,6 +200,7 @@ func FixData(inputs []DataInput, game *source2.GameIndex) (DataResult, error) {
 			}
 			for _, entry := range archive.Entries {
 				path := camera.NormalizePath(entry.FullPath)
+				modPaths[path] = struct{}{}
 				if !IsDataTablePath(path) {
 					continue
 				}
@@ -199,10 +222,23 @@ func FixData(inputs []DataInput, game *source2.GameIndex) (DataResult, error) {
 			sources[vdata.AbilitiesPath] = nil
 		}
 	}
+	sourcePaths := make(map[string]struct{}, len(sources))
+	for path := range sources {
+		sourcePaths[path] = struct{}{}
+	}
+	for _, path := range learningPaths(sourcePaths, modPaths) {
+		base, ok := game.GameBytes(path)
+		if !ok {
+			continue
+		}
+		if _, err := hist.Record(path, base); err != nil {
+			return result, fmt.Errorf("reading game table %s: %w", path, err)
+		}
+	}
 	if len(sources) == 0 {
 		return result, nil
 	}
-	matcher := dataHistoryMatcher()
+	matcher := hist.matcher()
 	var tables []*vdata.Table
 	for _, path := range slices.Sorted(maps.Keys(sources)) {
 		base, ok := game.GameBytes(path)

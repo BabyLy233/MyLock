@@ -40,6 +40,9 @@ type healthRuntime struct {
 	compatOpen bool
 	busy       bool
 	compatErr  string
+	// historyPath resolves the learned game-data history file. Nil uses the
+	// platform cache directory; tests point it at a temporary directory.
+	historyPath func(citadelDir string) (string, error)
 }
 
 // healthView is one snapshot of the check's state for the view.
@@ -69,6 +72,23 @@ func (a *app) initHealth() {
 		return
 	}
 	a.health.checker = modhealth.NewChecker(store)
+}
+
+// historyPathFor returns the file that remembers the game tables this
+// installation has taught the compatibility system.
+func (a *app) historyPathFor(install *game.Install) string {
+	a.mu.Lock()
+	resolve := a.health.historyPath
+	a.mu.Unlock()
+	if resolve == nil {
+		resolve = config.HistoryPath
+	}
+	path, err := resolve(install.CitadelDir())
+	if err != nil {
+		log.Printf("compatibility history: %v", err)
+		return ""
+	}
+	return path
 }
 
 // maybeCheckHealth runs the page's automatic check when the inputs changed and
@@ -113,14 +133,15 @@ func (a *app) checkHealth(force bool) {
 		profile := profileFor(install, folder)
 		mods, err := profile.Read()
 		if err != nil {
-			a.finishHealth(install, folder, epoch, modhealth.Report{}, err)
+			a.finishHealth(install, folder, epoch, modhealth.CheckResult{}, err)
 			return
 		}
 		gameIndex, err := a.gameIndexFor(install)
 		if err != nil {
-			a.finishHealth(install, folder, epoch, modhealth.Report{}, err)
+			a.finishHealth(install, folder, epoch, modhealth.CheckResult{}, err)
 			return
 		}
+		historyPath := a.historyPathFor(install)
 		checks := make([]modhealth.CheckMod, 0, len(mods))
 		for _, mod := range mods {
 			if len(mod.VpkPaths) == 0 {
@@ -133,13 +154,14 @@ func (a *app) checkHealth(force bool) {
 				Enabled: mod.Enabled,
 			})
 		}
-		report, err := checker.Check(profileCacheKey(profile), checks, gameIndex,
+		result, err := checker.Check(profileCacheKey(profile), checks, gameIndex,
 			modhealth.CheckOptions{
-				Force:      force,
-				Build:      install.ClientVersion(),
-				OnProgress: a.healthProgress(install, folder, epoch),
+				Force:       force,
+				Build:       install.ClientVersion(),
+				HistoryPath: historyPath,
+				OnProgress:  a.healthProgress(install, folder, epoch),
 			})
-		a.finishHealth(install, folder, epoch, report, err)
+		a.finishHealth(install, folder, epoch, result, err)
 	}()
 }
 
@@ -156,7 +178,8 @@ func (a *app) healthProgress(install *game.Install, folder string, epoch uint64)
 	}
 }
 
-func (a *app) finishHealth(install *game.Install, folder string, epoch uint64, report modhealth.Report, err error) {
+func (a *app) finishHealth(install *game.Install, folder string, epoch uint64, result modhealth.CheckResult, err error) {
+	report := result.Report
 	var message string
 	if err != nil {
 		message = err.Error()
@@ -179,7 +202,27 @@ func (a *app) finishHealth(install *game.Install, folder string, epoch uint64, r
 		}
 		a.mu.Unlock()
 		a.invalidate()
+		if err == nil && result.HistoryChanged && current {
+			// The check taught the history new game data, so a package built
+			// before it may no longer match what a fresh build produces.
+			go a.refreshOverlayAfterLearning(install, folder)
+		}
 	})
+}
+
+// refreshOverlayAfterLearning rebuilds a profile's compatibility package after
+// a check learned new game tables. Writing while the game runs is refused; the
+// next launch rebuilds from the same history anyway.
+func (a *app) refreshOverlayAfterLearning(install *game.Install, folder string) {
+	if a.isGameRunning() {
+		return
+	}
+	a.profileWriteMu.Lock()
+	defer a.profileWriteMu.Unlock()
+	if a.isGameRunning() {
+		return
+	}
+	a.refreshOverlay(install, profileFor(install, folder))
 }
 
 // adjustHealthReport downgrades "fixed" verdicts whose compatibility package
@@ -322,6 +365,8 @@ func (a *app) rebuildOverlayLocked(install *game.Install, profile addons.Profile
 	if err != nil {
 		return err
 	}
+	historyPath := a.historyPathFor(install)
+	learned := modcompat.LoadHistory(historyPath, install.ClientVersion())
 	// Two mods providing the same model would be collapsed into one fixed file,
 	// which silently changes the mod the game loads. Refuse instead.
 	owners := make(map[string]string)
@@ -350,7 +395,7 @@ func (a *app) rebuildOverlayLocked(install *game.Install, profile addons.Profile
 	for _, mod := range selected {
 		dataInputs = append(dataInputs, modcompat.DataInput{ModID: mod.ID, VPKs: mod.VpkPaths})
 	}
-	data, err := modcompat.FixData(dataInputs, gameIndex)
+	data, err := modcompat.FixData(dataInputs, gameIndex, learned)
 	if err != nil {
 		return err
 	}
@@ -377,6 +422,7 @@ func (a *app) rebuildOverlayLocked(install *game.Install, profile addons.Profile
 	for _, mod := range selected {
 		scope := scopes[mod.ID]
 		scope.ProfileData = true
+		scope.History = learned
 		analysis, err := analyze(mod.ID, mod.VpkPaths, gameIndex, scope, modcompat.Fix)
 		if err != nil {
 			return err
@@ -408,6 +454,13 @@ func (a *app) rebuildOverlayLocked(install *game.Install, profile addons.Profile
 			anyFixed = true
 		}
 		sources = append(sources, source)
+	}
+	if learned.Changed() && historyPath != "" {
+		// Learning is reproducible from the same game files, so a cache write
+		// failure must not keep the package from being built.
+		if err := learned.Save(historyPath); err != nil {
+			log.Printf("Could not persist observed compatibility history: %v", err)
+		}
 	}
 	if len(sources) == 0 || !anyFixed {
 		return overlay.Remove(vpkPath)

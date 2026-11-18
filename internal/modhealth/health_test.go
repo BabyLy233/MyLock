@@ -10,6 +10,8 @@ import (
 	"github.com/BabyLy233/mylock/internal/source2"
 	"github.com/BabyLy233/mylock/third_party/deadlock-mod-manager/port/camera"
 	"github.com/BabyLy233/mylock/third_party/deadlock-mod-manager/port/compat"
+	"github.com/BabyLy233/mylock/third_party/deadlock-mod-manager/port/kv3"
+	"github.com/BabyLy233/mylock/third_party/deadlock-mod-manager/port/resource"
 	"github.com/BabyLy233/mylock/third_party/deadlock-mod-manager/port/vdata"
 	"github.com/BabyLy233/mylock/third_party/deadlock-mod-manager/port/vpk"
 )
@@ -174,8 +176,8 @@ func TestCheckerCachesSkipsAndForces(t *testing.T) {
 	if calls != 1 || progress != 1 {
 		t.Fatalf("calls = %d, progress = %d", calls, progress)
 	}
-	if len(report.Mods) != 1 || report.Mods[0].Status != StatusFixable {
-		t.Fatalf("report = %+v", report.Mods)
+	if len(report.Report.Mods) != 1 || report.Report.Mods[0].Status != StatusFixable {
+		t.Fatalf("report = %+v", report.Report.Mods)
 	}
 	if _, err := checker.Check("profile", mods, nil, CheckOptions{Build: &build}); err != nil {
 		t.Fatal(err)
@@ -228,8 +230,8 @@ func TestCheckerDropsResultsWhenFilesChangeDuringAnalysis(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(report.Mods) != 0 {
-		t.Fatalf("unstable result was published: %+v", report.Mods)
+	if len(report.Report.Mods) != 0 {
+		t.Fatalf("unstable result was published: %+v", report.Report.Mods)
 	}
 }
 
@@ -248,11 +250,11 @@ func TestCheckerSkipsAnalysisErrorsAndAdvancesBuild(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(report.Mods) != 0 {
-		t.Fatalf("failed mod was reported: %+v", report.Mods)
+	if len(report.Report.Mods) != 0 {
+		t.Fatalf("failed mod was reported: %+v", report.Report.Mods)
 	}
-	if !equalBuild(report.PreviousGameBuild, nil) {
-		t.Fatalf("previous build = %v", report.PreviousGameBuild)
+	if !equalBuild(report.Report.PreviousGameBuild, nil) {
+		t.Fatalf("previous build = %v", report.Report.PreviousGameBuild)
 	}
 }
 
@@ -333,10 +335,10 @@ func TestOverlappingModelsMarkBothModsIncomplete(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(report.Mods) != 2 {
-		t.Fatalf("report = %+v", report.Mods)
+	if len(report.Report.Mods) != 2 {
+		t.Fatalf("report = %+v", report.Report.Mods)
 	}
-	for _, health := range report.Mods {
+	for _, health := range report.Report.Mods {
 		if !health.ScopeIncomplete || health.Status != StatusNeedsUpdate {
 			t.Fatalf("overlap health = %+v", health)
 		}
@@ -355,8 +357,8 @@ func TestOverlappingModelsMarkBothModsIncomplete(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(report.Mods) != 1 || report.Mods[0].ScopeIncomplete {
-		t.Fatalf("stale overlap = %+v", report.Mods)
+	if len(report.Report.Mods) != 1 || report.Report.Mods[0].ScopeIncomplete {
+		t.Fatalf("stale overlap = %+v", report.Report.Mods)
 	}
 }
 
@@ -486,5 +488,64 @@ func TestGameDataRepairsAndWarningsMapToTheGameDataSymptom(t *testing.T) {
 		if got := repairSymptom(kind); got != SymptomGameData {
 			t.Fatalf("%s = %s", kind, got)
 		}
+	}
+}
+
+func TestCheckLearnsGameTablesAndReportsOnlySavedHistory(t *testing.T) {
+	dir := t.TempDir()
+	store, err := Open(filepath.Join(dir, "mod-health.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := kv3.Object(kv3.Pair{Key: "row", Value: kv3.Object(
+		kv3.Pair{Key: "value", Value: kv3.Int(1)},
+	)})
+	table, err := resource.Build([]resource.BuildResult{{
+		Kind: resource.BlockTypeData, Payload: kv3.Encode(&root, kv3.Format{}),
+	}}, nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const tablePath = "scripts/e2e_status.vdata_c"
+	checker := NewCheckerWithAnalyzer(store, func(_ string, _ []string, _ *source2.GameIndex, scope modcompat.Scope, _ modcompat.Mode) (modcompat.Analysis, error) {
+		if _, err := scope.History.Record(tablePath, table); err != nil {
+			return modcompat.Analysis{}, err
+		}
+		return modcompat.Analysis{AssetsChecked: 1}, nil
+	})
+	mods := []CheckMod{{ID: "data", VPKs: []string{writeFile(t, dir, "mod.vpk", []byte("mod"))}}}
+	historyPath := filepath.Join(dir, "cache", "vdata-history.bin")
+	build := uint32(100)
+	check := func() CheckResult {
+		t.Helper()
+		result, err := checker.Check("profile", mods, nil, CheckOptions{
+			Force: true, Build: &build, HistoryPath: historyPath,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return result
+	}
+
+	if !check().HistoryChanged {
+		t.Fatal("learning the game's table did not report a saved history")
+	}
+	if _, err := os.Stat(historyPath); err != nil {
+		t.Fatalf("history was not saved: %v", err)
+	}
+	if check().HistoryChanged {
+		t.Fatal("the same table was reported as newly learned")
+	}
+
+	// History cannot be saved over a directory, so the check must not report a
+	// change it did not persist.
+	if err := os.Remove(historyPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(historyPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if check().HistoryChanged {
+		t.Fatal("a failed save was reported as a history change")
 	}
 }

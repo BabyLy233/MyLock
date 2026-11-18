@@ -81,6 +81,9 @@ func healthTestApp(t *testing.T) (*app, *game.Install, addons.Profile) {
 	}
 	a.health.checker = modhealth.NewCheckerWithAnalyzer(store, fakeCompatibility)
 	a.health.analyze = fakeCompatibility
+	a.health.historyPath = func(string) (string, error) {
+		return filepath.Join(t.TempDir(), "vdata-history.bin"), nil
+	}
 	return a, install, profile
 }
 
@@ -239,6 +242,10 @@ func TestHealthFixMergesGameDataIntoTheOverlay(t *testing.T) {
 	a := newApp()
 	a.running = func() bool { return false }
 	install, profile := fakeGame(t)
+	if err := os.WriteFile(filepath.Join(install.CitadelDir(), "steam.inf"),
+		[]byte("ClientVersion=100\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	addMod(t, profile, "mod", "hero.vpk")
 	if err := profile.SetEnabled("mod", true); err != nil {
 		t.Fatal(err)
@@ -291,10 +298,15 @@ func TestHealthFixMergesGameDataIntoTheOverlay(t *testing.T) {
 	}
 	a.health.checker = modhealth.NewCheckerWithAnalyzer(store, modcompat.Analyze)
 	a.health.analyze = modcompat.Analyze
+	historyPath := filepath.Join(t.TempDir(), "vdata-history.bin")
+	a.health.historyPath = func(string) (string, error) { return historyPath, nil }
 	settingsPath(t, a)
 
 	a.checkHealth(false)
 	waitHealth(t, a, modhealth.StatusPartlyFixable)
+	if info, err := os.Stat(historyPath); err != nil || info.Size() == 0 {
+		t.Fatalf("game data was not learned: %v", err)
+	}
 	health := a.healthState().byID["mod"]
 	if !containsSymptom(health.FixSymptoms, modhealth.SymptomGameData) ||
 		!containsSymptom(health.RemainingSymptoms, modhealth.SymptomGameData) {

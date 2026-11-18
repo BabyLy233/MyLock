@@ -1,6 +1,7 @@
 package modhealth
 
 import (
+	"log"
 	"sort"
 	"sync"
 	"time"
@@ -26,6 +27,18 @@ type CheckOptions struct {
 	Force      bool
 	Build      *uint32
 	OnProgress func(checked, total int)
+	// HistoryPath is the install's learned game-data history. The checker
+	// loads it before analysing, learns the game tables each analysed mod
+	// reads, and saves it back when that taught it something new. Empty
+	// disables both learning and persistence.
+	HistoryPath string
+}
+
+// CheckResult is one check's report and whether learning changed the saved
+// history.
+type CheckResult struct {
+	Report         Report
+	HistoryChanged bool
 }
 
 // Checker runs standalone checks and writes their verdicts to the cache.
@@ -48,9 +61,19 @@ func NewCheckerWithAnalyzer(store *Store, analyze Analyzer) *Checker {
 // Check analyses the mods whose files changed since the cached verdict and
 // returns the refreshed report. A mod whose files change during analysis is
 // dropped from the cache rather than recorded against the wrong bytes.
-func (c *Checker) Check(profile string, mods []CheckMod, game *source2.GameIndex, opts CheckOptions) (Report, error) {
+func (c *Checker) Check(profile string, mods []CheckMod, game *source2.GameIndex, opts CheckOptions) (CheckResult, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
+	// Loaded lazily: a check that reuses every cached verdict must not touch
+	// the history at all.
+	var learned *modcompat.History
+	history := func() *modcompat.History {
+		if learned == nil {
+			learned = modcompat.LoadHistory(opts.HistoryPath, opts.Build)
+		}
+		return learned
+	}
 
 	installed := make([]Installed, 0, len(mods))
 	entries := make(map[string]Cached)
@@ -93,6 +116,7 @@ func (c *Checker) Check(profile string, mods []CheckMod, game *source2.GameIndex
 				continue
 			}
 		}
+		scope.History = history()
 		analysis, err := c.analyze(mod.ID, mod.VPKs, game, scope, modcompat.Detect)
 		if err != nil {
 			checked++
@@ -127,11 +151,21 @@ func (c *Checker) Check(profile string, mods []CheckMod, game *source2.GameIndex
 	}
 	overlaps := modelOverlaps(mods)
 	if err := c.store.Record(profile, opts.Build, entries); err != nil {
-		return Report{}, err
+		return CheckResult{}, err
 	}
 	report := c.store.Report(profile, opts.Build, installed)
 	applyOverlaps(&report, overlaps)
-	return report, nil
+	// Persist once, after the batch, so a crash cannot leave half a lesson.
+	// A failure never fails the check: the same tables can be learned again.
+	historyChanged := false
+	if learned != nil && learned.Changed() && opts.HistoryPath != "" {
+		if err := learned.Save(opts.HistoryPath); err != nil {
+			log.Printf("Could not persist observed compatibility history: %v", err)
+		} else {
+			historyChanged = true
+		}
+	}
+	return CheckResult{Report: report, HistoryChanged: historyChanged}, nil
 }
 
 // applyOverlaps adds the cross-mod findings to the report without persisting
