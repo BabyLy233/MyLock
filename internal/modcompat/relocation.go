@@ -8,6 +8,7 @@ import (
 	"github.com/BabyLy233/mylock/third_party/deadlock-mod-manager/port/animation"
 	"github.com/BabyLy233/mylock/third_party/deadlock-mod-manager/port/camera"
 	"github.com/BabyLy233/mylock/third_party/deadlock-mod-manager/port/compat"
+	"github.com/BabyLy233/mylock/third_party/deadlock-mod-manager/port/history"
 	"github.com/BabyLy233/mylock/third_party/deadlock-mod-manager/port/kv3"
 	"github.com/BabyLy233/mylock/third_party/deadlock-mod-manager/port/modelsounds"
 	"github.com/BabyLy233/mylock/third_party/deadlock-mod-manager/port/relocation"
@@ -67,6 +68,9 @@ func applyRelocation(analysis *Analysis, modID string, models []modelSource, gam
 		}
 	}
 	heroModels := relocation.RegistryHeroModels(&registry)
+	observed := func(row, model string) bool {
+		return history.Embedded().ObservedStringField(relocation.HeroesVDataPath, row, "m_strModelName", model)
+	}
 	resolve := animationSource{read: read, modArchives: modArchives}
 
 	warn := func(source modelSource, path, detail string) {
@@ -81,7 +85,7 @@ func applyRelocation(analysis *Analysis, modID string, models []modelSource, gam
 		if _, ok := heroModels[path]; ok {
 			continue
 		}
-		targets := relocation.RegistryTargets(&registry, path, nil)
+		targets := relocation.RegistryTargets(&registry, path, observed)
 		if len(targets) == 0 {
 			continue
 		}

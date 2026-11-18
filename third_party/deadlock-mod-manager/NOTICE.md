@@ -54,6 +54,8 @@ file records the source path and baseline commit in its header.
 | `localization_overlay/model_animation/scaled_rig.rs` | `port/animation/proof.go` |
 | `localization_overlay/model_relocation.rs` (archived bindings subset) | `port/relocation/`, `internal/modcompat/relocation.go` |
 | `assets/hero-model-bindings.json` | `port/relocation/hero-model-bindings.json` |
+| `mod_manager/vdata_history.rs` (observed string bindings subset) | `port/history/` |
+| `assets/vdata-history.bin` | `port/history/vdata-history.bin` |
 | `mod_manager/mod_health.rs` | `port/health/model.go` |
 | `mod_manager/manager/localization/health.rs` | `internal/modhealth/check.go` |
 | `mod_manager/manager/localization/receipt.rs` | `port/overlay/receipt.go`, `internal/overlay/apply.go` |
@@ -79,9 +81,9 @@ The differences are limited to Go idioms and the boundaries of this project:
   dropped.
 - File-system access is kept out of `port/`; callers pass bytes or readers.
   Limits on untrusted input live in `internal/source2`.
-- Model relocation currently consults only the archived hero bindings. The
-  upstream learned `VdataHistory` index is not ported yet, so an old model whose
-  binding is only known from learned history is not relocated.
+- The learned `VdataHistory` index is decoded only for observed string
+  bindings. Baseline matching and delta recording are not ported yet; model
+  relocation consults the learned bindings before the archived JSON.
 - Animation bindings are restored by copying the current graph and skeleton
   references, retiring unavailable legacy selectors and appending missing
   identity sampled controls. The upstream deformation-rig rebase path is not
