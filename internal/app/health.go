@@ -354,6 +354,18 @@ func (a *app) rebuildOverlayLocked(install *game.Install, profile addons.Profile
 	if err != nil {
 		return err
 	}
+	text, err := modcompat.FixLocalization(dataInputs, gameIndex)
+	if err != nil {
+		return err
+	}
+	shared := make(map[string][]byte, len(data.Files)+len(text.Files))
+	for path, bytes := range data.Files {
+		shared[path] = bytes
+	}
+	for path, bytes := range text.Files {
+		shared[path] = bytes
+	}
+	data.Warnings = append(data.Warnings, text.Warnings...)
 	dataWarnings := make(map[string][]overlay.Warning)
 	for _, warning := range data.Warnings {
 		dataWarnings[warning.ModID] = append(dataWarnings[warning.ModID], overlay.Warning{
@@ -361,7 +373,7 @@ func (a *app) rebuildOverlayLocked(install *game.Install, profile addons.Profile
 		})
 	}
 	var sources []overlay.Source
-	anyFixed := len(data.Files) > 0
+	anyFixed := len(shared) > 0
 	for _, mod := range selected {
 		scope := scopes[mod.ID]
 		scope.ProfileData = true
@@ -400,7 +412,7 @@ func (a *app) rebuildOverlayLocked(install *game.Install, profile addons.Profile
 	if len(sources) == 0 || !anyFixed {
 		return overlay.Remove(vpkPath)
 	}
-	plan, err := overlay.BuildWithData(install.CitadelDir(), vpkPath, install.ClientVersion(), sources, data.Files)
+	plan, err := overlay.BuildWithData(install.CitadelDir(), vpkPath, install.ClientVersion(), sources, shared)
 	if err != nil {
 		return err
 	}

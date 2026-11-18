@@ -298,6 +298,9 @@ func Analyze(modID string, vpkPaths []string, game *source2.GameIndex, scope Sco
 	if err := applyData(&analysis, modID, modPaths, modArchives, modVPKs, game, scope, mode); err != nil {
 		return Analysis{}, err
 	}
+	if err := applyLocalization(&analysis, modID, modPaths, modArchives, modVPKs, game); err != nil {
+		return Analysis{}, err
+	}
 
 	for _, source := range assets {
 		data, err := source.archive.ReadLimited(source.path, maxModelBytes)

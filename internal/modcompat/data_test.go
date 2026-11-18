@@ -191,3 +191,35 @@ func TestAnalyzeCountsUnchangedDataTablesAsCovered(t *testing.T) {
 		t.Fatalf("analysis = %+v", analysis)
 	}
 }
+
+func localizationText(tokens ...string) []byte {
+	out := "\"lang\"\r\n{\r\n\t\"Language\"\t\t\"english\"\r\n\t\"Tokens\"\r\n\t{\r\n"
+	for index := 0; index+1 < len(tokens); index += 2 {
+		out += "\t\t\"" + tokens[index] + "\"\t\t\"" + tokens[index+1] + "\"\r\n"
+	}
+	out += "\t}\r\n}\r\n"
+	return []byte(out)
+}
+
+func TestAnalyzeReportsRestoredGameText(t *testing.T) {
+	const path = "resource/localization/example/example_english.txt"
+	game := gameIndexWith(t, []vpk.PackEntry{{
+		Path: path, Data: localizationText("Token_A", "Vanilla", "Token_B", "Keep"),
+	}})
+	mod := packMod(t, []vpk.PackEntry{{
+		Path: path, Data: localizationText("Token_A", "Authored"),
+	}})
+	analysis, err := Analyze("mod", []string{mod}, game, Scope{}, Detect)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(analysis.DataRepairs) != 1 || analysis.DataRepairs[0].Kind != vdata.RepairRestoredGameText {
+		t.Fatalf("data repairs = %+v", analysis.DataRepairs)
+	}
+	if analysis.AssetsChecked != 1 {
+		t.Fatalf("assets checked = %d", analysis.AssetsChecked)
+	}
+	if _, ok := analysis.Fixed[path]; ok {
+		t.Fatal("per-mod analysis wrote merged text")
+	}
+}

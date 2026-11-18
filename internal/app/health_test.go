@@ -13,6 +13,7 @@ import (
 	"github.com/BabyLy233/mylock/internal/source2"
 	"github.com/BabyLy233/mylock/third_party/deadlock-mod-manager/port/camera"
 	"github.com/BabyLy233/mylock/third_party/deadlock-mod-manager/port/kv3"
+	portlocalization "github.com/BabyLy233/mylock/third_party/deadlock-mod-manager/port/localization"
 	"github.com/BabyLy233/mylock/third_party/deadlock-mod-manager/port/resource"
 	"github.com/BabyLy233/mylock/third_party/deadlock-mod-manager/port/vpk"
 )
@@ -257,9 +258,11 @@ func TestHealthFixMergesGameDataIntoTheOverlay(t *testing.T) {
 	)
 	gameTable := kv3.Object(kv3.Pair{Key: "hero_one", Value: gameRow})
 	modTable := kv3.Object(kv3.Pair{Key: "hero_one", Value: authoredRow})
+	const textPath = "resource/localization/example/example_english.txt"
 	gameData, err := vpk.Pack([]vpk.PackEntry{
 		{Path: "models/heroes/hero/hero.vmdl_c", Data: []byte("game model")},
 		{Path: "scripts/heroes.vdata_c", Data: compiledTable(t, gameTable)},
+		{Path: textPath, Data: localizationFile("Token_A", "Vanilla", "Token_B", "Keep")},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -269,6 +272,7 @@ func TestHealthFixMergesGameDataIntoTheOverlay(t *testing.T) {
 	}
 	modData, err := vpk.Pack([]vpk.PackEntry{
 		{Path: "scripts/heroes.vdata_c", Data: compiledTable(t, modTable)},
+		{Path: textPath, Data: localizationFile("Token_A", "Authored")},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -325,6 +329,26 @@ func TestHealthFixMergesGameDataIntoTheOverlay(t *testing.T) {
 	if healthValue, _ := mapping.Get("MODIFIER_VALUE_HEALTH"); healthValue.Double != 20 {
 		t.Fatalf("health = %v", healthValue)
 	}
+	textData, err := archive.Read(textPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsedText, err := portlocalization.ParseBytes(textData, textPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsedText.File.Tokens["Token_A"] != "Authored" || parsedText.File.Tokens["Token_B"] != "Keep" {
+		t.Fatalf("merged localization = %v", parsedText.File.Tokens)
+	}
+}
+
+func localizationFile(tokens ...string) []byte {
+	out := "\"lang\"\r\n{\r\n\t\"Language\"\t\t\"english\"\r\n\t\"Tokens\"\r\n\t{\r\n"
+	for index := 0; index+1 < len(tokens); index += 2 {
+		out += "\t\t\"" + tokens[index] + "\"\t\t\"" + tokens[index+1] + "\"\r\n"
+	}
+	out += "\t}\r\n}\r\n"
+	return []byte(out)
 }
 
 func containsSymptom(symptoms []modhealth.Symptom, want modhealth.Symptom) bool {

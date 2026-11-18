@@ -63,6 +63,8 @@ file records the source path and baseline commit in its header.
 | `localization_overlay/vdata_compatibility.rs`, `vdata_compatibility/{semantics,inheritance,reference_fallback}.rs` | `port/vdata/`, `internal/modcompat/data.go` |
 | `localization_overlay/enum_compatibility.rs`, `enum_maps.rs`, `hero_rebase.rs` | `port/vdata/` |
 | `mod_manager/localization_overlay.rs` (compiled-data table model, source collection, merge, hero IDs) | `port/vdata/`, `internal/modcompat/data.go` |
+| `mod_manager/localization_overlay.rs` (localization parsing, historical index, merge) | `port/localization/`, `internal/modcompat/localization.go` |
+| `assets/localization-history.bin` | `port/localization/localization-history.bin` |
 | `mod_manager/vdata_history.rs` (observed strings, baseline matching, recording) | `port/history/` |
 | `assets/vdata-history.bin` | `port/history/vdata-history.bin` |
 | `mod_manager/mod_health.rs` | `port/health/model.go` |
@@ -99,8 +101,12 @@ The differences are limited to Go idioms and the boundaries of this project:
   with the current game table at profile level, then writes one merged table
   into the overlay. Hero rows, inherited definitions, enum aliases, retired
   enum-map keys and hero IDs follow the upstream rules; rows or dependencies
-  that cannot be proven are reported instead of being retained. Localization
-  `.txt` merging and HUD checks are not ported yet.
+  that cannot be proven are reported instead of being retained.
+- Localization `.txt` files are parsed with the same KeyValues/line fallback,
+  merged per token across enabled mods, and rendered in the canonical BOM/CRLF
+  form. A mod copy of a game file is seeded from the current game text so it
+  cannot hide tokens it omits; the two protected hero-name files drop values
+  seen in the shipped historical index. HUD checks are not ported yet.
 - Animation bindings are restored by copying the current graph and skeleton
   references, retiring unavailable legacy selectors and appending missing
   identity sampled controls. When the sampled hierarchy differs, the
