@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -646,8 +647,16 @@ func sharedFixConflict(profile addons.Profile, ids []string) error {
 			continue
 		}
 		owners := protection.ModIDs(paths[0])
+		labels := make([]string, len(owners))
+		for i, owner := range owners {
+			if path, ok := strings.CutPrefix(owner, "unmanaged:"); ok {
+				labels[i] = "手动安装的 VPK（" + filepath.Base(path) + "）"
+			} else {
+				labels[i] = owner
+			}
+		}
 		return fmt.Errorf("模组 %s 与 %s 共用 %s，无法安全修复；请先停用对方模组，或为它也开启兼容性。",
-			mod.ID, strings.Join(owners, "、"), paths[0])
+			mod.ID, strings.Join(labels, "、"), paths[0])
 	}
 	return nil
 }

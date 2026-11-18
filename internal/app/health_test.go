@@ -518,7 +518,7 @@ func TestUnmanagedVpkProtectsItsSharedLocalization(t *testing.T) {
 		t.Fatal("merged text overrode a manually installed archive")
 	}
 	if err := sharedFixConflict(profile, []string{"selected"}); err == nil ||
-		!strings.Contains(err.Error(), "unmanaged:") {
+		!strings.Contains(err.Error(), "手动安装的 VPK") {
 		t.Fatalf("shared fix error = %v", err)
 	}
 }
