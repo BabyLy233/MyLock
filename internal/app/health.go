@@ -7,8 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -49,6 +51,26 @@ type healthRuntime struct {
 	// historyPath resolves the learned game-data history file. Nil uses the
 	// platform cache directory; tests point it at a temporary directory.
 	historyPath func(citadelDir string) (string, error)
+	// review is the set of conflicting choices that paused the package, and
+	// draft the player's tentative choice per conflict key. A review is kept
+	// until it is submitted or the files it covered change.
+	review *pendingReview
+	draft  map[string]string
+}
+
+// pendingReview is a package build that needs the player's choices before it
+// can be written. The inputs are captured so a later submission is refused if
+// the mods or game changed in the meantime.
+type pendingReview struct {
+	inputs        overlay.ReviewInputs
+	conflicts     []modcompat.LocalizationConflict
+	dataConflicts []modcompat.CompiledDataConflict
+}
+
+// submittedReview is one player's answers to a pending review.
+type submittedReview struct {
+	inputs      overlay.ReviewInputs
+	resolutions []overlay.Resolution
 }
 
 // healthView is one snapshot of the check's state for the view.
@@ -62,6 +84,8 @@ type healthView struct {
 	checkedAt time.Time
 	busy      bool
 	compatErr string
+	review    *pendingReview
+	draft     map[string]string
 }
 
 // initHealth opens the health cache and check orchestration. It is called once
@@ -290,6 +314,8 @@ func (a *app) healthState() healthView {
 		checkedAt: a.health.checkedAt,
 		busy:      a.health.busy,
 		compatErr: a.health.compatErr,
+		review:    a.health.review,
+		draft:     maps.Clone(a.health.draft),
 	}
 }
 
@@ -381,11 +407,18 @@ func profileModFiles(profile addons.Profile, mods []addons.Mod) ([]modcompat.Mod
 // profile's opt-in mods. It must be called with profileWriteMu held. With
 // nothing left to fix it removes the package instead, so a launch falls back to
 // the mod files themselves.
-func (a *app) rebuildOverlayLocked(install *game.Install, profile addons.Profile) error {
+func (a *app) rebuildOverlayLocked(install *game.Install, profile addons.Profile) (*pendingReview, error) {
+	return a.rebuildOverlayReview(install, profile, nil)
+}
+
+// rebuildOverlayReview is rebuildOverlayLocked with the player's reviewed
+// choices, which must answer the conflicts of exactly the current inputs.
+func (a *app) rebuildOverlayReview(install *game.Install, profile addons.Profile,
+	submitted *submittedReview) (*pendingReview, error) {
 	vpkPath := overlayVPKPath(install, profile)
 	mods, err := profile.Read()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	var selected []addons.Mod
 	for _, mod := range mods {
@@ -394,11 +427,11 @@ func (a *app) rebuildOverlayLocked(install *game.Install, profile addons.Profile
 		}
 	}
 	if len(selected) == 0 {
-		return overlay.Remove(vpkPath)
+		return nil, overlay.Remove(vpkPath)
 	}
 	gameIndex, err := a.gameIndexFor(install)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	historyPath := a.historyPathFor(install)
 	learned := modcompat.LoadHistory(historyPath, install.ClientVersion())
@@ -407,7 +440,7 @@ func (a *app) rebuildOverlayLocked(install *game.Install, profile addons.Profile
 	// opting in.
 	allFiles, err := profileModFiles(profile, mods)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	selectedIDs := make(map[string]struct{}, len(selected))
 	for _, mod := range selected {
@@ -415,7 +448,7 @@ func (a *app) rebuildOverlayLocked(install *game.Install, profile addons.Profile
 	}
 	protection, err := modcompat.NewRepairScope(allFiles, selectedIDs)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	protected := make(map[string]struct{}, len(protection.ProtectedPaths()))
 	for _, path := range protection.ProtectedPaths() {
@@ -427,11 +460,11 @@ func (a *app) rebuildOverlayLocked(install *game.Install, profile addons.Profile
 	for _, mod := range selected {
 		paths, err := modcompat.ModelPaths(mod.VpkPaths)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		for _, path := range paths {
 			if owner, taken := owners[path]; taken && owner != mod.ID {
-				return fmt.Errorf("模组 %s 与 %s 都包含 %s，无法安全修复；请先停用其中一个", owner, mod.ID, path)
+				return nil, fmt.Errorf("模组 %s 与 %s 都包含 %s，无法安全修复；请先停用其中一个", owner, mod.ID, path)
 			}
 			owners[path] = mod.ID
 		}
@@ -443,7 +476,7 @@ func (a *app) rebuildOverlayLocked(install *game.Install, profile addons.Profile
 	}
 	scopes, err := modcompat.Scopes(files)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	dataInputs := make([]modcompat.DataInput, 0, len(selected))
 	for _, mod := range selected {
@@ -452,35 +485,68 @@ func (a *app) rebuildOverlayLocked(install *game.Install, profile addons.Profile
 	historyDigest := historyFileDigest(historyPath)
 	savedReview, err := overlay.LoadReview(vpkPath)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	data, err := modcompat.FixData(dataInputs, gameIndex, learned, protected, nil)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	text, err := modcompat.FixLocalization(dataInputs, gameIndex, protected, nil)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	combined := data
 	combined.LocalizationConflicts = text.LocalizationConflicts
-	if savedReview != nil && len(combined.LocalizationConflicts)+len(combined.DataConflicts) > 0 {
+	conflicts := len(combined.LocalizationConflicts) + len(combined.DataConflicts)
+	var chosen []overlay.Resolution
+	reviewed := false
+	if conflicts > 0 {
 		// The saved answers only count for exactly the findings and files they
 		// covered. A choice whose contender disappeared is stale too.
 		inputs, inputErr := reviewInputs(install, vpkPath, selected, historyDigest, combined)
 		if inputErr != nil {
-			return inputErr
+			return nil, inputErr
 		}
-		chosen := overlayResolutions(savedReview.Resolutions)
-		applicable := modcompat.ApplicableResolutions(combined, chosen)
-		if savedReview.Matches(inputs) && len(applicable) > 0 && len(applicable) == len(chosen) {
-			data, err = modcompat.FixData(dataInputs, gameIndex, learned, protected, applicable)
-			if err != nil {
-				return err
+		switch {
+		case submitted != nil:
+			if !(&overlay.Review{Inputs: submitted.inputs}).Matches(inputs) {
+				return nil, errors.New("模组或游戏文件在评审期间发生了变化，请重新检查后再选择。")
 			}
-			text, err = modcompat.FixLocalization(dataInputs, gameIndex, protected, applicable)
+			applicable := modcompat.ApplicableResolutions(combined, overlayResolutions(submitted.resolutions))
+			if len(applicable) != len(submitted.resolutions) {
+				return nil, errors.New("评审选择已不再适用于当前模组，请重新检查后再选择。")
+			}
+			chosen = submitted.resolutions
+			reviewed = true
+		case savedReview != nil:
+			saved := overlayResolutions(savedReview.Resolutions)
+			applicable := modcompat.ApplicableResolutions(combined, saved)
+			if savedReview.Matches(inputs) && len(applicable) == len(saved) {
+				chosen = savedReview.Resolutions
+				reviewed = true
+			}
+		}
+		if !reviewed {
+			// Writing a package from default winners would apply values the
+			// player never chose, so the package is left unmounted until the
+			// review is answered.
+			if err := overlay.Remove(vpkPath); err != nil {
+				return nil, err
+			}
+			return &pendingReview{
+				inputs:        inputs,
+				conflicts:     slices.Clone(combined.LocalizationConflicts),
+				dataConflicts: slices.Clone(combined.DataConflicts),
+			}, nil
+		}
+		if len(chosen) > 0 {
+			data, err = modcompat.FixData(dataInputs, gameIndex, learned, protected, overlayResolutions(chosen))
 			if err != nil {
-				return err
+				return nil, err
+			}
+			text, err = modcompat.FixLocalization(dataInputs, gameIndex, protected, overlayResolutions(chosen))
+			if err != nil {
+				return nil, err
 			}
 		}
 	}
@@ -506,7 +572,7 @@ func (a *app) rebuildOverlayLocked(install *game.Install, profile addons.Profile
 		scope.History = learned
 		analysis, err := analyze(mod.ID, mod.VpkPaths, gameIndex, scope, modcompat.Fix)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		analysis.RemoveProtected(protection)
 		for path := range analysis.Fixed {
@@ -545,24 +611,45 @@ func (a *app) rebuildOverlayLocked(install *game.Install, profile addons.Profile
 		}
 	}
 	if len(sources) == 0 || !anyFixed {
-		return overlay.Remove(vpkPath)
+		if err := overlay.Remove(vpkPath); err != nil {
+			return nil, err
+		}
+		if submitted != nil && reviewed {
+			return nil, a.saveReview(vpkPath, historyPath, submitted, chosen)
+		}
+		return nil, nil
 	}
 	plan, err := overlay.BuildWithData(install.CitadelDir(), vpkPath, install.ClientVersion(), sources, shared)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	plan.Key.HistoryDigest = historyFileDigest(historyPath)
 	if _, err := overlay.Apply(plan, vpkPath); err != nil {
-		return err
+		return nil, err
 	}
-	if len(combined.LocalizationConflicts)+len(combined.DataConflicts) == 0 {
+	if submitted != nil && reviewed {
+		if err := a.saveReview(vpkPath, historyPath, submitted, chosen); err != nil {
+			// A package without its review would apply answers the next build
+			// cannot verify, so leave neither.
+			_ = overlay.Remove(vpkPath)
+			return nil, err
+		}
+	} else if conflicts == 0 {
 		// A review answers questions that no longer exist; keeping it would
 		// only make a later unrelated conflict look reviewed.
 		if err := overlay.RemoveReview(vpkPath); err != nil {
 			log.Printf("removing the compatibility review: %v", err)
 		}
 	}
-	return nil
+	return nil, nil
+}
+
+// saveReview records answers against the inputs they were submitted for. The
+// history digest is read again because this build may have taught it new data.
+func (a *app) saveReview(vpkPath, historyPath string, submitted *submittedReview, resolutions []overlay.Resolution) error {
+	saved := overlay.Review{Inputs: submitted.inputs, Resolutions: resolutions}
+	saved.Inputs.HistoryDigest = historyFileDigest(historyPath)
+	return overlay.SaveReview(vpkPath, saved)
 }
 
 // historyFileDigest fingerprints the learned history file. A missing file has
@@ -626,12 +713,230 @@ func overlayResolutions(saved []overlay.Resolution) []vdata.Resolution {
 // called with profileWriteMu held. A rebuild that fails removes the package so
 // the game never mounts a fix built from files that are no longer there.
 func (a *app) refreshOverlay(install *game.Install, profile addons.Profile) {
-	if err := a.rebuildOverlayLocked(install, profile); err != nil {
+	prompt, err := a.rebuildOverlayLocked(install, profile)
+	if err != nil {
 		log.Printf("rebuilding the compatibility overlay: %v", err)
 		if removeErr := overlay.Remove(overlayVPKPath(install, profile)); removeErr != nil {
 			log.Printf("removing the compatibility overlay: %v", removeErr)
 		}
 	}
+	a.publishReview(prompt, err)
+}
+
+// publishReview shows a review the package is waiting on, or clears one whose
+// inputs the rebuild no longer has. It may be called with profileWriteMu held:
+// it only takes the state lock.
+func (a *app) publishReview(prompt *pendingReview, err error) {
+	if prompt == nil && err != nil {
+		return
+	}
+	a.publish(func() {
+		a.mu.Lock()
+		if prompt != nil {
+			a.health.review = prompt
+			a.health.draft = make(map[string]string, len(prompt.conflicts))
+		} else {
+			a.health.review = nil
+			a.health.draft = nil
+		}
+		a.mu.Unlock()
+		a.invalidate()
+	})
+}
+
+// reviewChoice is one selectable answer in the compatibility dialog. A nil
+// resolution means the load-order default, which continues to be unnamed in a
+// saved review.
+type reviewChoice struct {
+	label      string
+	resolution *overlay.Resolution
+}
+
+// localizationChoices describes the answers for one conflicting token: the
+// default winner, the game's own value, and every mod's value.
+func localizationChoices(conflict modcompat.LocalizationConflict, names map[string]string) []reviewChoice {
+	first := conflict.Candidates[0]
+	choices := []reviewChoice{{label: "沿用加载顺序：" + reviewModName(first.ModID, names)}}
+	if conflict.VanillaValue != nil {
+		choices = append(choices, reviewChoice{
+			label:      "使用游戏原值：" + reviewValue(*conflict.VanillaValue),
+			resolution: &overlay.Resolution{ConflictKey: conflict.Key, UseVanilla: true},
+		})
+	}
+	for _, candidate := range conflict.Candidates {
+		resolution := overlay.Resolution{
+			ConflictKey: conflict.Key, WinnerModID: &candidate.ModID,
+			WinnerSourceVPK: &candidate.SourceVPK, WinnerValue: &candidate.Value,
+		}
+		choices = append(choices, reviewChoice{
+			label:      fmt.Sprintf("%d. %s：%s", len(choices), reviewModName(candidate.ModID, names), reviewValue(candidate.Value)),
+			resolution: &resolution,
+		})
+	}
+	return choices
+}
+
+// dataChoices describes the answers for one conflicting compiled-data field.
+func dataChoices(conflict modcompat.CompiledDataConflict, names map[string]string) []reviewChoice {
+	first := conflict.Candidates[0]
+	choices := []reviewChoice{{label: "沿用加载顺序：" + reviewModName(first.ModID, names)}}
+	choices = append(choices, reviewChoice{
+		label:      "使用游戏原值",
+		resolution: &overlay.Resolution{ConflictKey: conflict.Key, UseVanilla: true},
+	})
+	for _, candidate := range conflict.Candidates {
+		resolution := overlay.Resolution{
+			ConflictKey: conflict.Key, WinnerModID: &candidate.ModID,
+			WinnerSourceVPK: &candidate.SourceVPK,
+		}
+		choices = append(choices, reviewChoice{
+			label:      fmt.Sprintf("%d. %s", len(choices), reviewModName(candidate.ModID, names)),
+			resolution: &resolution,
+		})
+	}
+	return choices
+}
+
+// reviewChoices returns the options for a conflict key from either family.
+func reviewChoices(review *pendingReview, key string, names map[string]string) []reviewChoice {
+	for _, conflict := range review.conflicts {
+		if conflict.Key == key {
+			return localizationChoices(conflict, names)
+		}
+	}
+	for _, conflict := range review.dataConflicts {
+		if conflict.Key == key {
+			return dataChoices(conflict, names)
+		}
+	}
+	return nil
+}
+
+// reviewModName falls back to the mod id when no display name is known.
+func reviewModName(id string, names map[string]string) string {
+	if name := names[id]; name != "" {
+		return name
+	}
+	return id
+}
+
+// reviewValue shortens a token value for a one-line choice.
+func reviewValue(value string) string {
+	value = strings.ReplaceAll(strings.ReplaceAll(value, "\r", " "), "\n", " ")
+	if runes := []rune(value); len(runes) > 48 {
+		return string(runes[:48]) + "…"
+	}
+	return value
+}
+
+// draftResolutions turns the dialog's tentative answers into saved choices.
+// Options left at the load-order default produce no resolution.
+func draftResolutions(review *pendingReview, draft map[string]string, names map[string]string) []overlay.Resolution {
+	var resolutions []overlay.Resolution
+	collect := func(key string) {
+		choices := reviewChoices(review, key, names)
+		label, chosen := draft[key]
+		if !chosen {
+			return
+		}
+		for _, choice := range choices {
+			if choice.label != label || choice.resolution == nil {
+				continue
+			}
+			resolutions = append(resolutions, *choice.resolution)
+			return
+		}
+	}
+	for _, conflict := range review.conflicts {
+		collect(conflict.Key)
+	}
+	for _, conflict := range review.dataConflicts {
+		collect(conflict.Key)
+	}
+	return resolutions
+}
+
+// setReviewDraft records one tentative answer.
+func (a *app) setReviewDraft(key, choice string) {
+	a.publish(func() {
+		a.mu.Lock()
+		if a.health.draft == nil {
+			a.health.draft = make(map[string]string)
+		}
+		a.health.draft[key] = choice
+		a.mu.Unlock()
+		a.invalidate()
+	})
+}
+
+// submitReview rebuilds the package with the player's answers and saves the
+// review so later rebuilds do not ask again.
+func (a *app) submitReview(resolutions []overlay.Resolution) {
+	a.mu.Lock()
+	if a.install == nil || a.health.busy || a.health.review == nil {
+		a.mu.Unlock()
+		return
+	}
+	if a.gameRunning {
+		a.health.compatErr = "游戏正在运行，先退出游戏再应用兼容性选择。"
+		a.mu.Unlock()
+		a.invalidate()
+		return
+	}
+	install, folder := a.install, a.profileFolder
+	submitted := submittedReview{inputs: a.health.review.inputs, resolutions: resolutions}
+	a.health.busy = true
+	a.health.compatErr = ""
+	a.mu.Unlock()
+	a.invalidate()
+
+	go func() {
+		prompt, info, err := a.writeReviewed(install, folder, submitted)
+		var message string
+		if err != nil {
+			message = err.Error()
+		}
+		a.publish(func() {
+			a.mu.Lock()
+			a.health.busy = false
+			a.health.compatErr = message
+			if err == nil && prompt == nil {
+				a.health.review, a.health.draft = nil, nil
+				a.gameInfo = info
+				a.gameInfoErr = ""
+			} else if prompt != nil {
+				a.health.review = prompt
+				a.health.draft = make(map[string]string, len(prompt.conflicts))
+			}
+			a.healthEpoch++
+			a.mu.Unlock()
+			a.invalidate()
+		})
+		if err == nil {
+			a.checkHealth(true)
+		}
+	}()
+}
+
+// writeReviewed takes the profile lock and writes the package for one
+// reviewed set of answers.
+func (a *app) writeReviewed(install *game.Install, folder string, submitted submittedReview) (*pendingReview, game.GameInfo, error) {
+	if a.isGameRunning() {
+		return nil, game.GameInfo{}, errors.New("游戏正在运行，先退出游戏再应用兼容性选择。")
+	}
+	a.profileWriteMu.Lock()
+	defer a.profileWriteMu.Unlock()
+	if a.isGameRunning() {
+		return nil, game.GameInfo{}, errors.New("游戏正在运行，先退出游戏再应用兼容性选择。")
+	}
+	profile := profileFor(install, folder)
+	prompt, err := a.rebuildOverlayReview(install, profile, &submitted)
+	if err != nil {
+		_ = overlay.Remove(overlayVPKPath(install, profile))
+		return nil, game.GameInfo{}, err
+	}
+	info, patchErr := a.patchGameInfo(install, profile)
+	return prompt, info, patchErr
 }
 
 // openCompatibility opens the dialog and starts a forced check, so its numbers
@@ -672,7 +977,7 @@ func (a *app) applyCompatibility(ids []string, enabled bool) {
 	a.invalidate()
 
 	go func() {
-		mods, info, err := a.writeCompatibility(install, folder, ids, enabled)
+		mods, info, prompt, err := a.writeCompatibility(install, folder, ids, enabled)
 		var message string
 		if err != nil {
 			message = err.Error()
@@ -681,6 +986,12 @@ func (a *app) applyCompatibility(ids []string, enabled bool) {
 			a.mu.Lock()
 			a.health.busy = false
 			a.health.compatErr = message
+			if prompt != nil {
+				a.health.review = prompt
+				a.health.draft = make(map[string]string, len(prompt.conflicts))
+			} else if err == nil {
+				a.health.review, a.health.draft = nil, nil
+			}
 			if mods != nil {
 				a.mods = mods
 			}
@@ -763,9 +1074,9 @@ func sharedFixConflict(profile addons.Profile, ids []string) error {
 // overlay and writes the game's search paths, in that order. Removing the old
 // package first means a crash at any step falls back to the mod files rather
 // than mounting a fix for the previous selection.
-func (a *app) writeCompatibility(install *game.Install, folder string, ids []string, enabled bool) ([]addons.Mod, game.GameInfo, error) {
+func (a *app) writeCompatibility(install *game.Install, folder string, ids []string, enabled bool) ([]addons.Mod, game.GameInfo, *pendingReview, error) {
 	if a.isGameRunning() {
-		return nil, game.GameInfo{}, errors.New("游戏正在运行，先退出游戏再修改兼容性。")
+		return nil, game.GameInfo{}, nil, errors.New("游戏正在运行，先退出游戏再修改兼容性。")
 	}
 	a.profileWriteMu.Lock()
 	defer a.profileWriteMu.Unlock()
@@ -774,25 +1085,25 @@ func (a *app) writeCompatibility(install *game.Install, folder string, ids []str
 	vpkPath := overlayVPKPath(install, profile)
 	if enabled {
 		if err := sharedFixConflict(profile, ids); err != nil {
-			return nil, game.GameInfo{}, err
+			return nil, game.GameInfo{}, nil, err
 		}
 	}
 	// Asked again after taking the lock, which is the last point before files
 	// this write replaces are touched: the game can have started while the
 	// choice was being prepared.
 	if a.isGameRunning() {
-		return nil, game.GameInfo{}, errors.New("游戏正在运行，先退出游戏再修改兼容性。")
+		return nil, game.GameInfo{}, nil, errors.New("游戏正在运行，先退出游戏再修改兼容性。")
 	}
 	if err := overlay.Remove(vpkPath); err != nil {
-		return nil, game.GameInfo{}, err
+		return nil, game.GameInfo{}, nil, err
 	}
 	if err := profile.SetCompatibility(ids, enabled); err != nil {
-		return nil, game.GameInfo{}, err
+		return nil, game.GameInfo{}, nil, err
 	}
-	rebuildErr := a.rebuildOverlayLocked(install, profile)
+	prompt, rebuildErr := a.rebuildOverlayLocked(install, profile)
 	info, patchErr := a.patchGameInfo(install, profile)
 	mods, readErr := profile.Read()
-	return mods, info, errors.Join(rebuildErr, patchErr, readErr)
+	return mods, info, prompt, errors.Join(rebuildErr, patchErr, readErr)
 }
 
 func healthSymptoms(symptoms []modhealth.Symptom) string {
@@ -886,6 +1197,73 @@ func healthToneColor(t *ui.Theme, tone string) ui.Color {
 	return t.TextMuted
 }
 
+// reviewSection asks the player to choose between contributors that rewrote
+// the same localization token or compiled-data field. Nothing is written until
+// every choice is applied.
+func (a *app) reviewSection(c *ui.Context, review *pendingReview, draft map[string]string,
+	names map[string]string, busy, checking bool) {
+	t := c.Theme()
+	count := len(review.conflicts) + len(review.dataConflicts)
+	ui.Column(c).FillWidth().Gap(6).Padding(8).Background(t.Background).Radius(6).Children(func() {
+		ui.Text(c, fmt.Sprintf("%d 处冲突需要选择", count)).FontSize(13).Bold()
+		ui.Text(c, "多个模组改写了同一词条或数据项。选用其中一个后，兼容包才会写入；选择会被记住，文件不变时不再询问。").
+			FontSize(11).TextColor(t.TextMuted)
+		height := float32(count*64 + 4)
+		if height > 300 {
+			height = 300
+		}
+		ui.Scroll(c).WidthPercent(100).Height(height).Children(func() {
+			ui.Column(c).FillWidth().Gap(8).Children(func() {
+				for _, conflict := range review.conflicts {
+					key := conflict.Key
+					choices := localizationChoices(conflict, names)
+					labels := make([]string, len(choices))
+					for i, choice := range choices {
+						labels[i] = choice.label
+					}
+					chosen := draft[key]
+					if !slices.Contains(labels, chosen) {
+						chosen = labels[0]
+					}
+					ui.Column(c).FillWidth().Gap(3).Children(func() {
+						ui.Text(c, filepath.Base(conflict.FilePath)+" · "+conflict.Token).
+							FontSize(12).Bold().MaxLines(1).Ellipsis("…")
+						ui.Select(c, &chosen, labels).OnChange(func() { a.setReviewDraft(key, chosen) })
+					})
+				}
+				for _, conflict := range review.dataConflicts {
+					key := conflict.Key
+					choices := dataChoices(conflict, names)
+					labels := make([]string, len(choices))
+					for i, choice := range choices {
+						labels[i] = choice.label
+					}
+					chosen := draft[key]
+					if !slices.Contains(labels, chosen) {
+						chosen = labels[0]
+					}
+					label := filepath.Base(conflict.FilePath) + " · " + conflict.RowName
+					if conflict.FieldPath != "" {
+						label += " · " + conflict.FieldPath
+					}
+					ui.Column(c).FillWidth().Gap(3).Children(func() {
+						ui.Text(c, label).FontSize(12).Bold().MaxLines(1).Ellipsis("…")
+						ui.Select(c, &chosen, labels).OnChange(func() { a.setReviewDraft(key, chosen) })
+					})
+				}
+			})
+		})
+		ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+			ui.PrimaryButton(c, "应用选择").
+				Label("按所选模组重建兼容包").
+				Disabled(busy || checking || a.gameRunningNow()).
+				OnClick(func() { a.submitReview(draftResolutions(review, draft, names)) })
+			ui.Text(c, "沿用加载顺序表示不单独指定，与修复前的行为一致。").
+				FontSize(11).TextColor(t.TextMuted)
+		})
+	})
+}
+
 // compatibilityDialog lists each mod with something to say about compatibility.
 // The buttons act on one mod, and the footer fixes every mod that can be fixed
 // in one write.
@@ -897,6 +1275,10 @@ func (a *app) compatibilityDialog(c *ui.Context) {
 	h := a.healthState()
 	mods := a.installed()
 	infos := a.modInfos()
+	names := make(map[string]string, len(mods.list))
+	for _, mod := range mods.list {
+		names[mod.ID] = modName(mod.ID, infos[mod.ID])
+	}
 
 	open := true
 	ui.Modal(c, &open, func() {
@@ -914,6 +1296,9 @@ func (a *app) compatibilityDialog(c *ui.Context) {
 			})
 			ui.Text(c, "检查只读取模组和游戏文件；修复写进独立的兼容包，不改动原模组文件。").
 				FontSize(12).TextColor(t.TextMuted)
+			if h.review != nil {
+				a.reviewSection(c, h.review, h.draft, names, h.busy, h.checking)
+			}
 
 			var shown []addons.Mod
 			var fixable []string
@@ -969,7 +1354,7 @@ func (a *app) compatibilityDialog(c *ui.Context) {
 									if health.Repairs > 0 && health.Status != modhealth.StatusFixed {
 										ui.PrimaryButton(c, "修复").
 											Label("修复 " + name).
-											Disabled(h.busy || h.checking || !mod.Enabled || health.ScopeIncomplete || a.gameRunningNow()).
+											Disabled(h.busy || h.checking || h.review != nil || !mod.Enabled || health.ScopeIncomplete || a.gameRunningNow()).
 											OnClick(func() { a.fixCompatibility([]string{mod.ID}) })
 									}
 									if health.Status == modhealth.StatusFixed {
@@ -1000,7 +1385,7 @@ func (a *app) compatibilityDialog(c *ui.Context) {
 				if len(fixable) > 0 {
 					ui.PrimaryButton(c, "全部修复").
 						Label("修复所有可修复的模组").
-						Disabled(h.busy || h.checking || a.gameRunningNow()).
+						Disabled(h.busy || h.checking || h.review != nil || a.gameRunningNow()).
 						OnClick(func() { a.fixCompatibility(fixable) })
 				}
 				ui.Button(c, "关闭").OnClick(a.closeCompatibility)

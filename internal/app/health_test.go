@@ -423,7 +423,7 @@ func TestSharedLocalizationIsLeftToTheGameUnlessEveryOwnerOptsIn(t *testing.T) {
 		t.Fatal(err)
 	}
 	overlayPath := overlayVPKPath(install, profile)
-	if err := a.rebuildOverlayLocked(install, profile); err != nil {
+	if _, err := a.rebuildOverlayLocked(install, profile); err != nil {
 		t.Fatal(err)
 	}
 	if fileExists(overlayPath) {
@@ -434,15 +434,36 @@ func TestSharedLocalizationIsLeftToTheGameUnlessEveryOwnerOptsIn(t *testing.T) {
 		t.Fatalf("shared fix error = %v", err)
 	}
 
-	// Once the other owner opts in too, both are merged and the fix proceeds.
+	// Once the other owner opts in too, both are merged, but the two different
+// values pause for review instead of silently picking one.
 	if err := profile.SetCompatibility([]string{"original"}, true); err != nil {
 		t.Fatal(err)
 	}
 	if err := sharedFixConflict(profile, []string{"selected"}); err != nil {
 		t.Fatalf("shared fix error = %v", err)
 	}
-	if err := a.rebuildOverlayLocked(install, profile); err != nil {
+	prompt, err := a.rebuildOverlayLocked(install, profile)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if prompt == nil || len(prompt.conflicts) != 1 {
+		t.Fatalf("review = %+v", prompt)
+	}
+	if fileExists(overlayPath) {
+		t.Fatal("a package was written before the conflict was reviewed")
+	}
+	winner := "selected"
+	submitted := submittedReview{
+		inputs: prompt.inputs,
+		resolutions: []overlay.Resolution{{
+			ConflictKey: prompt.conflicts[0].Key, WinnerModID: &winner,
+		}},
+	}
+	if prompt, err = a.rebuildOverlayReview(install, profile, &submitted); err != nil {
+		t.Fatal(err)
+	}
+	if prompt != nil {
+		t.Fatalf("review still pending: %+v", prompt)
 	}
 	archive, err := vpk.Open(overlayPath)
 	if err != nil {
@@ -461,7 +482,10 @@ func TestSharedLocalizationIsLeftToTheGameUnlessEveryOwnerOptsIn(t *testing.T) {
 	}
 }
 
-func TestSavedReviewChoosesTheMergedLocalizationWinner(t *testing.T) {
+// localizationConflictApp makes two opted-in mods that rewrite one game token
+// differently, so a build has to ask which value the game should show.
+func localizationConflictApp(t *testing.T) (*app, *game.Install, addons.Profile, string, string) {
+	t.Helper()
 	a := newApp()
 	a.running = func() bool { return false }
 	install, profile := fakeGame(t)
@@ -505,6 +529,11 @@ func TestSavedReviewChoosesTheMergedLocalizationWinner(t *testing.T) {
 	if err := profile.SetCompatibility([]string{"first", "second"}, true); err != nil {
 		t.Fatal(err)
 	}
+	return a, install, profile, overlayVPKPath(install, profile), textPath
+}
+
+func TestSavedReviewChoosesTheMergedLocalizationWinner(t *testing.T) {
+	a, install, profile, overlayPath, textPath := localizationConflictApp(t)
 	gameIndex, err := a.gameIndexFor(install)
 	if err != nil {
 		t.Fatal(err)
@@ -528,7 +557,6 @@ func TestSavedReviewChoosesTheMergedLocalizationWinner(t *testing.T) {
 	if len(text.LocalizationConflicts) != 1 {
 		t.Fatalf("conflicts = %+v", text.LocalizationConflicts)
 	}
-	overlayPath := overlayVPKPath(install, profile)
 	reviewed, err := reviewInputs(install, overlayPath, chosen, "", text)
 	if err != nil {
 		t.Fatal(err)
@@ -543,7 +571,7 @@ func TestSavedReviewChoosesTheMergedLocalizationWinner(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := a.rebuildOverlayLocked(install, profile); err != nil {
+	if _, err := a.rebuildOverlayLocked(install, profile); err != nil {
 		t.Fatal(err)
 	}
 	archive, err := vpk.Open(overlayPath)
@@ -614,7 +642,7 @@ func TestUnmanagedVpkProtectsItsSharedLocalization(t *testing.T) {
 	if err := profile.SetCompatibility([]string{"selected"}, true); err != nil {
 		t.Fatal(err)
 	}
-	if err := a.rebuildOverlayLocked(install, profile); err != nil {
+	if _, err := a.rebuildOverlayLocked(install, profile); err != nil {
 		t.Fatal(err)
 	}
 	if fileExists(overlayVPKPath(install, profile)) {
@@ -674,7 +702,7 @@ func TestDisabledModDoesNotProtectItsSharedLocalization(t *testing.T) {
 	if err := sharedFixConflict(profile, []string{"selected"}); err != nil {
 		t.Fatalf("a disabled mod blocked the fix: %v", err)
 	}
-	if err := a.rebuildOverlayLocked(install, profile); err != nil {
+	if _, err := a.rebuildOverlayLocked(install, profile); err != nil {
 		t.Fatal(err)
 	}
 	archive, err := vpk.Open(overlayVPKPath(install, profile))
@@ -691,5 +719,101 @@ func TestDisabledModDoesNotProtectItsSharedLocalization(t *testing.T) {
 	}
 	if value, _ := parsed.File.Lookup("Token_A"); value != "Authored" {
 		t.Fatalf("merged token = %q", value)
+	}
+}
+
+func TestReviewChoicesBecomeSavedResolutions(t *testing.T) {
+	vanilla := "Vanilla"
+	review := &pendingReview{
+		conflicts: []modcompat.LocalizationConflict{{
+			Key: "text-key", FilePath: "resource/localization/example/example_english.txt",
+			Token: "Token_A", VanillaValue: &vanilla,
+			Candidates: []modcompat.LocalizationCandidate{
+				{ModID: "first", SourceVPK: "a_dir.vpk", Value: "First"},
+				{ModID: "second", SourceVPK: "b_dir.vpk", Value: "Second"},
+			},
+		}},
+		dataConflicts: []modcompat.CompiledDataConflict{{
+			Key: "data-key", FilePath: "scripts/heroes.vdata_c", RowName: "hero_one",
+			FieldPath: "m_mapStandardLevelUpUpgrades.MODIFIER_VALUE_HEALTH",
+			Candidates: []modcompat.CompiledDataCandidate{
+				{ModID: "first", SourceVPK: "a_dir.vpk"},
+				{ModID: "second", SourceVPK: "b_dir.vpk"},
+			},
+		}},
+	}
+	names := map[string]string{"first": "First Mod", "second": "Second Mod"}
+
+	textChoices := localizationChoices(review.conflicts[0], names)
+	if len(textChoices) != 4 || textChoices[0].resolution != nil ||
+		textChoices[1].resolution == nil || !textChoices[1].resolution.UseVanilla {
+		t.Fatalf("text choices = %+v", textChoices)
+	}
+	dataChoices := dataChoices(review.dataConflicts[0], names)
+	if len(dataChoices) != 4 || dataChoices[1].resolution == nil || !dataChoices[1].resolution.UseVanilla {
+		t.Fatalf("data choices = %+v", dataChoices)
+	}
+
+	// Leaving both at the load-order default records no answer at all.
+	if resolutions := draftResolutions(review, nil, names); len(resolutions) != 0 {
+		t.Fatalf("default resolutions = %+v", resolutions)
+	}
+	draft := map[string]string{
+		"text-key": textChoices[3].label, // the second mod's value
+		"data-key": dataChoices[1].label, // the game's own row
+	}
+	resolutions := draftResolutions(review, draft, names)
+	if len(resolutions) != 2 {
+		t.Fatalf("resolutions = %+v", resolutions)
+	}
+	if resolutions[0].ConflictKey != "text-key" || resolutions[0].WinnerModID == nil ||
+		*resolutions[0].WinnerModID != "second" || resolutions[0].WinnerValue == nil ||
+		*resolutions[0].WinnerValue != "Second" || resolutions[0].UseVanilla {
+		t.Fatalf("text resolution = %+v", resolutions[0])
+	}
+	if resolutions[1].ConflictKey != "data-key" || !resolutions[1].UseVanilla {
+		t.Fatalf("data resolution = %+v", resolutions[1])
+	}
+}
+
+func TestCompatibilityFixPausesForReviewAndAcceptsChoices(t *testing.T) {
+	a, _, _, overlayPath, textPath := localizationConflictApp(t)
+	settingsPath(t, a)
+
+	a.fixCompatibility([]string{"first", "second"})
+	waitFor(t, "the compatibility review", func() bool {
+		h := a.healthState()
+		return !h.busy && h.review != nil
+	})
+	if fileExists(overlayPath) {
+		t.Fatal("a package was written from unreviewed defaults")
+	}
+
+	h := a.healthState()
+	winner := "second"
+	a.submitReview([]overlay.Resolution{{
+		ConflictKey: h.review.conflicts[0].Key, WinnerModID: &winner,
+	}})
+	waitFor(t, "the reviewed package", func() bool {
+		h := a.healthState()
+		return !h.busy && h.review == nil && fileExists(overlayPath)
+	})
+	if review, err := overlay.LoadReview(overlayPath); err != nil || review == nil {
+		t.Fatalf("saved review = %+v, %v", review, err)
+	}
+	archive, err := vpk.Open(overlayPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	value, err := archive.Read(textPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := portlocalization.ParseBytes(value, textPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if token, _ := parsed.File.Lookup("Token_A"); token != "Second" {
+		t.Fatalf("merged token = %q", token)
 	}
 }

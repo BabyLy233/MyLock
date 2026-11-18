@@ -74,6 +74,7 @@ file records the source path and baseline commit in its header.
 | `assets/vdata-history.bin` | `port/history/vdata-history.bin` |
 | `mod_manager/mod_health.rs` | `port/health/model.go` |
 | `mod_manager/manager/localization/health.rs` | `internal/modhealth/check.go` |
+| `mod_manager/manager/localization/review.rs` | `internal/overlay/review.go`, `internal/app/health.go` |
 | `mod_manager/manager/localization/receipt.rs` | `port/overlay/receipt.go`, `internal/overlay/apply.go` |
 | `mod_manager/manager/localization.rs` (plan key, input stamps) | `internal/overlay/plan.go` |
 | `mod_manager/manager/localization.rs` (overlay naming) | `port/overlay/path.go` |
@@ -111,9 +112,16 @@ The differences are limited to Go idioms and the boundaries of this project:
 - The repair scope protects resources shipped by an installed mod that did not
   opt in, using the same rule as upstream: merged localization/data tables are
   protected by any other copy, a binary asset only when the other mod wins the
-  load order. Background builds skip protected files. This port has no review
-  dialog, so an explicit fix refuses with an error naming the other mod instead
-  of silently producing a package without that repair.
+  load order. Background builds skip protected files. An explicit fix refuses
+  with an error naming the other mod instead of silently producing a package
+  without that repair.
+- Localization tokens and compiled-data rows that mods rewrite differently pause
+  their package: the compatibility dialog offers the game's value, every
+  contributor's value, or the load-order default. Applying the choices saves
+  `compatibility-review.json` beside the package and rebuilds it. A saved
+  review answers only the exact conflict set, involved mod stamps, game stamps
+  and learned-history digest it covered; anything else is asked again. A
+  package is never written from unreviewed defaults.
 - Game-data compatibility merges every enabled mod's `scripts/*.vdata_c` table
   with the current game table at profile level, then writes one merged table
   into the overlay. Hero rows, inherited definitions, enum aliases, retired

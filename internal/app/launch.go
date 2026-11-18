@@ -153,8 +153,9 @@ func (a *app) prepareLaunch(install *game.Install, profile addons.Profile, vanil
 	// files instead of mounting a fix for inputs that are no longer there.
 	if !vanilla {
 		a.profileWriteMu.Lock()
-		rebuildErr := a.rebuildOverlayLocked(install, profile)
+		prompt, rebuildErr := a.rebuildOverlayLocked(install, profile)
 		a.profileWriteMu.Unlock()
+		a.publishReview(prompt, rebuildErr)
 		if rebuildErr != nil {
 			log.Printf("rebuilding the compatibility overlay before launch: %v", rebuildErr)
 			if err := overlay.Remove(overlayVPKPath(install, profile)); err != nil {
