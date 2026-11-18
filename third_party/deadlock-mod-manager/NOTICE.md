@@ -59,7 +59,7 @@ file records the source path and baseline commit in its header.
 | `localization_overlay/model_animation/scaled_rig.rs` | `port/animation/proof.go` |
 | `localization_overlay/model_relocation.rs` (archived bindings and prop-model subset) | `port/relocation/`, `internal/modcompat/relocation.go`, `internal/modcompat/references.go` |
 | `assets/hero-model-bindings.json` | `port/relocation/hero-model-bindings.json` |
-| `mod_manager/vdata_history.rs` (observed string bindings subset) | `port/history/` |
+| `mod_manager/vdata_history.rs` (observed strings, baseline matching, recording) | `port/history/` |
 | `assets/vdata-history.bin` | `port/history/vdata-history.bin` |
 | `mod_manager/mod_health.rs` | `port/health/model.go` |
 | `mod_manager/manager/localization/health.rs` | `internal/modhealth/check.go` |
@@ -86,9 +86,11 @@ The differences are limited to Go idioms and the boundaries of this project:
   dropped.
 - File-system access is kept out of `port/`; callers pass bytes or readers.
   Limits on untrusted input live in `internal/source2`.
-- The learned `VdataHistory` index is decoded only for observed string
-  bindings. Baseline matching and delta recording are not ported yet; model
-  relocation consults the learned bindings before the archived JSON.
+- The learned `VdataHistory` index is decoded in full: observed string
+  bindings, per-build row/field fingerprints, closest-baseline matching, and
+  delta recording with the same 64-build compaction. Model relocation consults
+  the learned string bindings before the archived JSON; the data compatibility
+  path uses the baseline match to tell authored edits from compiler noise.
 - Animation bindings are restored by copying the current graph and skeleton
   references, retiring unavailable legacy selectors and appending missing
   identity sampled controls. When the sampled hierarchy differs, the

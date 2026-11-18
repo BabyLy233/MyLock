@@ -3,12 +3,11 @@
 //
 // Ported from deadlock-mod-manager
 // apps/desktop/src-tauri/src/mod_manager/vdata_history.rs at
-// 41afe0e706726f7c5882fb589f996b84362114fa. This port only decodes the
-// observed string bindings used by model relocation; the baseline matching
-// functions are not ported yet. See ../../NOTICE.md.
+// 41afe0e706726f7c5882fb589f996b84362114fa. See ../../NOTICE.md.
 
 // Package history reads the learned VData history index shipped with the app.
-// It answers which authored field values were seen in previous game builds.
+// It answers which authored field values were seen in previous game builds and
+// matches an authored table to the closest recorded build.
 package history
 
 import (
@@ -32,9 +31,12 @@ var (
 
 type fingerprint = [32]byte
 
-// Index is an immutable view of the observed string bindings.
+// Index is an immutable view of the recorded VData history. Observed string
+// bindings answer relocation questions; the per-table build deltas let the
+// data-compatibility path identify the game build an authored table came from.
 type Index struct {
 	observed map[fingerprint]map[fingerprint]struct{}
+	tables   map[string]*tableHistory
 }
 
 // Embedded returns the shipped history. A malformed asset yields an empty index
@@ -88,7 +90,10 @@ func Parse(data []byte) (*Index, error) {
 	if err := reader.checkCount(tableCount, 8); err != nil {
 		return nil, err
 	}
-	index := &Index{observed: make(map[fingerprint]map[fingerprint]struct{})}
+	index := &Index{
+		observed: make(map[fingerprint]map[fingerprint]struct{}),
+		tables:   make(map[string]*tableHistory),
+	}
 	for range tableCount {
 		path, err := reader.string()
 		if err != nil {
@@ -101,15 +106,20 @@ func Parse(data []byte) (*Index, error) {
 		if uint64(buildCount) > uint64(reader.len()/12) {
 			return nil, fmt.Errorf("VData history build count exceeds its payload")
 		}
+		builds := make([]BuildDelta, 0, buildCount)
 		for range buildCount {
-			if _, err := reader.u32(); err != nil {
+			version, err := reader.u32()
+			if err != nil {
 				return nil, err
 			}
-			if _, err := reader.changes(); err != nil {
+			rows, err := reader.changes()
+			if err != nil {
 				return nil, err
 			}
+			var exactRows []FingerprintChange
 			if exact {
-				if _, err := reader.changes(); err != nil {
+				exactRows, err = reader.changes()
+				if err != nil {
 					return nil, err
 				}
 			}
@@ -121,13 +131,20 @@ func Parse(data []byte) (*Index, error) {
 				// The oldest ledgers only retained field fingerprints. Every
 				// retained value is a candidate string binding.
 				for _, field := range fields {
-					if field.value == nil {
+					if field.Value == nil {
 						continue
 					}
-					index.add(stringBindingKey(path, field.key), *field.value)
+					index.add(stringBindingKey(path, field.Key), *field.Value)
 				}
 			}
+			builds = append(builds, BuildDelta{
+				Version:   version,
+				Rows:      rows,
+				ExactRows: exactRows,
+				Fields:    fields,
+			})
 		}
+		index.tables[normalizePath(path)] = &tableHistory{exact: exact, builds: builds}
 	}
 	if magicValue == magic {
 		count, err := reader.u32()
@@ -164,18 +181,20 @@ func Parse(data []byte) (*Index, error) {
 	return index, nil
 }
 
-func (i *Index) add(key, value fingerprint) {
+func (i *Index) add(key, value fingerprint) bool {
+	if i.observed == nil {
+		i.observed = make(map[fingerprint]map[fingerprint]struct{})
+	}
 	values := i.observed[key]
 	if values == nil {
 		values = make(map[fingerprint]struct{})
 		i.observed[key] = values
 	}
+	if _, duplicate := values[value]; duplicate {
+		return false
+	}
 	values[value] = struct{}{}
-}
-
-type change struct {
-	key   fingerprint
-	value *fingerprint
+	return true
 }
 
 type reader struct {
@@ -223,7 +242,7 @@ func (r *reader) string() (string, error) {
 	return string(value), nil
 }
 
-func (r *reader) changes() ([]change, error) {
+func (r *reader) changes() ([]FingerprintChange, error) {
 	count, err := r.u32()
 	if err != nil {
 		return nil, err
@@ -231,7 +250,7 @@ func (r *reader) changes() ([]change, error) {
 	if uint64(count) > uint64(r.len()/33) {
 		return nil, fmt.Errorf("VData history change count exceeds its payload")
 	}
-	changes := make([]change, 0, count)
+	changes := make([]FingerprintChange, 0, count)
 	for range count {
 		key, err := r.fingerprint()
 		if err != nil {
@@ -241,7 +260,7 @@ func (r *reader) changes() ([]change, error) {
 		if err != nil {
 			return nil, err
 		}
-		item := change{key: key}
+		item := FingerprintChange{Key: key}
 		switch tag[0] {
 		case 0:
 		case 1:
@@ -249,7 +268,7 @@ func (r *reader) changes() ([]change, error) {
 			if err != nil {
 				return nil, err
 			}
-			item.value = &value
+			item.Value = &value
 		default:
 			return nil, fmt.Errorf("VData history index contains an invalid change tag")
 		}
@@ -268,7 +287,7 @@ func (r *reader) checkCount(count uint32, itemSize int) error {
 }
 
 func normalizePath(path string) string {
-	return strings.ToLower(strings.ReplaceAll(path, "\\", "/"))
+	return asciiLower(strings.ReplaceAll(path, "\\", "/"))
 }
 
 func hashPart(hasher hash.Hash, part []byte) {
