@@ -45,6 +45,7 @@ const (
 	RepairAnimationInterface       RepairKind = "AnimationInterface"
 	RepairAnimationSkeleton        RepairKind = "AnimationSkeleton"
 	RepairAnimationSkeletonRebased RepairKind = "AnimationSkeletonRebased"
+	RepairAnimationClipTracks      RepairKind = "AnimationClipTracks"
 )
 
 // Repair is one safe repair the analyzer can apply.
@@ -125,6 +126,7 @@ func Analyze(modID string, vpkPaths []string, game *source2.GameIndex, scope Sco
 	seen := make(map[string]struct{})
 	modPaths := make(map[string]struct{})
 	modArchives := make(map[string]*vpk.Archive)
+	modVPKs := make(map[string]string)
 	var materialCandidates []materialCandidate
 	seenMaterials := make(map[string]struct{})
 	var models []modelSource
@@ -143,6 +145,7 @@ func Analyze(modID string, vpkPaths []string, game *source2.GameIndex, scope Sco
 			modPaths[normalized] = struct{}{}
 			if _, ok := modArchives[normalized]; !ok {
 				modArchives[normalized] = archive
+				modVPKs[normalized] = vpkPath
 			}
 			if _, ok := material.SourceRole(normalized); ok {
 				if _, dup := seenMaterials[normalized]; !dup {
@@ -296,6 +299,10 @@ func Analyze(modID string, vpkPaths []string, game *source2.GameIndex, scope Sco
 			analysis.AssetWarnings = append(analysis.AssetWarnings,
 				materialAssetWarnings(modID, source.vpkPath, source.path, data, game, exists)...)
 		}
+	}
+	if err := applyClipTracks(&analysis, modID, models, modVPKs, readResource, game,
+		scope, mode, effective, repairedPaths); err != nil {
+		return Analysis{}, err
 	}
 	applyAnimationContract(&analysis, modID, effective, readResource, game, modArchives, scope)
 	return analysis, nil

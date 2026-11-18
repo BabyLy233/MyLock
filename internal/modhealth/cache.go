@@ -14,9 +14,9 @@ const (
 	// SchemaVersion is bumped when the cache layout changes incompatibly.
 	SchemaVersion = 1
 	// RulesRevision is bumped when status, symptom or coverage rules change.
-	RulesRevision = 10
+	RulesRevision = 11
 	// RepairRevision is bumped when the repair rules change.
-	RepairRevision = 6
+	RepairRevision = 7
 )
 
 // FileStamp identifies a VPK by size and modification time, not by name:

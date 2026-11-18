@@ -99,7 +99,8 @@ func applyAnimationContract(analysis *Analysis, modID string, effective map[stri
 			duplicate := false
 			for _, warning := range analysis.AssetWarnings {
 				if warning.FilePath == path && warning.Kind == kind &&
-					warningDetailResource(warning.Detail) == issue.resource {
+					(kind == compat.WarningAnimationMapping ||
+						warningDetailResource(warning.Detail) == issue.resource) {
 					duplicate = true
 					break
 				}

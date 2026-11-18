@@ -367,6 +367,7 @@ func TestFindingsFromAnalysisMapsTaggedSoundRepairToAnimations(t *testing.T) {
 			{Kind: modcompat.RepairAnimationInterface},
 			{Kind: modcompat.RepairAnimationSkeleton},
 			{Kind: modcompat.RepairAnimationSkeletonRebased},
+			{Kind: modcompat.RepairAnimationClipTracks},
 		},
 		AssetWarnings: []modcompat.AssetWarning{{Kind: compat.WarningMissingSoundBindings}},
 	})

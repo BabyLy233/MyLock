@@ -47,6 +47,8 @@ file records the source path and baseline commit in its header.
 | `localization_overlay/material_compatibility/minion_glow.rs` | `port/material/minion_glow.go` |
 | `localization_overlay/animation_skeleton.rs` (`equivalent_rigs`, `equivalent_layout`, `canonical_masks`, rebase path) | `port/animation/skeleton.go`, `port/animation/rebase.go`, `port/rig/` |
 | `localization_overlay/animation_masks.rs` | `port/animation/masks.go` |
+| `localization_overlay/animation_clips.rs` | `port/animation/clips.go`, `internal/modcompat/clips.go` |
+| `localization_overlay/animation_clips/layout.rs`, `animation_clips/layout/tree.rs` | `port/animation/clips_layout.go`, `port/animation/clips_tree.go` |
 | `localization_overlay/animation_model_evidence.rs` (rig subset) | `port/rig/` |
 | `localization_overlay/animation_poses.rs` (reference-pose consistency and preserve) | `port/animation/proof.go`, `port/animation/rebase.go` |
 | `localization_overlay/animation_contract.rs` (dependency closure subset) | `internal/modcompat/animation_contract.go` |
