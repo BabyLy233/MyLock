@@ -40,6 +40,7 @@ file records the source path and baseline commit in its header.
 | `localization_overlay/model_text.rs` | `port/modeltext/` |
 | `localization_overlay/asset_compatibility.rs` (skeleton, remapping, mesh, reference, unloaded-model subset) | `port/compat/`, `internal/modcompat/analyze.go`, `internal/modcompat/references.go` |
 | `localization_overlay/model_sounds.rs` | `port/modelsounds/` |
+| `localization_overlay/hud_compatibility.rs` | `internal/modcompat/hud.go` |
 | `packages/vpkmanager/src/material_repair.rs` | `port/resource/rerl.go`, `port/material/` |
 | `packages/vpkmanager/src/resource_id.rs` | `port/resource/id.go` |
 | `localization_overlay/material_compatibility/interface.rs` | `port/compat/material.go` |
@@ -131,7 +132,10 @@ The differences are limited to Go idioms and the boundaries of this project:
   merged per token across enabled mods, and rendered in the canonical BOM/CRLF
   form. A mod copy of a game file is seeded from the current game text so it
   cannot hide tokens it omits; the two protected hero-name files drop values
-  seen in the shipped historical index. HUD checks are not ported yet.
+  seen in the shipped historical index. Panorama layouts are compared against
+  the installed game's LaCo block: panels the game has and the mod lost are
+  listed with matching `console.log` evidence. The result is advisory and never
+  changes a mod's health status or is written into the package.
 - Animation bindings are restored by copying the current graph and skeleton
   references, retiring unavailable legacy selectors and appending missing
   identity sampled controls. When the sampled hierarchy differs, the

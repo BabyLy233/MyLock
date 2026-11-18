@@ -646,3 +646,22 @@ func TestDisabledModIsNotMountedForProtection(t *testing.T) {
 		}
 	}
 }
+
+func TestFindingsKeepAdvisoryHudChecksWithoutChangingStatus(t *testing.T) {
+	mod := "mod"
+	analysis := modcompat.Analysis{
+		ModelsChecked: 1,
+		Checks:        append([]string(nil), modcompat.SupportedChecks...),
+		HudChecks: []modcompat.HudCheck{{
+			ModID: mod, FilePath: "panorama/layout/hud/test.vxml_c",
+			Status: modcompat.HudCompared, MissingPanels: []string{"BuyButton"},
+		}},
+	}
+	findings := FindingsFromAnalysis(analysis)
+	if len(findings.HudChecks) != 1 || findings.HudChecks[0].MissingPanels[0] != "BuyButton" {
+		t.Fatalf("hud checks = %+v", findings.HudChecks)
+	}
+	if status := findings.Status(ChoiceUnset); status != StatusWorks {
+		t.Fatalf("HUD evidence changed the status to %s", status)
+	}
+}

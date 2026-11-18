@@ -14,7 +14,7 @@ const (
 	// SchemaVersion is bumped when the cache layout changes incompatibly.
 	SchemaVersion = 1
 	// RulesRevision is bumped when status, symptom or coverage rules change.
-	RulesRevision = 15
+	RulesRevision = 16
 	// RepairRevision is bumped when the repair rules change.
 	RepairRevision = 11
 )
@@ -225,6 +225,7 @@ func (s *Store) Report(profile string, build *uint32, installed []Installed) Rep
 			RemainingSymptoms: findings.RemainingSymptoms,
 			Repairs:           findings.Repairs,
 			Warnings:          findings.Warnings,
+			HudChecks:         findings.HudChecks,
 			GameBuild:         entry.Key.GameBuild,
 			CheckedAt:         entry.CheckedAt.Format(time.RFC3339),
 			Source:            entry.Source,

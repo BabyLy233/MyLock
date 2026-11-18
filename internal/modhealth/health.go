@@ -63,14 +63,15 @@ const (
 
 // Findings are the cached details behind a verdict.
 type Findings struct {
-	Repairs           int       `json:"repairs"`
-	Checks            []string  `json:"checks,omitempty"`
-	Warnings          int       `json:"warnings"`
-	NeedsUpdate       bool      `json:"needsUpdate"`
-	FixSymptoms       []Symptom `json:"fixSymptoms,omitempty"`
-	RemainingSymptoms []Symptom `json:"remainingSymptoms,omitempty"`
-	Covered           bool      `json:"covered"`
-	ScopeIncomplete   bool      `json:"scopeIncomplete,omitempty"`
+	Repairs           int                  `json:"repairs"`
+	Checks            []string             `json:"checks,omitempty"`
+	Warnings          int                  `json:"warnings"`
+	NeedsUpdate       bool                 `json:"needsUpdate"`
+	FixSymptoms       []Symptom            `json:"fixSymptoms,omitempty"`
+	RemainingSymptoms []Symptom            `json:"remainingSymptoms,omitempty"`
+	Covered           bool                 `json:"covered"`
+	ScopeIncomplete   bool                 `json:"scopeIncomplete,omitempty"`
+	HudChecks         []modcompat.HudCheck `json:"hudChecks,omitempty"`
 }
 
 // Status applies the original branch order: repairs first, then unresolved
@@ -100,18 +101,19 @@ func (f Findings) Status(choice Choice) Status {
 
 // Health is one mod's verdict.
 type Health struct {
-	ModID             string    `json:"modId"`
-	Status            Status    `json:"status"`
-	Symptoms          []Symptom `json:"symptoms"`
-	FixSymptoms       []Symptom `json:"fixSymptoms"`
-	RemainingSymptoms []Symptom `json:"remainingSymptoms"`
-	Repairs           int       `json:"repairs"`
-	Warnings          int       `json:"warnings"`
-	Checks            []string  `json:"checks,omitempty"`
-	ScopeIncomplete   bool      `json:"scopeIncomplete,omitempty"`
-	GameBuild         *uint32   `json:"gameBuild,omitempty"`
-	CheckedAt         string    `json:"checkedAt"`
-	Source            Source    `json:"source"`
+	ModID             string               `json:"modId"`
+	Status            Status               `json:"status"`
+	Symptoms          []Symptom            `json:"symptoms"`
+	FixSymptoms       []Symptom            `json:"fixSymptoms"`
+	RemainingSymptoms []Symptom            `json:"remainingSymptoms"`
+	Repairs           int                  `json:"repairs"`
+	Warnings          int                  `json:"warnings"`
+	Checks            []string             `json:"checks,omitempty"`
+	ScopeIncomplete   bool                 `json:"scopeIncomplete,omitempty"`
+	HudChecks         []modcompat.HudCheck `json:"hudChecks,omitempty"`
+	GameBuild         *uint32              `json:"gameBuild,omitempty"`
+	CheckedAt         string               `json:"checkedAt"`
+	Source            Source               `json:"source"`
 }
 
 // Report is the list of verdicts for one profile.
@@ -183,6 +185,7 @@ func FindingsFromAnalysis(analysis modcompat.Analysis) Findings {
 		RemainingSymptoms: sortedSymptoms(remaining),
 		Covered:           analysis.ModelsChecked > 0 || analysis.AssetsChecked > 0,
 		ScopeIncomplete:   analysis.ScopeIncomplete,
+		HudChecks:         analysis.HudChecks,
 	}
 }
 

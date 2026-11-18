@@ -1106,6 +1106,51 @@ func (a *app) writeCompatibility(install *game.Install, folder string, ids []str
 	return mods, info, prompt, errors.Join(rebuildErr, patchErr, readErr)
 }
 
+// hudSummary describes the advisory HUD comparison for one mod. It never
+// changes the health status: a layout may intentionally drop a panel.
+func hudSummary(checks []modcompat.HudCheck) string {
+	if len(checks) == 0 {
+		return ""
+	}
+	missing := make(map[string]struct{})
+	consoleLines := 0
+	var unreadable, unsupported, noBaseline bool
+	for _, check := range checks {
+		consoleLines += len(check.Console.Lines)
+		switch check.Status {
+		case modcompat.HudCompared:
+			for _, panel := range check.MissingPanels {
+				missing[panel] = struct{}{}
+			}
+		case modcompat.HudUnreadable:
+			unreadable = true
+		case modcompat.HudUnsupported:
+			unsupported = true
+		case modcompat.HudNoBaseline:
+			noBaseline = true
+		}
+	}
+	var line string
+	switch {
+	case len(missing) > 0:
+		panels := slices.Sorted(maps.Keys(missing))
+		if len(panels) > 6 {
+			panels = append(panels[:6], fmt.Sprintf("等 %d 个", len(missing)))
+		}
+		line = "HUD 布局：游戏新增的面板未包含：" + joinChinese(panels) + "（仅提示）"
+	case unreadable:
+		line = "HUD 布局：模组布局文件无法读取（仅提示）"
+	case unsupported:
+		line = "HUD 布局：布局格式不在检查范围内（仅提示）"
+	case noBaseline:
+		line = "HUD 布局：当前游戏没有同名文件，无法比较"
+	}
+	if line != "" && consoleLines > 0 {
+		line += fmt.Sprintf("；console.log 有 %d 条相关报错", consoleLines)
+	}
+	return line
+}
+
 func healthSymptoms(symptoms []modhealth.Symptom) string {
 	if len(symptoms) == 0 {
 		return ""
@@ -1302,13 +1347,18 @@ func (a *app) compatibilityDialog(c *ui.Context) {
 
 			var shown []addons.Mod
 			var fixable []string
+			extraHeight := 0
 			for _, mod := range mods.list {
 				health, ok := h.byID[mod.ID]
 				if !ok {
 					continue
 				}
-				if health.Status != modhealth.StatusWorks || health.Repairs > 0 {
+				hud := hudSummary(health.HudChecks)
+				if health.Status != modhealth.StatusWorks || health.Repairs > 0 || hud != "" {
 					shown = append(shown, mod)
+				}
+				if hud != "" {
+					extraHeight += 15
 				}
 				if health.Repairs > 0 && health.Status != modhealth.StatusFixed && !health.ScopeIncomplete {
 					fixable = append(fixable, mod.ID)
@@ -1329,7 +1379,7 @@ func (a *app) compatibilityDialog(c *ui.Context) {
 				ui.Text(c, "没有发现兼容性问题。").FontSize(12).TextColor(t.TextMuted)
 			}
 			if len(shown) > 0 {
-				height := float32(len(shown)*56 + 4)
+				height := float32(len(shown)*56 + extraHeight + 4)
 				if height > 380 {
 					height = 380
 				}
@@ -1348,6 +1398,10 @@ func (a *app) compatibilityDialog(c *ui.Context) {
 									if health.Warnings > 0 {
 										ui.Text(c, fmt.Sprintf("%d 项问题需要模组作者更新", health.Warnings)).
 											FontSize(11).TextColor(t.TextMuted)
+									}
+									if hud := hudSummary(health.HudChecks); hud != "" {
+										ui.Text(c, hud).FontSize(11).TextColor(t.TextMuted).
+											MaxLines(2).Ellipsis("…")
 									}
 								})
 								ui.Row(c).Shrink(0).Gap(6).Children(func() {

@@ -111,6 +111,9 @@ type Analysis struct {
 	// without a proven repair. Both map to the gameData health category.
 	DataRepairs  []vdata.DataRepair
 	DataWarnings []vdata.DataWarning
+	// HudChecks compares mod Panorama layouts with the installed game's. They
+	// are advisory: a removed panel can be intentional.
+	HudChecks []HudCheck
 }
 
 // SupportedChecks are the health categories the analyzer covers today.
@@ -299,6 +302,9 @@ func Analyze(modID string, vpkPaths []string, game *source2.GameIndex, scope Sco
 		return Analysis{}, err
 	}
 	if err := applyLocalization(&analysis, modID, modPaths, modArchives, modVPKs, game); err != nil {
+		return Analysis{}, err
+	}
+	if err := applyHud(&analysis, modID, modPaths, modArchives, modVPKs, game); err != nil {
 		return Analysis{}, err
 	}
 
