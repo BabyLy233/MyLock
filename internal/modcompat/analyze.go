@@ -3,10 +3,12 @@
 package modcompat
 
 import (
+	"bytes"
 	"fmt"
 	"strings"
 
 	"github.com/BabyLy233/mylock/internal/source2"
+	"github.com/BabyLy233/mylock/third_party/deadlock-mod-manager/port/animation"
 	"github.com/BabyLy233/mylock/third_party/deadlock-mod-manager/port/camera"
 	"github.com/BabyLy233/mylock/third_party/deadlock-mod-manager/port/compat"
 	"github.com/BabyLy233/mylock/third_party/deadlock-mod-manager/port/kv3"
@@ -41,6 +43,7 @@ const (
 	RepairMaterialBindings      RepairKind = "MaterialBindings"
 	RepairModelRelocation       RepairKind = "ModelRelocation"
 	RepairAnimationInterface    RepairKind = "AnimationInterface"
+	RepairAnimationSkeleton     RepairKind = "AnimationSkeleton"
 )
 
 // Repair is one safe repair the analyzer can apply.
@@ -127,6 +130,7 @@ func Analyze(modID string, vpkPaths []string, game *source2.GameIndex, scope Sco
 	var assets []modelSource
 	effective := make(map[string]effectiveModel)
 	hasAnimationEntries := false
+	hasAnimationOverrides := false
 	for _, vpkPath := range vpkPaths {
 		archive, err := vpk.Open(vpkPath)
 		if err != nil {
@@ -149,6 +153,10 @@ func Analyze(modID string, vpkPaths []string, game *source2.GameIndex, scope Sco
 			}
 			if isAnimationPath(path) {
 				hasAnimationEntries = true
+				if !strings.HasSuffix(normalized, ".vnmskel_c") ||
+					strings.HasPrefix(normalized, "animations/") || strings.HasPrefix(normalized, "animgraphs/") {
+					hasAnimationOverrides = true
+				}
 			}
 			if !camera.IsModelPath(path) {
 				if strings.HasSuffix(normalized, ".vmesh_c") || strings.HasSuffix(normalized, ".vnmskel_c") ||
@@ -264,7 +272,6 @@ func Analyze(modID string, vpkPaths []string, game *source2.GameIndex, scope Sco
 	applyRelocation(&analysis, modID, models, game, modPaths, modArchives,
 		readResource, exists, hasAnimationEntries, scope, repairedPaths, effective, mode)
 	applyMaterialBindings(&analysis, modID, materialCandidates, readResource, game, repairedPaths, effective, mode)
-	applyAnimationContract(&analysis, modID, effective, readResource, game, modArchives, scope)
 
 	for _, source := range assets {
 		data, err := source.archive.ReadLimited(source.path, maxModelBytes)
@@ -275,6 +282,10 @@ func Analyze(modID string, vpkPaths []string, game *source2.GameIndex, scope Sco
 		path := camera.NormalizePath(source.path)
 		switch {
 		case strings.HasSuffix(path, ".vnmskel_c"):
+			_, competing := scope.OtherAnimationPaths[path]
+			data = repairSkeleton(&analysis, modID, source, data, game,
+				!hasAnimationOverrides && len(scope.OtherAnimationPaths) == 0,
+				scope.Unknown || competing, mode, effective, repairedPaths)
 			analysis.AssetWarnings = append(analysis.AssetWarnings,
 				skeletonWarnings(modID, source.vpkPath, source.path, data)...)
 		case strings.HasSuffix(path, ".vmesh_c"):
@@ -285,7 +296,94 @@ func Analyze(modID string, vpkPaths []string, game *source2.GameIndex, scope Sco
 				materialAssetWarnings(modID, source.vpkPath, source.path, data, game, exists)...)
 		}
 	}
+	applyAnimationContract(&analysis, modID, effective, readResource, game, modArchives, scope)
 	return analysis, nil
+}
+
+// repairSkeleton refreshes a skeleton whose rig is semantically equal to the
+// current game skeleton. The game bytes replace the mod's compiler-layout
+// differences; skeletons that need a rebase are left to the caller's warning.
+// The evidence path is not ported: without proof that animation overrides do
+// not sample this skeleton, only a proof-free structural refresh is safe.
+func repairSkeleton(analysis *Analysis, modID string, source modelSource, data []byte,
+	game *source2.GameIndex, extension, blocked bool, mode Mode, effective map[string]effectiveModel,
+	repairedPaths map[string]struct{}) []byte {
+	if game == nil || !refreshableSkeletonPath(source.path) {
+		return data
+	}
+	base, ok := game.GameBytes(source.path)
+	if !ok {
+		return data
+	}
+	if blocked || !extension {
+		if skeletonBonesDiffer(data, base) {
+			skeletonUnverifiedWarning(analysis, modID, source)
+		}
+		return data
+	}
+	fixed, ok := animation.RefreshSkeleton(data, base, extension)
+	if ok && bytes.Equal(fixed, data) {
+		return data
+	}
+	if ok {
+		path := camera.NormalizePath(source.path)
+		effective[path] = effectiveModel{data: fixed, vpkPath: source.vpkPath}
+		repairedPaths[source.path] = struct{}{}
+		analysis.Repairs = append(analysis.Repairs, Repair{
+			ModID: modID, SourceVPK: source.vpkPath, FilePath: source.path,
+			Kind: RepairAnimationSkeleton,
+		})
+		if mode == Fix {
+			analysis.Fixed[source.path] = fixed
+		}
+		return fixed
+	}
+	if skeletonBonesDiffer(data, base) {
+		skeletonUnverifiedWarning(analysis, modID, source)
+	}
+	return data
+}
+
+func skeletonUnverifiedWarning(analysis *Analysis, modID string, source modelSource) {
+	analysis.AssetWarnings = append(analysis.AssetWarnings, AssetWarning{
+		ModID: modID, SourceVPK: source.vpkPath, FilePath: source.path,
+		Kind:   compat.WarningUnverifiedSkeleton,
+		Detail: "Bone hierarchy, reference poses, metadata, or competing mod settings cannot be safely rebased",
+	})
+}
+
+// refreshableSkeletonPath mirrors the upstream skeleton source filter.
+func refreshableSkeletonPath(name string) bool {
+	path := camera.NormalizePath(name)
+	if !strings.HasPrefix(path, "models/") || !strings.HasSuffix(path, ".vnmskel_c") {
+		return false
+	}
+	for _, part := range strings.Split(path, "/") {
+		if part == "" || part == "." || part == ".." {
+			return false
+		}
+	}
+	return true
+}
+
+// skeletonBonesDiffer reports the only skeleton mismatch the upstream repair
+// reports on its own: a changed bone name list cannot be refreshed without
+// proving the animation dependencies against it.
+func skeletonBonesDiffer(source, base []byte) bool {
+	_, old, _, err := camera.DecodeCompiled(source)
+	if err != nil {
+		return false
+	}
+	_, current, _, err := camera.DecodeCompiled(base)
+	if err != nil {
+		return false
+	}
+	oldIDs, oldOK := old.Get("m_boneIDs")
+	currentIDs, currentOK := current.Get("m_boneIDs")
+	if !oldOK || !currentOK {
+		return oldOK != currentOK
+	}
+	return !camera.RuntimeValuesEqual(oldIDs, currentIDs)
 }
 
 // materialSnapshot resolves resources in the mod's load order for the material

@@ -45,7 +45,7 @@ file records the source path and baseline commit in its header.
 | `localization_overlay/material_compatibility/interface.rs` | `port/compat/material.go` |
 | `localization_overlay/material_compatibility.rs` (dependency validation, texture runtime equivalence) | `internal/modcompat/analyze.go`, `port/material/minion_glow.go` |
 | `localization_overlay/material_compatibility/minion_glow.rs` | `port/material/minion_glow.go` |
-| `localization_overlay/animation_skeleton.rs` (pose subset) | `port/rig/` |
+| `localization_overlay/animation_skeleton.rs` (`equivalent_rigs`, `equivalent_layout`, `canonical_masks`, pose subset) | `port/animation/skeleton.go`, `port/rig/` |
 | `localization_overlay/animation_model_evidence.rs` (rig subset) | `port/rig/` |
 | `localization_overlay/animation_poses.rs` (reference-pose consistency) | `port/animation/proof.go` |
 | `localization_overlay/animation_contract.rs` (dependency closure subset) | `internal/modcompat/animation_contract.go` |
@@ -89,6 +89,10 @@ The differences are limited to Go idioms and the boundaries of this project:
   references, retiring unavailable legacy selectors and appending missing
   identity sampled controls. The upstream deformation-rig rebase path is not
   ported, so a model that needs it is declined instead.
+- Only the semantic skeleton refresh is ported (`AnimationSkeleton`), where the
+  existing game skeleton bytes are reused. The rebased path
+  (`AnimationSkeletonRebased`) and its mask/pose preservation are not ported;
+  skeletons that need a rebase are declined.
 
 Test fixtures are translated from the upstream `tests.rs` modules. Real game
 assets are never committed; the optional corpus tests use
