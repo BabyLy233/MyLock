@@ -66,6 +66,24 @@ func TestMaterialDifferencesOnlyReportUnverifiedInterfaces(t *testing.T) {
 	}
 }
 
+func TestMaterialDifferencesHandleFeatureMissingFromReference(t *testing.T) {
+	authored := material("csgo_environment.vfx",
+		[]kv3.Value{feature("F_GLOW", 1), feature("F_RIM", 2)},
+		[]kv3.Value{texture("g_tColor", "a.vtex")})
+	// The current material lists only one of the authored features. A missing
+	// entry must be reported, not dereferenced.
+	reference := material("csgo_environment.vfx",
+		[]kv3.Value{feature("F_GLOW", 1)},
+		[]kv3.Value{texture("g_tColor", "a.vtex")})
+	details, err := MaterialDifferences(&authored, &reference)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(details) != 1 || !strings.Contains(details[0], "F_RIM") {
+		t.Fatalf("missing feature detail = %v", details)
+	}
+}
+
 func TestMaterialDifferencesRejectMalformedTables(t *testing.T) {
 	noShader := kv3.Object(
 		kv3.Pair{Key: "m_intParams", Value: kv3.Array()},

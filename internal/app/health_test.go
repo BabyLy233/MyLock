@@ -100,6 +100,24 @@ func waitHealth(t *testing.T, a *app, want modhealth.Status) {
 	})
 }
 
+func TestHealthCheckPanicIsReportedInsteadOfExiting(t *testing.T) {
+	a, _, _ := healthTestApp(t)
+	store, err := modhealth.Open(filepath.Join(t.TempDir(), "mod-health.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.health.checker = modhealth.NewCheckerWithAnalyzer(store,
+		func(string, []string, *source2.GameIndex, modcompat.Scope, modcompat.Mode) (modcompat.Analysis, error) {
+			panic("malformed mod asset")
+		})
+
+	a.checkHealth(false)
+	waitFor(t, "the interrupted check", func() bool {
+		h := a.healthState()
+		return !h.checking && strings.Contains(h.err, "兼容性检查中断")
+	})
+}
+
 func TestHealthCheckFixesAndRestoresAMod(t *testing.T) {
 	a, install, profile := healthTestApp(t)
 	settingsPath(t, a)
@@ -435,7 +453,7 @@ func TestSharedLocalizationIsLeftToTheGameUnlessEveryOwnerOptsIn(t *testing.T) {
 	}
 
 	// Once the other owner opts in too, both are merged, but the two different
-// values pause for review instead of silently picking one.
+	// values pause for review instead of silently picking one.
 	if err := profile.SetCompatibility([]string{"original"}, true); err != nil {
 		t.Fatal(err)
 	}

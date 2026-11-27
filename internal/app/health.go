@@ -10,6 +10,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"slices"
 	"strings"
 	"time"
@@ -160,14 +161,32 @@ func (a *app) checkHealth(force bool) {
 	a.invalidate()
 
 	go func() {
+		// A malformed mod asset must not take the whole application down: the
+		// analysis only reads untrusted archives, so an unexpected panic is
+		// reported as a failed check and the stack is kept in the log.
+		completed := false
+		defer func() {
+			recovered := recover()
+			if recovered == nil {
+				return
+			}
+			log.Printf("compatibility check panic: %v\n%s", recovered, debug.Stack())
+			if !completed {
+				completed = true
+				a.finishHealth(install, folder, epoch, modhealth.CheckResult{},
+					fmt.Errorf("兼容性检查中断：%v", recovered))
+			}
+		}()
 		profile := profileFor(install, folder)
 		mods, err := profile.Read()
 		if err != nil {
+			completed = true
 			a.finishHealth(install, folder, epoch, modhealth.CheckResult{}, err)
 			return
 		}
 		gameIndex, err := a.gameIndexFor(install)
 		if err != nil {
+			completed = true
 			a.finishHealth(install, folder, epoch, modhealth.CheckResult{}, err)
 			return
 		}
@@ -196,6 +215,7 @@ func (a *app) checkHealth(force bool) {
 				MountedFiles: mounted,
 				OnProgress:   a.healthProgress(install, folder, epoch),
 			})
+		completed = true
 		a.finishHealth(install, folder, epoch, result, err)
 	}()
 }

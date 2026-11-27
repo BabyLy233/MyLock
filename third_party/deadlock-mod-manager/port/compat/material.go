@@ -72,8 +72,13 @@ func MaterialDifferences(source, current *kv3.Value) ([]string, error) {
 		if !ok || value == 0 {
 			continue
 		}
-		currentValue, ok := currentFeatures[name].AsInt()
-		if !ok || currentValue != value {
+		// A feature the current reference does not list at all is a difference:
+		// its requirements are unknown, not disabled.
+		currentValue, currentOK := int64(0), false
+		if current, present := currentFeatures[name]; present && current != nil {
+			currentValue, currentOK = current.AsInt()
+		}
+		if !currentOK || currentValue != value {
 			details = append(details, fmt.Sprintf(
 				"Authored shader feature differs: m_intParams.%s; current reference does not enable the same value. This may be intentional; its texture requirements are unverified",
 				name))
